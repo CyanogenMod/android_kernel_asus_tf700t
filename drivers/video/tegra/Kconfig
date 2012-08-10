@@ -34,7 +34,6 @@ config FB_TEGRA
 config TEGRA_DC_EXTENSIONS
 	bool "Tegra Display Controller Extensions"
 	depends on TEGRA_DC
-	default y
 	help
 	  This exposes support for extended capabilities of the Tegra display
 	  controller to userspace drivers.
