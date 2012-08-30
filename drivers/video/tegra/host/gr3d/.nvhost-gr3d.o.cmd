@@ -1,0 +1,1 @@
+cmd_drivers/video/tegra/host/gr3d/nvhost-gr3d.o := /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o drivers/video/tegra/host/gr3d/nvhost-gr3d.o drivers/video/tegra/host/gr3d/gr3d.o drivers/video/tegra/host/gr3d/gr3d_t20.o drivers/video/tegra/host/gr3d/gr3d_t30.o drivers/video/tegra/host/gr3d/scale3d.o 

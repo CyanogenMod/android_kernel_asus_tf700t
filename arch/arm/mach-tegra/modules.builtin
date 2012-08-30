@@ -1,0 +1,3 @@
+kernel/arch/arm/mach-tegra/syncpt.ko
+kernel/arch/arm/mach-tegra/pwm.ko
+kernel/arch/arm/mach-tegra/tegra3_tsensor.ko

@@ -1,0 +1,7 @@
+kernel/drivers/media/video/videodev.ko
+kernel/drivers/media/video/v4l2-int-device.ko
+kernel/drivers/media/video/v4l2-common.ko
+kernel/drivers/media/video/tegra/fjm6mo.ko
+kernel/drivers/media/video/tegra/iCatch7002a.ko
+kernel/drivers/media/video/tegra/mi1040.ko
+kernel/drivers/media/video/uvc/uvcvideo.ko

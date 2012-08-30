@@ -1,0 +1,6 @@
+kernel/drivers/video/tegra/host/nvhost.ko
+kernel/drivers/video/tegra/host/gr3d/nvhost-gr3d.ko
+kernel/drivers/video/tegra/host/host1x/nvhost-host1x.ko
+kernel/drivers/video/tegra/host/mpe/nvhost-mpe.ko
+kernel/drivers/video/tegra/host/t20/nvhost-t20.ko
+kernel/drivers/video/tegra/host/t30/nvhost-t30.ko

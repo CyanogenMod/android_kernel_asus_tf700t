@@ -1,0 +1,1 @@
+cmd_drivers/mfd/built-in.o :=  /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o drivers/mfd/built-in.o drivers/mfd/mfd-core.o drivers/mfd/tps6586x.o drivers/mfd/tps6591x.o drivers/mfd/tps80031.o drivers/mfd/tps8003x-gpadc.o drivers/mfd/max77663-core.o drivers/mfd/ricoh583.o 

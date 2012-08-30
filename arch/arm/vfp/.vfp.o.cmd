@@ -1,0 +1,1 @@
+cmd_arch/arm/vfp/vfp.o := /opt/toolchains/androideabi-4.6/bin/ld -EL  --no-warn-mismatch   -r -o arch/arm/vfp/vfp.o arch/arm/vfp/vfpmodule.o arch/arm/vfp/entry.o arch/arm/vfp/vfphw.o arch/arm/vfp/vfpsingle.o arch/arm/vfp/vfpdouble.o 

@@ -1,0 +1,1 @@
+cmd_drivers/input/asusec/built-in.o :=  /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o drivers/input/asusec/built-in.o drivers/input/asusec/asuspec.o drivers/input/asusec/asusdec.o drivers/input/asusec/elan_i2c_asus.o 

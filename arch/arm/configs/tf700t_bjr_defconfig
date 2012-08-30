@@ -1184,18 +1184,7 @@ CONFIG_WLAN=y
 # CONFIG_USB_NET_RNDIS_WLAN is not set
 # CONFIG_ATH_COMMON is not set
 # CONFIG_BCM4329 is not set
-#CONFIG_BCMDHD=y
-#CONFIG_BCMDHD_FW_DIR="/system/vendor/firmware"
-#CONFIG_BCMDHD_NVRAM_PATH="/system/etc/nvram_4329.txt"
-#CONFIG_BCMDHD_WIFI_CONTROL_FUNC=y
-#CONFIG_BCMDHD_HW_OOB=y
-# CONFIG_HOSTAP is not set
-# CONFIG_IPW2100 is not set
-# CONFIG_IPW2200 is not set
-# CONFIG_IWM is not set
-# CONFIG_LIBERTAS is not set
-# CONFIG_HERMES is not set
-ONFIG_BCMDHD=y
+CONFIG_BCMDHD=y
 CONFIG_BCMDHD_FW_DIR="/system/vendor/firmware"
 CONFIG_BCMDHD_NVRAM_DIR="/system/etc"
 CONFIG_BCMDHD_NVRAM_PATH="/system/etc/nvram_4329.txt"
@@ -1206,6 +1195,12 @@ CONFIG_BCMDHD_WIFI_CONTROL_FUNC=y
 CONFIG_BCMDHD_HW_OOB=y
 CONFIG_BCMDHD_CSCAN_ENABLE=y
 CONFIG_BCMDHD_INSMOD_NO_FW_LOAD=y
+# CONFIG_HOSTAP is not set
+# CONFIG_IPW2100 is not set
+# CONFIG_IPW2200 is not set
+# CONFIG_IWM is not set
+# CONFIG_LIBERTAS is not set
+# CONFIG_HERMES is not set
 
 #
 # Enable WiMAX (Networking options) to see the WiMAX drivers

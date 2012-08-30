@@ -1,0 +1,3 @@
+kernel/net/caif/caif.ko
+kernel/net/caif/chnl_net.ko
+kernel/net/caif/caif_socket.ko

@@ -1,0 +1,3 @@
+kernel/drivers/input/touchscreen/atmel_maxtouch.ko
+kernel/drivers/input/touchscreen/mxt_config.ko
+kernel/drivers/input/touchscreen/ektf3k.ko

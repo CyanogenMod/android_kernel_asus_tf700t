@@ -1,0 +1,1 @@
+cmd_drivers/input/touchscreen/built-in.o :=  /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o drivers/input/touchscreen/built-in.o drivers/input/touchscreen/atmel_maxtouch.o drivers/input/touchscreen/mxt_config.o drivers/input/touchscreen/ektf3k.o 

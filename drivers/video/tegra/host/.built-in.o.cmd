@@ -1,0 +1,1 @@
+cmd_drivers/video/tegra/host/built-in.o :=  /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o drivers/video/tegra/host/built-in.o drivers/video/tegra/host/mpe/built-in.o drivers/video/tegra/host/gr3d/built-in.o drivers/video/tegra/host/host1x/built-in.o drivers/video/tegra/host/t20/built-in.o drivers/video/tegra/host/t30/built-in.o drivers/video/tegra/host/nvhost.o 

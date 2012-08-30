@@ -1,0 +1,1 @@
+cmd_drivers/misc/inv_mpu/mpu3050.o := /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o drivers/misc/inv_mpu/mpu3050.o drivers/misc/inv_mpu/mpuirq.o drivers/misc/inv_mpu/slaveirq.o drivers/misc/inv_mpu/mpu-dev.o drivers/misc/inv_mpu/mlsl-kernel.o drivers/misc/inv_mpu/mldl_cfg.o drivers/misc/inv_mpu/mldl_print_cfg.o 
