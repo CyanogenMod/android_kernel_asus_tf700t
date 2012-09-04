@@ -1,3 +1,0 @@
-kernel/drivers/input/keyboard/gpio_keys.ko
-kernel/drivers/input/keyboard/interrupt_keys.ko
-kernel/drivers/input/keyboard/tegra-kbc.ko

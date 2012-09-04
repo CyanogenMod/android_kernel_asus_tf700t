@@ -1,1 +1,0 @@
-cmd_drivers/input/keyboard/built-in.o :=  /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o drivers/input/keyboard/built-in.o drivers/input/keyboard/gpio_keys.o drivers/input/keyboard/interrupt_keys.o drivers/input/keyboard/tegra-kbc.o 

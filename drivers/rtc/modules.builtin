@@ -1,7 +1,0 @@
-kernel/drivers/rtc/rtc-lib.ko
-kernel/drivers/rtc/rtc-core.ko
-kernel/drivers/rtc/rtc-max77663.ko
-kernel/drivers/rtc/rtc-tps6586x.ko
-kernel/drivers/rtc/rtc-tps6591x.ko
-kernel/drivers/rtc/rtc-tps80031.ko
-kernel/drivers/rtc/rtc-ricoh583.ko

@@ -1,1 +1,0 @@
-cmd_arch/arm/mach-tegra/baseband-xmm-power2.ko := /opt/toolchains/androideabi-4.6/bin/ld -EL -r  -T /home/brichter/repos/live_nycbjr/tf700t_kernel/scripts/module-common.lds --build-id  -o arch/arm/mach-tegra/baseband-xmm-power2.ko arch/arm/mach-tegra/baseband-xmm-power2.o arch/arm/mach-tegra/baseband-xmm-power2.mod.o

@@ -1,1 +1,0 @@
-cmd_security/tf_driver/tf_driver.o := /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o security/tf_driver/tf_driver.o security/tf_driver/tf_util.o security/tf_driver/tf_conn.o security/tf_driver/tf_device.o security/tf_driver/tf_comm.o security/tf_driver/tf_comm_tz.o 

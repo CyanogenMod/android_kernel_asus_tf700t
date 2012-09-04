@@ -1,1 +1,0 @@
-cmd_sound/usb/built-in.o :=  /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o sound/usb/built-in.o sound/usb/misc/built-in.o sound/usb/usx2y/built-in.o sound/usb/caiaq/built-in.o sound/usb/6fire/built-in.o 

@@ -1,1 +1,0 @@
-cmd_drivers/media/video/tegra/avp/built-in.o :=  /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o drivers/media/video/tegra/avp/built-in.o drivers/media/video/tegra/avp/tegra_rpc.o drivers/media/video/tegra/avp/trpc_local.o drivers/media/video/tegra/avp/trpc_sema.o 

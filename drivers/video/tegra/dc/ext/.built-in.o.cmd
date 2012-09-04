@@ -1,1 +1,0 @@
-cmd_drivers/video/tegra/dc/ext/built-in.o :=  /opt/toolchains/androideabi-4.6/bin/ld -EL    -r -o drivers/video/tegra/dc/ext/built-in.o drivers/video/tegra/dc/ext/dev.o drivers/video/tegra/dc/ext/util.o drivers/video/tegra/dc/ext/cursor.o drivers/video/tegra/dc/ext/events.o drivers/video/tegra/dc/ext/control.o 

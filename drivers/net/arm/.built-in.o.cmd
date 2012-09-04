@@ -1,1 +1,0 @@
-cmd_drivers/net/arm/built-in.o :=  rm -f drivers/net/arm/built-in.o; /opt/toolchains/androideabi-4.6/bin/ar rcs drivers/net/arm/built-in.o

@@ -1,3 +1,0 @@
-kernel/drivers/hwmon/hwmon.ko
-kernel/drivers/hwmon/tegra-tsensor.ko
-kernel/drivers/hwmon/al3010.ko

@@ -1,1 +1,0 @@
-cmd_drivers/scsi/scsi_wait_scan.ko := /opt/toolchains/androideabi-4.6/bin/ld -EL -r  -T /home/brichter/repos/live_nycbjr/tf700t_kernel/scripts/module-common.lds --build-id  -o drivers/scsi/scsi_wait_scan.ko drivers/scsi/scsi_wait_scan.o drivers/scsi/scsi_wait_scan.mod.o

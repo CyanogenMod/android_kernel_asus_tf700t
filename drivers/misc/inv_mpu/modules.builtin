@@ -1,4 +1,0 @@
-kernel/drivers/misc/inv_mpu/mpu3050.ko
-kernel/drivers/misc/inv_mpu/timerirq.ko
-kernel/drivers/misc/inv_mpu/accel/inv_mpu_kxtf9.ko
-kernel/drivers/misc/inv_mpu/compass/inv_mpu_ami306.ko

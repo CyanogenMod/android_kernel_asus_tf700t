@@ -1,1 +1,0 @@
-cmd_crypto/tcrypt.ko := /opt/toolchains/androideabi-4.6/bin/ld -EL -r  -T /home/brichter/repos/live_nycbjr/tf700t_kernel/scripts/module-common.lds --build-id  -o crypto/tcrypt.ko crypto/tcrypt.o crypto/tcrypt.mod.o

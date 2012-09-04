@@ -1,8 +1,0 @@
-kernel/drivers/misc/ad525x_dpot.ko
-kernel/drivers/misc/ad525x_dpot-i2c.ko
-kernel/drivers/misc/apds9802als.ko
-kernel/drivers/misc/nct1008.ko
-kernel/drivers/misc/inv_mpu/mpu3050.ko
-kernel/drivers/misc/inv_mpu/timerirq.ko
-kernel/drivers/misc/inv_mpu/accel/inv_mpu_kxtf9.ko
-kernel/drivers/misc/inv_mpu/compass/inv_mpu_ami306.ko
