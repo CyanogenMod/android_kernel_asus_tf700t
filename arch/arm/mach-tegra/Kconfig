@@ -156,6 +156,31 @@ config MACH_KAI
        help
          Support for NVIDIA KAI development platform
 
+config TEGRA_BOOTBLOCK_EXPOSE
+       depends on ARCH_TEGRA
+       bool "Expose boot/recovery partitions through GPT driver"
+       default y
+
+config BOOTBLOCK_EXPOSE_SOS_OFFSET
+       depends on TEGRA_BOOTBLOCK_EXPOSE
+       int "Offset for start of recovery partition (512-byte blocks)"
+       default "15360"
+
+config BOOTBLOCK_EXPOSE_SOS_SIZE
+       depends on TEGRA_BOOTBLOCK_EXPOSE
+       int "Size of recovery partition (512-byte blocks)"
+       default "16384"
+
+config BOOTBLOCK_EXPOSE_LNX_OFFSET
+       depends on TEGRA_BOOTBLOCK_EXPOSE
+       int "Offset for start of boot partition (512-byte blocks)"
+       default "31744"
+
+config BOOTBLOCK_EXPOSE_LNX_SIZE
+       depends on TEGRA_BOOTBLOCK_EXPOSE
+       int "Size of boot partition (512-byte blocks)"
+       default "16384"
+
 choice
        prompt "Tegra platform type"
        default TEGRA_SILICON_PLATFORM

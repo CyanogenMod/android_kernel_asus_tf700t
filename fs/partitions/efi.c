@@ -679,6 +679,15 @@ int efi_partition(struct parsed_partitions *state)
 		}
 		state->parts[i + 1].has_info = true;
 	}
+
+        /* Add static partitions for SOS and LNX if specified in kernel config (Tegra platform) */
+        #ifdef CONFIG_TEGRA_BOOTBLOCK_EXPOSE
+           printk(KERN_NOTICE "Adding SOS as MMC partition %i: offset %i bytes, size: %i bytes\n", i+1, CONFIG_BOOTBLOCK_EXPOSE_SOS_OFFSET * 512, CONFIG_BOOTBLOCK_EXPOSE_SOS_SIZE * 512);
+           put_partition(state, i+1, CONFIG_BOOTBLOCK_EXPOSE_SOS_OFFSET * ssz, CONFIG_BOOTBLOCK_EXPOSE_SOS_SIZE * ssz);
+           printk(KERN_NOTICE "Adding LNX as MMC partition %i: offset %i bytes, size: %i bytes\n", i+2, CONFIG_BOOTBLOCK_EXPOSE_LNX_OFFSET * 512, CONFIG_BOOTBLOCK_EXPOSE_LNX_SIZE * 512);
+           put_partition(state, i+2, CONFIG_BOOTBLOCK_EXPOSE_LNX_OFFSET * ssz, CONFIG_BOOTBLOCK_EXPOSE_LNX_SIZE * ssz);
+        #endif
+
 	kfree(ptes);
 	kfree(gpt);
 	strlcat(state->pp_buf, "\n", PAGE_SIZE);
