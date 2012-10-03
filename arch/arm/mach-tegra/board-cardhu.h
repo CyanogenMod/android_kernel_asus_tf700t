@@ -42,6 +42,8 @@
 #define BOARD_PMU_PM299   0x0263
 
 /* SKU Information */
+#define BOARD_SKU_B11	0xb11
+
 #define SKU_DCDC_TPS62361_SUPPORT	0x1
 #define SKU_SLT_ULPI_SUPPORT		0x2
 #define SKU_T30S_SUPPORT		0x4
@@ -74,10 +76,15 @@
 #define BOARD_FAB_A03			0x3
 #define BOARD_FAB_A04			0x4
 #define BOARD_FAB_A05			0x5
+#define BOARD_FAB_A06			0x6
+#define BOARD_FAB_A07			0x7
 
 /* Display Board ID */
 #define BOARD_DISPLAY_PM313		0x030D
+#define BOARD_DISPLAY_E1213		0x0C0D
 #define BOARD_DISPLAY_E1247		0x0C2F
+#define BOARD_DISPLAY_E1253		0x0C35
+#define BOARD_DISPLAY_E1506		0x0F06
 
 /* External peripheral act as gpio */
 /* TPS6591x GPIOs */
@@ -122,8 +129,7 @@
 #define PMU_TCA6416_GPIO_END	(PMU_TCA6416_GPIO_BASE + 16)
 
 /* PMU_TCA6416 GPIO assignment */
-//#define EN_HSIC_GPIO				PMU_TCA6416_GPIO_PORT11 /* PMU_GPIO25 */
-#define EN_HSIC_GPIO				TEGRA_GPIO_PR7 /* VDDIO_HSIC_EN */
+#define EN_HSIC_GPIO				TEGRA_GPIO_PR7  /* PMU_GPIO25 */
 #define PM267_SMSC4640_HSIC_HUB_RESET_GPIO	PMU_TCA6416_GPIO_PORT17 /* PMU_GPIO31 */
 
 /* CAM_TCA6416 GPIOs */
@@ -174,10 +180,22 @@
 /* CAMERA RELATED GPIOs on TF201*/
 #define ISP_POWER_1V2_EN_GPIO       TEGRA_GPIO_PS3      //ISP_1V2_EN VDD_ISP_1V2
 #define ISP_POWER_RESET_GPIO        TEGRA_GPIO_PBB0     //CAM_RST_5M, RSTX
+#define FRONT_YUV_SENSOR_RST_GPIO	TEGRA_GPIO_PO0      //1.2M CAM_RST
 
 //TF700T
 #define TF700T_ISP_POWER_1V2_EN_GPIO       TEGRA_GPIO_PR7      //ISP_1V2_EN VDD_ISP_1V2
 #define TF700T_ISP_POWER_1V8_EN_GPIO       TEGRA_GPIO_PBB7     //ISP_1V8_EN VDD_ISP_1V8
+
+//TF300T, TF500T
+#define ICATCH7002A_RST_GPIO TEGRA_GPIO_PBB0
+#define ICATCH7002A_AF_PWR_EN_GPIO TEGRA_GPIO_PS0
+#define ICATCH7002A_VDDIO_EN_GPIO TEGRA_GPIO_PBB4
+#define ICATCH7002A_PWR_DN_GPIO TEGRA_GPIO_PBB5
+#define ICATCH7002A_VDDC_EN_GPIO TEGRA_GPIO_PBB7
+#define ICATCH7002A_VDDA_EN_GPIO TEGRA_GPIO_PR6  //KB_ROW6
+#define ICATCH7002A_ISP_1V2_EN TEGRA_GPIO_PS3   //For TF500T; PBB7 in other porjects
+#define ICATCH7002A_CAM_2V85_EN TEGRA_GPIO_PR7
+
 
 /* PCA954x I2C bus expander bus addresses */
 #define PCA954x_I2C_BUS_BASE	6
@@ -210,27 +228,30 @@ int cardhu_sdhci_init(void);
 int cardhu_pinmux_init(void);
 int cardhu_panel_init(void);
 int cardhu_sensors_init(void);
-int cardhu_kbc_init(void);
-int cardhu_scroll_init(void);
 int cardhu_keys_init(void);
 int cardhu_pins_state_init(void);
 int cardhu_emc_init(void);
-int cardhu_power_off_init(void);
 int cardhu_edp_init(void);
 int cardhu_pmon_init(void);
 int cardhu_pm298_gpio_switch_regulator_init(void);
 int cardhu_pm298_regulator_init(void);
 int cardhu_pm299_gpio_switch_regulator_init(void);
 int cardhu_pm299_regulator_init(void);
-void __init cardhu_tsensor_init(void);
-#define TOUCH_GPIO_IRQ_ATMEL_T9	TEGRA_GPIO_PH4
-#define TOUCH_GPIO_RST_ATMEL_T9	TEGRA_GPIO_PH6
-#define TOUCH_BUS_ATMEL_T9	1
+struct platform_device *cardhu_tegra_usb_utmip_host_register(void);
+void cardhu_tegra_usb_utmip_host_unregister(struct platform_device *pdev);
 
 /* Invensense MPU Definitions */
-#define MPU_GYRO_NAME		"mpu3050"
+#define MPU3050_GYRO_NAME		"mpu3050"
+#define MPU6050_GYRO_NAME		"mpu6050"
+extern struct tegra_uart_platform_data cardhu_irda_pdata;
+
+#define MPU_TYPE_MPU3050	1
+#define MPU_TYPE_MPU6050	2
+#define MPU_GYRO_TYPE		MPU_TYPE_MPU3050
 #define MPU_GYRO_IRQ_GPIO	TEGRA_GPIO_PX1
-#define MPU_GYRO_ADDR		0x68
+#define MPU3050_GYRO_ADDR		0x68
+#define MPU6050_GYRO_ADDR		0x69
+#define MPU6050_TF500T_GYRO_ADDR		0x68
 #define MPU_GYRO_BUS_NUM	2
 #define MPU_GYRO_ORIENTATION	{ 0, -1, 0, -1, 0, 0, 0, 0, -1 }
 #define MPU_ACCEL_NAME		"kxtf9"
@@ -264,9 +285,21 @@ void __init cardhu_tsensor_init(void);
 #define TF300TL_ACCEL_ORIENTATION		{ 0, 1, 0, 1, 0, 0, 0, 0, -1 }
 #define TF300TL_COMPASS_ORIENTATION	{ -1, 0, 0, 0, -1, 0, 0, 0, 1 }
 
+//Sensors orientation matrix for TF500T
+#define TF500T_GYRO_ORIENTATION		{ 0, -1, 0, 1, 0, 0, 0, 0, 1 }
+#define TF500T_COMPASS_ORIENTATION	{ 0, -1, 0, 1, 0, 0, 0, 0, 1 }
+
+/* Kionix Accel sensor Definitions*/
+#define KIONIX_ACCEL_NAME	"KXT_9"
+#define KIONIX_ACCEL_IRQ_GPIO	TEGRA_GPIO_PO5
+#define KIONIX_ACCEL_ADDR		0x0F
+#define KIONIX_ACCEL_BUS_NUM	2
+
+//Sensors orientation matrix for P1801
+#define P1801_ACCEL_ORIENTATION		{ 0, -1, 0, -1, 0, 0, 0, 0, -1 }
+
 /* Baseband GPIO addresses */
-/*
-#define BB_GPIO_BB_EN			TEGRA_GPIO_PR5
+/*#define BB_GPIO_BB_EN			TEGRA_GPIO_PR5
 #define BB_GPIO_BB_RST			TEGRA_GPIO_PS4
 #define BB_GPIO_SPI_INT			TEGRA_GPIO_PS6
 #define BB_GPIO_SPI_SS			TEGRA_GPIO_PV0
@@ -294,6 +327,7 @@ void __init cardhu_tsensor_init(void);
 #define BB_GPIO_RESET_IND		TEGRA_GPIO_PEE1 //n_MOD_RST_IND
 #define BB_GPIO_SAR_DET			TEGRA_GPIO_PR3  //SAR_DET#_3G
 #define BB_GPIO_SIM_DET			TEGRA_GPIO_PW3  //n_SIM_CD
+
 
 #define TDIODE_OFFSET	(10000)	/* in millicelsius */
 

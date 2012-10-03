@@ -1505,7 +1505,7 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         }
         case SENSOR_IOCTL_SET_COLOR_EFFECT:
         {
-            u8 coloreffect;
+            u16 coloreffect;
             if (copy_from_user(&coloreffect,(const void __user *)arg,
                     sizeof(coloreffect))) {
                 return -EFAULT;
@@ -1762,7 +1762,8 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
                             if(err)
                                 pr_err("Touch af stop interrupt error");
                         }
-                        fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x3);
+                        if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201)
+                            fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x3);
                     }
                 }
             }
@@ -1997,95 +1998,6 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             }
             break;
         }
-        case SENSOR_CUSTOM_IOCTL_SET_FACEDETECT:
-        {
-            custom_af_cmd_package FaceDetectCmd;
-            printk("SET_FACEDETECT \n");
-            if (copy_from_user(&FaceDetectCmd,(const void __user *)arg, sizeof(FaceDetectCmd)))
-                return -EFAULT;
-            switch(FaceDetectCmd.cmd)
-            {
-                case AF_CMD_START:
-                {
-                    printk("Start Face Detection\n");
-                    //Start face detection
-                    fjm6mo_write_register(info->i2c_client, 1, 0x09, 0x00, 0x01);
-                    //Set af_window for face window
-                    fjm6mo_read_register(info->i2c_client, 0x0A, 0x40, 0x01, &buffer);
-                    if(buffer != 0x4)
-                        err = fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x40, 0x03);
-                    break;
-                }
-                case AF_CMD_ABORT:
-                {
-                    printk("Stop Face Detection\n");
-                    fjm6mo_read_register(info->i2c_client, 0x09, 0x00, 0x01, &buffer);
-                    if(buffer == 0x01){
-                        //Stop face detection
-                        fjm6mo_write_register(info->i2c_client, 1, 0x09, 0x00, 0x00);
-                        //Set af_window back to touch window or center
-                        fjm6mo_read_register(info->i2c_client, 0x0A, 0x40, 0x01, &buffer);
-                        if(buffer != 0x4)
-                            fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x40, 0x01);
-                    }
-                    break;
-                }
-                default:
-                    break;
-            }
-            return 0;
-        }
-        case SENSOR_CUSTOM_IOCTL_GET_FACEDETECT:
-        {
-            custom_face_detection_cmd_package face_detect;
-            u32 face_x, face_y, face_w, face_h, face_num;
-            int retry = 0;
-            u8 i;
-            if (copy_from_user(&face_detect,(const void __user *)arg,
-                    sizeof(custom_face_detection_cmd_package))) {
-                return -EFAULT;
-            }
-            //Read number of faces
-            fjm6mo_read_register(info->i2c_client, 0x09, 0x0A, 0x01, &buffer);
-            face_detect.face_num = buffer;
-            printk("Face Detect: 0x%X\n", buffer);
-            if(face_detect.face_num != 0){
-                for(i = 0 ; i < face_detect.face_num ; i += 1){
-                    fjm6mo_write_register(info->i2c_client, 1, 0x09, 0x0B, i);
-                    //wait for change select
-                    retry = 0;
-                    while(1){
-                        fjm6mo_read_register(info->i2c_client, 0x09, 0xB, 0x01, &buffer);
-                        retry += 1;
-                        if(buffer == 0xff || retry > MAX_LOOPS_RETRIES)
-                            break;
-                    }
-                    if(buffer == 0xff) {
-                        fjm6mo_read_register(info->i2c_client, 0x09, 0x0E, 0x02, &buffer);
-                        face_detect.face_window[i].x = buffer * 1000 / preview_x;
-                        fjm6mo_read_register(info->i2c_client, 0x09, 0x10, 0x02, &buffer);
-                        face_detect.face_window[i].y = buffer * 1000 / preview_y;
-                        fjm6mo_read_register(info->i2c_client, 0x09, 0x12, 0x02, &buffer);
-                        face_detect.face_window[i].width = buffer * 1000 / preview_x;
-                        fjm6mo_read_register(info->i2c_client, 0x09, 0x14, 0x02, &buffer);
-                        face_detect.face_window[i].height = buffer * 1000 / preview_y;
-                        printk("FaceDetection: face_num:%d 0x%x 0x%x 0x%x 0x%x\n", i, face_detect.face_window[i].x, face_detect.face_window[i].y, face_detect.face_window[i].width, face_detect.face_window[i].height);
-                        _T("FaceDetection: face_num:%d 0x%x 0x%x 0x%x 0x%x", i, face_detect.face_window[i].x, face_detect.face_window[i].y, face_detect.face_window[i].width, face_detect.face_window[i].height);
-                    }
-                    else
-                        break;
-                }
-            }
-            else{
-                //Set af_window back to touch window or center
-                fjm6mo_read_register(info->i2c_client, 0x0A, 0x40, 0x01, &buffer);
-                if(buffer != 0x4)
-                    fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x40, 0x01);
-            }
-            if (copy_to_user((const void __user *)arg, &face_detect, sizeof(custom_face_detection_cmd_package)))
-                return -EFAULT;
-            return 0;
-        }
         case SENSOR_CUSTOM_IOCTL_SET_CONTINUOUS_AF:
         {
             u8 continuous_af;
@@ -2116,7 +2028,8 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
                     err = isp_interrupt(INT_STATUS_AF);
                     if(err)
                         pr_err("CAF stop error: no interrupt\n");
-                    fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x3);
+                    if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201)
+                        fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x3);
                     msleep(30);
                     fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x41, 0x3);
                 }

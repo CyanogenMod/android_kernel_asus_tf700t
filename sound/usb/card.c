@@ -35,7 +35,6 @@
  *     indeed an AC3 stream packed in SPDIF frames (i.e. no real AC3 stream).
  */
 
-
 #include <linux/bitops.h>
 #include <linux/init.h>
 #include <linux/list.h>
@@ -47,7 +46,11 @@
 #include <linux/mutex.h>
 #include <linux/usb/audio.h>
 #include <linux/usb/audio-v2.h>
+#ifdef CONFIG_SWITCH
+#include <linux/switch.h>
+#endif
 
+#include <sound/control.h>
 #include <sound/core.h>
 #include <sound/info.h>
 #include <sound/pcm.h>
@@ -113,6 +116,18 @@ MODULE_PARM_DESC(ignore_ctl_error,
 static DEFINE_MUTEX(register_mutex);
 static struct snd_usb_audio *usb_chip[SNDRV_CARDS];
 static struct usb_driver usb_audio_driver;
+
+#ifdef CONFIG_SWITCH
+enum switch_state {
+	STATE_CONNECTED_UNKNOWN = -1,
+	STATE_DISCONNECTED = 0,
+	STATE_CONNECTED = 1
+};
+
+static struct switch_dev usb_switch_dev = {
+	.name = "usb_audio",
+};
+#endif
 
 /*
  * disconnect streams
@@ -432,9 +447,10 @@ static int snd_usb_audio_create(struct usb_device *dev, int idx,
  * only at the first time.  the successive calls of this function will
  * append the pcm interface to the corresponding card.
  */
-static void *snd_usb_audio_probe(struct usb_device *dev,
-				 struct usb_interface *intf,
-				 const struct usb_device_id *usb_id)
+static struct snd_usb_audio *
+snd_usb_audio_probe(struct usb_device *dev,
+		    struct usb_interface *intf,
+		    const struct usb_device_id *usb_id)
 {
 	const struct snd_usb_audio_quirk *quirk = (const struct snd_usb_audio_quirk *)usb_id->driver_info;
 	int i, err;
@@ -492,14 +508,6 @@ static void *snd_usb_audio_probe(struct usb_device *dev,
 		}
 	}
 
-	chip->txfr_quirk = 0;
-	err = 1; /* continue */
-	if (quirk && quirk->ifnum != QUIRK_NO_INTERFACE) {
-		/* need some special handlings */
-		if ((err = snd_usb_create_quirk(chip, intf, &usb_audio_driver, quirk)) < 0)
-			goto __error;
-	}
-
 	/*
 	 * For devices with more than one control interface, we assume the
 	 * first contains the audio controls. We might need a more specific
@@ -507,6 +515,14 @@ static void *snd_usb_audio_probe(struct usb_device *dev,
 	 */
 	if (!chip->ctrl_intf)
 		chip->ctrl_intf = alts;
+
+	chip->txfr_quirk = 0;
+	err = 1; /* continue */
+	if (quirk && quirk->ifnum != QUIRK_NO_INTERFACE) {
+		/* need some special handlings */
+		if ((err = snd_usb_create_quirk(chip, intf, &usb_audio_driver, quirk)) < 0)
+			goto __error;
+	}
 
 	if (err > 0) {
 		/* create normal USB audio interfaces */
@@ -521,17 +537,26 @@ static void *snd_usb_audio_probe(struct usb_device *dev,
 		goto __error;
 	}
 
+#ifdef CONFIG_SWITCH
+	switch_set_state(&usb_switch_dev, STATE_CONNECTED);
+#endif
+
 	usb_chip[chip->index] = chip;
 	chip->num_interfaces++;
 	chip->probing = 0;
 	mutex_unlock(&register_mutex);
+
 	return chip;
 
  __error:
-	if (chip && !chip->num_interfaces)
-		snd_card_free(chip->card);
+	if (chip) {
+		if (!chip->num_interfaces)
+			snd_card_free(chip->card);
+		chip->probing = 0;
+	}
 	mutex_unlock(&register_mutex);
  __err_val:
+
 	return NULL;
 }
 
@@ -539,21 +564,25 @@ static void *snd_usb_audio_probe(struct usb_device *dev,
  * we need to take care of counter, since disconnection can be called also
  * many times as well as usb_audio_probe().
  */
-static void snd_usb_audio_disconnect(struct usb_device *dev, void *ptr)
+static void snd_usb_audio_disconnect(struct usb_device *dev,
+				     struct snd_usb_audio *chip)
 {
-	struct snd_usb_audio *chip;
 	struct snd_card *card;
 	struct list_head *p;
 
-	if (ptr == (void *)-1L)
+	if (chip == (void *)-1L)
 		return;
 
-	chip = ptr;
 	card = chip->card;
 	mutex_lock(&register_mutex);
 	mutex_lock(&chip->shutdown_mutex);
 	chip->shutdown = 1;
 	chip->num_interfaces--;
+
+#ifdef CONFIG_SWITCH
+	switch_set_state(&usb_switch_dev, STATE_DISCONNECTED);
+#endif
+
 	if (chip->num_interfaces <= 0) {
 		snd_card_disconnect(card);
 		/* release the pcm resources */
@@ -584,7 +613,7 @@ static void snd_usb_audio_disconnect(struct usb_device *dev, void *ptr)
 static int usb_audio_probe(struct usb_interface *intf,
 			   const struct usb_device_id *id)
 {
-	void *chip;
+	struct snd_usb_audio *chip;
 	chip = snd_usb_audio_probe(interface_to_usbdev(intf), intf, id);
 	if (chip) {
 		usb_set_intfdata(intf, chip);
@@ -708,15 +737,35 @@ static struct usb_driver usb_audio_driver = {
 
 static int __init snd_usb_audio_init(void)
 {
+	int err = 0;
+
 	if (nrpacks < 1 || nrpacks > MAX_PACKS) {
 		printk(KERN_WARNING "invalid nrpacks value.\n");
 		return -EINVAL;
 	}
-	return usb_register(&usb_audio_driver);
+
+#ifdef CONFIG_SWITCH
+	/* Add usb_audio swith class support */
+	err = switch_dev_register(&usb_switch_dev);
+	if (err < 0){
+		printk(KERN_ERR "failed to register switch device");
+		return -EINVAL;
+	}
+#endif
+
+	err = usb_register(&usb_audio_driver);
+	if (err) {
+		switch_dev_unregister(&usb_switch_dev);
+	}
+
+	return err;
 }
 
 static void __exit snd_usb_audio_cleanup(void)
 {
+#ifdef CONFIG_SWITCH
+	switch_dev_unregister(&usb_switch_dev);
+#endif
 	usb_deregister(&usb_audio_driver);
 }
 

@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-ventana-sensors.c
  *
- * Copyright (c) 2011, NVIDIA CORPORATION, All rights reserved.
+ * Copyright (c) 2011-2012, NVIDIA CORPORATION, All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -53,45 +53,14 @@
 #include "board-ventana.h"
 #include "cpu-tegra.h"
 
-#define ISL29018_IRQ_GPIO	TEGRA_GPIO_PZ2
-#define AKM8975_IRQ_GPIO	TEGRA_GPIO_PN5
-#define CAMERA_POWER_GPIO	TEGRA_GPIO_PV4
-#define CAMERA_CSI_MUX_SEL_GPIO	TEGRA_GPIO_PBB4
-#define CAMERA_FLASH_ACT_GPIO	TEGRA_GPIO_PD2
-#define NCT1008_THERM2_GPIO	TEGRA_GPIO_PN6
-
-static int ventana_camera_init(void)
-{
-	int err;
-
-	tegra_gpio_enable(CAMERA_POWER_GPIO);
-	gpio_request(CAMERA_POWER_GPIO, "camera_power_en");
-	gpio_direction_output(CAMERA_POWER_GPIO, 1);
-	gpio_export(CAMERA_POWER_GPIO, false);
-
-	tegra_gpio_enable(CAMERA_CSI_MUX_SEL_GPIO);
-	gpio_request(CAMERA_CSI_MUX_SEL_GPIO, "camera_csi_sel");
-	gpio_direction_output(CAMERA_CSI_MUX_SEL_GPIO, 0);
-	gpio_export(CAMERA_CSI_MUX_SEL_GPIO, false);
-
-	err = gpio_request(CAMERA_FLASH_ACT_GPIO, "torch_gpio_act");
-	if (err < 0) {
-		pr_err("gpio_request failed for gpio %d\n",
-					CAMERA_FLASH_ACT_GPIO);
-	} else {
-		tegra_gpio_enable(CAMERA_FLASH_ACT_GPIO);
-		gpio_direction_output(CAMERA_FLASH_ACT_GPIO, 0);
-		gpio_export(CAMERA_FLASH_ACT_GPIO, false);
-	}
-	return 0;
-}
+static struct regulator *cam1_2v8, *cam2_2v8;
 
 /* left ov5650 is CAM2 which is on csi_a */
 static int ventana_left_ov5650_power_on(void)
 {
 	gpio_direction_output(CAMERA_CSI_MUX_SEL_GPIO, 0);
 	gpio_direction_output(AVDD_DSI_CSI_ENB_GPIO, 1);
-	gpio_direction_output(CAM2_LDO_SHUTDN_L_GPIO, 1);
+	regulator_enable(cam2_2v8);
 	mdelay(5);
 	gpio_direction_output(CAM2_PWR_DN_GPIO, 0);
 	mdelay(5);
@@ -107,7 +76,7 @@ static int ventana_left_ov5650_power_off(void)
 	gpio_direction_output(AVDD_DSI_CSI_ENB_GPIO, 0);
 	gpio_direction_output(CAM2_RST_L_GPIO, 0);
 	gpio_direction_output(CAM2_PWR_DN_GPIO, 1);
-	gpio_direction_output(CAM2_LDO_SHUTDN_L_GPIO, 0);
+	regulator_disable(cam2_2v8);
 	return 0;
 }
 
@@ -120,7 +89,7 @@ struct ov5650_platform_data ventana_left_ov5650_data = {
 static int ventana_right_ov5650_power_on(void)
 {
 	gpio_direction_output(AVDD_DSI_CSI_ENB_GPIO, 1);
-	gpio_direction_output(CAM1_LDO_SHUTDN_L_GPIO, 1);
+	regulator_enable(cam1_2v8);
 	mdelay(5);
 	gpio_direction_output(CAM1_PWR_DN_GPIO, 0);
 	mdelay(5);
@@ -136,7 +105,7 @@ static int ventana_right_ov5650_power_off(void)
 	gpio_direction_output(AVDD_DSI_CSI_ENB_GPIO, 0);
 	gpio_direction_output(CAM1_RST_L_GPIO, 0);
 	gpio_direction_output(CAM1_PWR_DN_GPIO, 1);
-	gpio_direction_output(CAM1_LDO_SHUTDN_L_GPIO, 0);
+	regulator_disable(cam1_2v8);
 	return 0;
 }
 
@@ -149,7 +118,6 @@ static int ventana_ov2710_power_on(void)
 {
 	gpio_direction_output(CAMERA_CSI_MUX_SEL_GPIO, 1);
 	gpio_direction_output(AVDD_DSI_CSI_ENB_GPIO, 1);
-	gpio_direction_output(CAM3_LDO_SHUTDN_L_GPIO, 1);
 	mdelay(5);
 	gpio_direction_output(CAM3_PWR_DN_GPIO, 0);
 	mdelay(5);
@@ -164,7 +132,6 @@ static int ventana_ov2710_power_off(void)
 {
 	gpio_direction_output(CAM3_RST_L_GPIO, 0);
 	gpio_direction_output(CAM3_PWR_DN_GPIO, 1);
-	gpio_direction_output(CAM3_LDO_SHUTDN_L_GPIO, 0);
 	gpio_direction_output(AVDD_DSI_CSI_ENB_GPIO, 0);
 	gpio_direction_output(CAMERA_CSI_MUX_SEL_GPIO, 0);
 	return 0;
@@ -176,20 +143,32 @@ struct ov2710_platform_data ventana_ov2710_data = {
 };
 
 
+static struct nvc_gpio_pdata sh532u_left_gpio_pdata[] = {
+	{ SH532U_GPIO_RESET, CAM2_RST_L_GPIO, false, 0, },
+	{ SH532U_GPIO_GP1, CAM2_LDO_SHUTDN_L_GPIO, false, true, },
+};
+
 static struct sh532u_platform_data sh532u_left_pdata = {
+	.cfg		= NVC_CFG_NODEV,
 	.num		= 1,
 	.sync		= 2,
 	.dev_name	= "focuser",
-	.gpio_reset	= CAM2_RST_L_GPIO,
-	.gpio_en	= CAM2_LDO_SHUTDN_L_GPIO,
+	.gpio_count	= ARRAY_SIZE(sh532u_left_gpio_pdata),
+	.gpio		= sh532u_left_gpio_pdata,
+};
+
+static struct nvc_gpio_pdata sh532u_right_gpio_pdata[] = {
+	{ SH532U_GPIO_RESET, CAM1_RST_L_GPIO, false, 0, },
+	{ SH532U_GPIO_GP1, CAM1_LDO_SHUTDN_L_GPIO, false, true, },
 };
 
 static struct sh532u_platform_data sh532u_right_pdata = {
+	.cfg		= NVC_CFG_NODEV,
 	.num		= 2,
 	.sync		= 1,
 	.dev_name	= "focuser",
-	.gpio_reset	= CAM1_RST_L_GPIO,
-	.gpio_en	= CAM1_LDO_SHUTDN_L_GPIO,
+	.gpio_count	= ARRAY_SIZE(sh532u_right_gpio_pdata),
+	.gpio		= sh532u_right_gpio_pdata,
 };
 
 
@@ -207,7 +186,6 @@ static struct ssl3250a_platform_data ventana_ssl3250a_pdata = {
 
 static void ventana_isl29018_init(void)
 {
-	tegra_gpio_enable(ISL29018_IRQ_GPIO);
 	gpio_request(ISL29018_IRQ_GPIO, "isl29018");
 	gpio_direction_input(ISL29018_IRQ_GPIO);
 }
@@ -215,7 +193,6 @@ static void ventana_isl29018_init(void)
 #ifdef CONFIG_SENSORS_AK8975
 static void ventana_akm8975_init(void)
 {
-	tegra_gpio_enable(AKM8975_IRQ_GPIO);
 	gpio_request(AKM8975_IRQ_GPIO, "akm8975");
 	gpio_direction_input(AKM8975_IRQ_GPIO);
 }
@@ -223,21 +200,118 @@ static void ventana_akm8975_init(void)
 
 static void ventana_nct1008_init(void)
 {
-	tegra_gpio_enable(NCT1008_THERM2_GPIO);
 	gpio_request(NCT1008_THERM2_GPIO, "temp_alert");
 	gpio_direction_input(NCT1008_THERM2_GPIO);
 }
+
+static long ventana_shutdown_temp = 115000;
+static long ventana_throttle_temp = 90000;
+static long ventana_throttle_hysteresis = 3000;
+static struct nct1008_data *nct_data;
+
+static void ventana_thermal_alert(void *vdata)
+{
+	struct nct1008_data *data = vdata;
+	long temp;
+	long lo_limit, hi_limit;
+	bool is_above_throttle;
+
+	nct1008_thermal_get_temp(data, &temp);
+	is_above_throttle = (temp >= ventana_throttle_temp);
+
+	if (is_above_throttle != tegra_is_throttling())
+		tegra_throttling_enable(is_above_throttle);
+
+	if (is_above_throttle) {
+		lo_limit = ventana_throttle_temp - ventana_throttle_hysteresis;
+		hi_limit = ventana_shutdown_temp;
+	} else {
+		lo_limit = 0;
+		hi_limit = ventana_throttle_temp;
+	}
+
+	nct1008_thermal_set_limits(data, lo_limit, hi_limit);
+}
+
+static void nct1008_probe_callback(struct nct1008_data *data)
+{
+	nct_data = data;
+	nct1008_thermal_set_shutdown_temp(data, ventana_shutdown_temp);
+	nct1008_thermal_set_alert(data, ventana_thermal_alert, data);
+	nct1008_thermal_set_limits(data, 0, ventana_throttle_temp);
+}
+
+#ifdef CONFIG_DEBUG_FS
+static int ventana_thermal_get_throttle_temp(void *data, u64 *val)
+{
+	*val = (u64)ventana_throttle_temp;
+	return 0;
+}
+
+static int ventana_thermal_set_throttle_temp(void *data, u64 val)
+{
+	ventana_throttle_temp = val;
+	if (nct_data)
+		ventana_thermal_alert(nct_data);
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(throttle_fops,
+			ventana_thermal_get_throttle_temp,
+			ventana_thermal_set_throttle_temp,
+			"%llu\n");
+
+static int ventana_thermal_get_shutdown_temp(void *data, u64 *val)
+{
+	*val = (u64)ventana_shutdown_temp;
+	return 0;
+}
+
+static int ventana_thermal_set_shutdown_temp(void *data, u64 val)
+{
+	ventana_shutdown_temp = val;
+	if (nct_data)
+		nct1008_thermal_set_shutdown_temp(nct_data,
+						ventana_shutdown_temp);
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(shutdown_fops,
+			ventana_thermal_get_shutdown_temp,
+			ventana_thermal_set_shutdown_temp,
+			"%llu\n");
+
+
+static int __init ventana_thermal_debug_init(void)
+{
+	struct dentry *thermal_debugfs_root;
+
+	thermal_debugfs_root = debugfs_create_dir("thermal", 0);
+
+	if (!debugfs_create_file("throttle", 0644, thermal_debugfs_root,
+					NULL, &throttle_fops))
+		return -ENOMEM;
+
+	if (!debugfs_create_file("shutdown", 0644, thermal_debugfs_root,
+					NULL, &shutdown_fops))
+		return -ENOMEM;
+
+	return 0;
+}
+
+late_initcall(ventana_thermal_debug_init);
+
+#endif
+
 
 static struct nct1008_platform_data ventana_nct1008_pdata = {
 	.supported_hwrev = true,
 	.ext_range = false,
 	.conv_rate = 0x08,
 	.offset = 0,
-	.hysteresis = 0,
-	.shutdown_ext_limit = 115,
-	.shutdown_local_limit = 120,
-	.throttling_ext_limit = 90,
-	.alarm_fn = tegra_throttling_enable,
+	.probe_callback = nct1008_probe_callback,
 };
 
 static const struct i2c_board_info ventana_i2c0_board_info[] = {
@@ -254,18 +328,18 @@ static const struct i2c_board_info ventana_i2c2_board_info[] = {
 };
 
 static struct pca953x_platform_data ventana_tca6416_data = {
-	.gpio_base      = TEGRA_NR_GPIOS + 4, /* 4 gpios are already requested by tps6586x */
+	.gpio_base = TCA6416_GPIO_BASE,
 };
 
 static struct pca954x_platform_mode ventana_pca9546_modes[] = {
-	{ .adap_id = 6, .deselect_on_exit = 1 }, /* REAR CAM1 */
-	{ .adap_id = 7, .deselect_on_exit = 1 }, /* REAR CAM2 */
-	{ .adap_id = 8, .deselect_on_exit = 1 }, /* FRONT CAM3 */
+	{ .adap_id = PCA954x_I2C_BUS0, .deselect_on_exit = 1 }, /* REAR CAM1 */
+	{ .adap_id = PCA954x_I2C_BUS1, .deselect_on_exit = 1 }, /* REAR CAM2 */
+	{ .adap_id = PCA954x_I2C_BUS2, .deselect_on_exit = 1 }, /* FRONT CAM3 */
 };
 
 static struct pca954x_platform_data ventana_pca9546_data = {
-	.modes	  = ventana_pca9546_modes,
-	.num_modes      = ARRAY_SIZE(ventana_pca9546_modes),
+	.modes = ventana_pca9546_modes,
+	.num_modes = ARRAY_SIZE(ventana_pca9546_modes),
 };
 
 static const struct i2c_board_info ventana_i2c3_board_info_tca6416[] = {
@@ -333,20 +407,28 @@ static struct i2c_board_info ventana_i2c8_board_info[] = {
 	},
 };
 
-#ifdef CONFIG_MPU_SENSORS_MPU3050
-static struct mpu_platform_data mpu3050_data = {
+/* MPU board file definition   */
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU3050)
+#define MPU_GYRO_NAME		"mpu3050"
+#endif
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU6050)
+#define MPU_GYRO_NAME		"mpu6050"
+#endif
+static struct mpu_platform_data mpu_gyro_data = {
 	.int_config	= 0x10,
 	.level_shifter	= 0,
 	.orientation	= MPU_GYRO_ORIENTATION,	/* Located in board_[platformname].h	*/
 };
 
-static struct ext_slave_platform_data mpu3050_accel_data = {
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU3050)
+static struct ext_slave_platform_data mpu_accel_data = {
 	.address	= MPU_ACCEL_ADDR,
 	.irq		= 0,
 	.adapt_num	= MPU_ACCEL_BUS_NUM,
 	.bus		= EXT_SLAVE_BUS_SECONDARY,
 	.orientation	= MPU_ACCEL_ORIENTATION,	/* Located in board_[platformname].h	*/
 };
+#endif
 
 static struct ext_slave_platform_data mpu_compass_data = {
 	.address	= MPU_COMPASS_ADDR,
@@ -360,15 +442,17 @@ static struct i2c_board_info __initdata inv_mpu_i2c2_board_info[] = {
 	{
 		I2C_BOARD_INFO(MPU_GYRO_NAME, MPU_GYRO_ADDR),
 		.irq = TEGRA_GPIO_TO_IRQ(MPU_GYRO_IRQ_GPIO),
-		.platform_data = &mpu3050_data,
+		.platform_data = &mpu_gyro_data,
 	},
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU3050)
 	{
 		I2C_BOARD_INFO(MPU_ACCEL_NAME, MPU_ACCEL_ADDR),
 #if	MPU_ACCEL_IRQ_GPIO
 		.irq = TEGRA_GPIO_TO_IRQ(MPU_ACCEL_IRQ_GPIO),
 #endif
-		.platform_data = &mpu3050_accel_data,
+		.platform_data = &mpu_accel_data,
 	},
+#endif
 };
 
 static struct i2c_board_info __initdata inv_mpu_i2c4_board_info[] = {
@@ -387,9 +471,9 @@ static void mpuirq_init(void)
 
 	pr_info("*** MPU START *** mpuirq_init...\n");
 
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU3050)
 #if	MPU_ACCEL_IRQ_GPIO
 	/* ACCEL-IRQ assignment */
-	tegra_gpio_enable(MPU_ACCEL_IRQ_GPIO);
 	ret = gpio_request(MPU_ACCEL_IRQ_GPIO, MPU_ACCEL_NAME);
 	if (ret < 0) {
 		pr_err("%s: gpio_request failed %d\n", __func__, ret);
@@ -403,9 +487,9 @@ static void mpuirq_init(void)
 		return;
 	}
 #endif
+#endif
 
 	/* MPU-IRQ assignment */
-	tegra_gpio_enable(MPU_GYRO_IRQ_GPIO);
 	ret = gpio_request(MPU_GYRO_IRQ_GPIO, MPU_GYRO_NAME);
 	if (ret < 0) {
 		pr_err("%s: gpio_request failed %d\n", __func__, ret);
@@ -425,7 +509,6 @@ static void mpuirq_init(void)
 	i2c_register_board_info(MPU_COMPASS_BUS_NUM, inv_mpu_i2c4_board_info,
 		ARRAY_SIZE(inv_mpu_i2c4_board_info));
 }
-#endif
 
 int __init ventana_sensors_init(void)
 {
@@ -435,10 +518,7 @@ int __init ventana_sensors_init(void)
 #ifdef CONFIG_SENSORS_AK8975
 	ventana_akm8975_init();
 #endif
-#ifdef CONFIG_MPU_SENSORS_MPU3050
 	mpuirq_init();
-#endif
-	ventana_camera_init();
 	ventana_nct1008_init();
 
 	i2c_register_board_info(0, ventana_i2c0_board_info,
@@ -481,28 +561,29 @@ struct tegra_camera_gpios {
 	int enabled;
 };
 
-#define TEGRA_CAMERA_GPIO(_name, _gpio, _enabled)		\
-	{						\
-		.name = _name,				\
-		.gpio = _gpio,				\
-		.enabled = _enabled,			\
+#define TEGRA_CAMERA_GPIO(_name, _gpio, _enabled)	\
+	{								\
+		.name = _name,						\
+		.gpio = _gpio,						\
+		.enabled = _enabled,					\
 	}
 
 static struct tegra_camera_gpios ventana_camera_gpio_keys[] = {
-	[0] = TEGRA_CAMERA_GPIO("en_avdd_csi", AVDD_DSI_CSI_ENB_GPIO, 1),
-	[1] = TEGRA_CAMERA_GPIO("cam_i2c_mux_rst_lo", CAM_I2C_MUX_RST_GPIO, 1),
+	[0] = TEGRA_CAMERA_GPIO("camera_power_en", CAMERA_POWER_GPIO, 1),
+	[1] = TEGRA_CAMERA_GPIO("camera_csi_sel", CAMERA_CSI_MUX_SEL_GPIO, 0),
+	[2] = TEGRA_CAMERA_GPIO("torch_gpio_act", CAMERA_FLASH_ACT_GPIO, 0),
 
-	[2] = TEGRA_CAMERA_GPIO("cam2_ldo_shdn_lo", CAM2_LDO_SHUTDN_L_GPIO, 0),
-	[3] = TEGRA_CAMERA_GPIO("cam2_af_pwdn_lo", CAM2_AF_PWR_DN_L_GPIO, 0),
-	[4] = TEGRA_CAMERA_GPIO("cam2_pwdn", CAM2_PWR_DN_GPIO, 0),
-	[5] = TEGRA_CAMERA_GPIO("cam2_rst_lo", CAM2_RST_L_GPIO, 1),
+	[3] = TEGRA_CAMERA_GPIO("en_avdd_csi", AVDD_DSI_CSI_ENB_GPIO, 1),
+	[4] = TEGRA_CAMERA_GPIO("cam_i2c_mux_rst_lo", CAM_I2C_MUX_RST_GPIO, 1),
 
-	[6] = TEGRA_CAMERA_GPIO("cam3_ldo_shdn_lo", CAM3_LDO_SHUTDN_L_GPIO, 0),
-	[7] = TEGRA_CAMERA_GPIO("cam3_af_pwdn_lo", CAM3_AF_PWR_DN_L_GPIO, 0),
-	[8] = TEGRA_CAMERA_GPIO("cam3_pwdn", CAM3_PWR_DN_GPIO, 0),
-	[9] = TEGRA_CAMERA_GPIO("cam3_rst_lo", CAM3_RST_L_GPIO, 1),
+	[5] = TEGRA_CAMERA_GPIO("cam2_af_pwdn_lo", CAM2_AF_PWR_DN_L_GPIO, 0),
+	[6] = TEGRA_CAMERA_GPIO("cam2_pwdn", CAM2_PWR_DN_GPIO, 0),
+	[7] = TEGRA_CAMERA_GPIO("cam2_rst_lo", CAM2_RST_L_GPIO, 1),
 
-	[10] = TEGRA_CAMERA_GPIO("cam1_ldo_shdn_lo", CAM1_LDO_SHUTDN_L_GPIO, 0),
+	[8] = TEGRA_CAMERA_GPIO("cam3_af_pwdn_lo", CAM3_AF_PWR_DN_L_GPIO, 0),
+	[9] = TEGRA_CAMERA_GPIO("cam3_pwdn", CAM3_PWR_DN_GPIO, 0),
+	[10] = TEGRA_CAMERA_GPIO("cam3_rst_lo", CAM3_RST_L_GPIO, 1),
+
 	[11] = TEGRA_CAMERA_GPIO("cam1_af_pwdn_lo", CAM1_AF_PWR_DN_L_GPIO, 0),
 	[12] = TEGRA_CAMERA_GPIO("cam1_pwdn", CAM1_PWR_DN_GPIO, 0),
 	[13] = TEGRA_CAMERA_GPIO("cam1_rst_lo", CAM1_RST_L_GPIO, 1),
@@ -526,7 +607,7 @@ int __init ventana_camera_late_init(void)
 	ret = regulator_enable(cam_ldo6);
 	if (ret){
 		pr_err("%s: Failed to enable ldo6\n", __func__);
-		goto fail_put_regulator;
+		goto fail_put_regulator_ldo6;
 	}
 
 	i2c_new_device(i2c_get_adapter(3), ventana_i2c3_board_info_tca6416);
@@ -539,9 +620,33 @@ int __init ventana_camera_late_init(void)
 				__func__, i);
 			goto fail_free_gpio;
 		}
+
 		gpio_direction_output(ventana_camera_gpio_keys[i].gpio,
 			ventana_camera_gpio_keys[i].enabled);
+
 		gpio_export(ventana_camera_gpio_keys[i].gpio, false);
+	}
+
+	ventana_cam_fixed_voltage_regulator_init();
+
+	cam1_2v8 = regulator_get(NULL, "cam1_2v8");
+	if (WARN_ON(IS_ERR(cam1_2v8))) {
+		pr_err("%s: couldn't get regulator cam1_2v8: %ld\n",
+				__func__, PTR_ERR(cam1_2v8));
+		ret = PTR_ERR(cam1_2v8);
+		goto fail_free_gpio;
+	} else {
+		regulator_enable(cam1_2v8);
+	}
+
+	cam2_2v8 = regulator_get(NULL, "cam2_2v8");
+	if (WARN_ON(IS_ERR(cam2_2v8))) {
+		pr_err("%s: couldn't get regulator cam2_2v8: %ld\n",
+				__func__, PTR_ERR(cam2_2v8));
+		ret = PTR_ERR(cam2_2v8);
+		goto fail_put_regulator_cam1_2v8;
+	} else {
+		regulator_enable(cam2_2v8);
 	}
 
 	i2c_new_device(i2c_get_adapter(3), ventana_i2c3_board_info_pca9546);
@@ -553,17 +658,23 @@ int __init ventana_camera_late_init(void)
 	ret = regulator_disable(cam_ldo6);
 	if (ret){
 		pr_err("%s: Failed to disable ldo6\n", __func__);
-		goto fail_free_gpio;
+		goto fail_put_regulator_cam2_2v8;
 	}
 
 	regulator_put(cam_ldo6);
 	return 0;
 
+fail_put_regulator_cam2_2v8:
+	regulator_put(cam2_2v8);
+
+fail_put_regulator_cam1_2v8:
+	regulator_put(cam1_2v8);
+
 fail_free_gpio:
 	while (i--)
 		gpio_free(ventana_camera_gpio_keys[i].gpio);
 
-fail_put_regulator:
+fail_put_regulator_ldo6:
 	regulator_put(cam_ldo6);
 	return ret;
 }

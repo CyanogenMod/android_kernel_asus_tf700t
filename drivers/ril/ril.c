@@ -8,53 +8,91 @@
 #include <linux/switch.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
-
-#include "board-cardhu.h"
-#include "baseband-xmm-power.h"
-#include "include/mach/board-cardhu-misc.h"
+#include <linux/wakelock.h>
+#include <../../arch/arm/mach-tegra/include/mach/board-cardhu-misc.h>
 
 #include "pm-irq.h"
 #include "ril.h"
+#include "ril_proximity.h"
+#include "ril_wakeup.h"
 #include "ril_sim.h"
+#include "ril_modem_crash.h"
 
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
 
-static DEFINE_MUTEX(prox_enable_mtx);
+static int ril_resume(struct platform_device *pdev);
+
+//**** external symbols
+
+
+//**** constants
+
 #define _ATTR_MODE S_IRUSR | S_IWUSR | S_IRGRP
 
+
+//**** local variable declaration
+
 static struct workqueue_struct *workqueue;
-static struct work_struct prox_work;
-static struct work_struct crash_work;
-static struct switch_dev prox_sdev;
-static struct switch_dev crash_sdev;
 static struct device *dev;
 static struct class *ril_class;
 static dev_t ril_dev;
 static int ril_major = 0;
 static int ril_minor = 0;
-static int proximity_enabled;
-static int project_id = 0;
-static int do_crash_dump = 0;
+int project_id = 0;
+extern void tegra_ehci_modem_port_host_reregister(void);
+
+static struct platform_device ril_device = {
+	.name = "ril",
+};
+
+struct platform_driver ril_driver = {
+	.resume   = ril_resume,
+	.driver     = {
+		.name   = "ril",
+		.owner  = THIS_MODULE,
+	},
+};
 
 static struct gpio ril_gpios_TF300TG[] = {
-		{ MOD_VBUS_ON,    GPIOF_OUT_INIT_LOW,  "BB_VBUS"    },
-		{ USB_SW_SEL,     GPIOF_OUT_INIT_LOW,  "BB_SW_SEL"  },
-		{ SAR_DET_3G,     GPIOF_IN,            "BB_SAR_DET" },
-		{ SIM_CARD_DET,   GPIOF_IN,            "BB_SIM_DET" },
+	{ MOD_VBUS_ON,    GPIOF_OUT_INIT_LOW,  "BB_VBUS"    },
+	{ USB_SW_SEL,     GPIOF_OUT_INIT_LOW,  "BB_SW_SEL"  },
+	{ SAR_DET_3G,     GPIOF_IN,            "BB_SAR_DET" },
+	{ SIM_CARD_DET,   GPIOF_IN,            "BB_SIM_DET" },
 };
 
 static struct gpio ril_gpios_TF300TL[] = {
-		{ MOD_VBAT_ON,    GPIOF_OUT_INIT_LOW,  "BB_VBAT"},
-		{ MOD_VBUS_ON,    GPIOF_OUT_INIT_LOW,  "BB_VBUS"},
-		{ USB_SW_SEL,     GPIOF_OUT_INIT_LOW,  "BB_SW_SEL"},
-		{ SAR_DET_3G,     GPIOF_IN,            "BB_SAR_DET" },
-		{ SIM_CARD_DET,   GPIOF_IN,            "BB_SIM_DET" },
-		{ MOD_POWER_KEY,  GPIOF_OUT_INIT_LOW,  "BB_MOD_PWR"},
-		{ DL_MODE,        GPIOF_OUT_INIT_LOW,  "BB_DL_MODE"},
-		{ AP_TO_MOD_RST,  GPIOF_OUT_INIT_LOW,  "BB_MOD_RST"},
+	{ MOD_VBAT_ON,    GPIOF_OUT_INIT_LOW,  "BB_VBAT"},
+	{ MOD_VBUS_ON,    GPIOF_OUT_INIT_LOW,  "BB_VBUS"},
+	{ USB_SW_SEL,     GPIOF_OUT_INIT_LOW,  "BB_SW_SEL"},
+	{ SAR_DET_3G,     GPIOF_IN,            "BB_SAR_DET" },
+	{ SIM_CARD_DET,   GPIOF_IN,            "BB_SIM_DET" },
+	{ MOD_POWER_KEY,  GPIOF_OUT_INIT_LOW,  "BB_MOD_PWR"},
+	{ DL_MODE,        GPIOF_OUT_INIT_LOW,  "BB_DL_MODE"},
+	{ AP_TO_MOD_RST,  GPIOF_OUT_INIT_LOW,  "BB_MOD_RST"},
+	{ MOD_WAKE_AP,    GPIOF_IN,            "BB_MOD_WAKE_AP"},
+	{ MOD_WAKE_IND,   GPIOF_OUT_INIT_HIGH, "BB_MOD_WAKE_IND"},
+	{ MOD_HANG,       GPIOF_IN,            "BB_MOD_HANG"},
+	/* no use now */
+	{ DL_COMPLETE,    GPIOF_OUT_INIT_LOW,  "BB_DL_COMPLETE"},
+	{ MOD_SUS_REQ,    GPIOF_OUT_INIT_LOW,  "BB_MOD_SUS_REQ"},
+	{ AP_WAKE_IND,    GPIOF_OUT_INIT_LOW,  "BB_AP_WAKE_IND"},
+	{ AP_WAKE_MOD,    GPIOF_OUT_INIT_LOW,  "BB_AP_WAKE_MOD"},
 };
 
+//**** IRQ event handler
+
+irqreturn_t ril_ipc_sar_det_irq(int irq, void *dev_id)
+{
+	return ril_proximity_interrupt_handle(irq, dev_id);
+}
+
+irqreturn_t ril_ipc_sim_det_irq(int irq, void *dev_id)
+{
+	return sim_interrupt_handle(irq, dev_id);
+}
+
+//**** sysfs callback functions
 static int store_gpio(size_t count, const char *buf, int gpio, char *gpio_name)
 {
 	int enable;
@@ -70,43 +108,6 @@ static int store_gpio(size_t count, const char *buf, int gpio, char *gpio_name)
 	return count;
 }
 
-/* Common sysfs functions */
-static ssize_t show_prox_enabled(struct device *class,
-		struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%d\n", proximity_enabled);
-}
-
-static ssize_t store_prox_enabled(struct device *class, struct device_attribute *attr,
-		const char *buf, size_t count)
-{
-	int enable;
-
-	if (sscanf(buf, "%u", &enable) != 1)
-		return -EINVAL;
-
-	if ((enable != 1) && (enable != 0))
-		return -EINVAL;
-
-	RIL_INFO("enable: %d\n", enable);
-
-	/* when enabled, report the current status immediately.
-	   when disabled, set state to 0 to sync with RIL */
-	mutex_lock(&prox_enable_mtx);
-	if (enable != proximity_enabled) {
-		if (enable) {
-			enable_irq(gpio_to_irq(SAR_DET_3G));
-			queue_work(workqueue, &prox_work);
-		} else {
-			disable_irq(gpio_to_irq(SAR_DET_3G));
-			switch_set_state(&prox_sdev, 0);
-		}
-		proximity_enabled = enable;
-	}
-	mutex_unlock(&prox_enable_mtx);
-
-	return strnlen(buf, count);
-}
 /* TF300TG sysfs functions */
 static ssize_t show_vbus_state(struct device *class,
 		struct device_attribute *attr, char *buf)
@@ -118,33 +119,6 @@ static ssize_t store_vbus_state(struct device *class, struct device_attribute *a
 		const char *buf, size_t count)
 {
 	return store_gpio(count, buf, MOD_VBUS_ON, "MOD_VBUS_ON");
-}
-
-static ssize_t show_cdump_state(struct device *class,
-		struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%d\n", do_crash_dump);
-}
-
-static ssize_t store_cdump_state(struct device *class, struct device_attribute *attr,
-		const char *buf, size_t count)
-{
-	int enable;
-
-	if (sscanf(buf, "%u", &enable) != 1)
-		return -EINVAL;
-
-	if ((enable != 1) && (enable != 0))
-		return -EINVAL;
-
-	RIL_INFO("enable: %d\n", enable);
-
-	if (enable)
-		do_crash_dump = 1;
-	else
-		do_crash_dump = 0;
-
-	return strnlen(buf, count);
 }
 
 /* TF300TL sysfs functions */
@@ -172,159 +146,71 @@ static ssize_t store_vbat_state(struct device *class, struct device_attribute *a
 	return store_gpio(count, buf, MOD_VBAT_ON, "MOD_VBAT_ON");
 }
 
+static ssize_t show_reset_state(struct device *class, struct device_attribute *attr,
+		char *buf)
+{
+	return sprintf(buf, "%d\n", gpio_get_value(AP_TO_MOD_RST));
+}
+
+static ssize_t store_reset_state(struct device *class, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	return store_gpio(count, buf, AP_TO_MOD_RST, "AP_TO_MOD_RST");
+}
+
+static ssize_t show_download_state(struct device *class, struct device_attribute *attr,
+		char *buf)
+{
+	return sprintf(buf, "%d\n", gpio_get_value(DL_MODE));
+}
+
+static ssize_t store_download_state(struct device *class, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	return store_gpio(count, buf, DL_MODE, "DL_MODE");
+}
+
+static ssize_t store_mod_host_controller_rst(struct device *class, struct attribute *attr,
+       const char *buf, size_t count)
+{
+       int state;
+
+       sscanf(buf, "%d", &state);
+
+       if ((state > 0) && (project_id == TEGRA3_PROJECT_TF300TL)) {
+                       tegra_ehci_modem_port_host_reregister();
+       }
+
+       return count;
+}
+
+//**** sysfs list
 /* TF300TG sysfs array */
 static struct device_attribute device_attr_TF300TG[] = {
-		__ATTR(prox_onoff, _ATTR_MODE, show_prox_enabled, store_prox_enabled),
-		__ATTR(bb_vbus, _ATTR_MODE, show_vbus_state, store_vbus_state),
-		__ATTR(crash_dump_onoff, _ATTR_MODE, show_cdump_state, store_cdump_state),
-		__ATTR_NULL,
+	__ATTR(bb_vbus, _ATTR_MODE, show_vbus_state, store_vbus_state),
+	__ATTR_NULL,
 };
 
 /* TF300TL sysfs array */
 static struct device_attribute device_attr_TF300TL[] = {
-		__ATTR(mod_power, _ATTR_MODE, show_power_state, store_power_state),
-		__ATTR(vbat, _ATTR_MODE, show_vbat_state, store_vbat_state),
-		__ATTR(prox_onoff, _ATTR_MODE, show_prox_enabled, store_prox_enabled),
-		__ATTR_NULL,
+	__ATTR(mod_power, _ATTR_MODE, show_power_state, store_power_state),
+	__ATTR(vbat, _ATTR_MODE, show_vbat_state, store_vbat_state),
+	__ATTR(mod_rst, _ATTR_MODE, show_reset_state, store_reset_state),
+	__ATTR(dl_mode, _ATTR_MODE, show_download_state, store_download_state),
+	__ATTR(mod_host_controller_rst, _ATTR_MODE, NULL, store_mod_host_controller_rst),
+	__ATTR_NULL,
 };
 
-/* Suspend request switch functions */
-static ssize_t crash_print_name(struct switch_dev *sdev, char *buf)
+//**** driver operate functons
+static int ril_resume(struct platform_device *pdev)
 {
-	return sprintf(buf, "%s\n", "crash_dump_det");
-}
-
-static ssize_t crash_print_state(struct switch_dev *sdev, char *buf)
-{
-	int state = -1;
-	if (switch_get_state(sdev))
-		state = 1;
-	else
-		state = 0;
-
-	return sprintf(buf, "%d\n", state);
-}
-
-static int ril_crash_det_init(void)
-{
-	int rc = 0;
-	/* register switch class */
-	crash_sdev.name = "crash_dump_det";
-	crash_sdev.print_name = crash_print_name;
-	crash_sdev.print_state = crash_print_state;
-
-	rc = switch_dev_register(&crash_sdev);
-
-	if (rc < 0)
-		goto failed;
-
-	return 0;
-
-failed:
-	return rc;
-}
-
-static void ril_crash_det_exit(void)
-{
-	switch_dev_unregister(&crash_sdev);
-}
-
-/* Proximity switch functions */
-static ssize_t prox_print_name(struct switch_dev *sdev, char *buf)
-{
-	return sprintf(buf, "%s\n", "prox_sar_det");
-}
-
-static ssize_t prox_print_state(struct switch_dev *sdev, char *buf)
-{
-	int state = -1;
-	if (switch_get_state(sdev))
-		state = 1;
-	else
-		state = 0;
-
-	return sprintf(buf, "%d\n", state);
-}
-
-static int ril_proximity_init(void)
-{
-	int rc = 0;
-	/* register switch class */
-	prox_sdev.name = "prox_sar_det";
-	prox_sdev.print_name = prox_print_name;
-	prox_sdev.print_state = prox_print_state;
-
-	rc = switch_dev_register(&prox_sdev);
-
-	if (rc < 0)
-		goto failed;
-
-	return 0;
-
-failed:
-	return rc;
-}
-
-static void ril_proximity_exit(void)
-{
-	switch_dev_unregister(&prox_sdev);
-}
-
-static void ril_proximity_work(struct work_struct *work)
-{
-	int value;
-
-	value = gpio_get_value(SAR_DET_3G);
-	RIL_INFO("SAR_DET_3G: %d\n", value);
-
-	if (!value)
-		switch_set_state(&prox_sdev, 1);
-	else
-		switch_set_state(&prox_sdev, 0);
-}
-
-static void ril_crash_dump_work(struct work_struct *work)
-{
-	disable_irq(gpio_to_irq(XMM_GPIO_IPC_HSIC_SUS_REQ));
-
-	baseband_modem_crash_dump(0);
-	msleep(200);
-	gpio_set_value(USB_SW_SEL, 1);
-	mdelay(5);
-	gpio_set_value(MOD_VBUS_ON, 1);
-	mdelay(5);
-	baseband_modem_crash_dump(1);
-
-	switch_set_state(&crash_sdev, 1);
-}
-
-/* IRQ Handlers */
-irqreturn_t ril_ipc_sus_req_irq(int irq, void *dev_id)
-{
-	int value;
-
-	if (do_crash_dump) {
-		value = gpio_get_value(XMM_GPIO_IPC_HSIC_SUS_REQ);
-		if (value) {
-			RIL_INFO("do_crash_dump is on!\n");
-			queue_work(workqueue, &crash_work);
-		}
+	if (proximity_enabled) {
+		RIL_INFO("check SAR_DET_3G pin");
+		check_sar_det_3g();
 	}
-
-	return IRQ_HANDLED;
 }
 
-irqreturn_t ril_ipc_sar_det_irq(int irq, void *dev_id)
-{
-	queue_work(workqueue, &prox_work);
-
-	return IRQ_HANDLED;
-}
-
-irqreturn_t ril_ipc_sim_det_irq(int irq, void *dev_id)
-{
-	return sim_interrupt_handle(irq, dev_id);
-}
+//**** initialize and finalize
 
 static int create_ril_files(void)
 {
@@ -458,10 +344,25 @@ static int __init ril_init(void)
 		return -1;
 	}
 
+	err = platform_device_register(&ril_device);
+	if(err) {
+		RIL_ERR("platform_device_register failed\n");
+		goto device_failed;
+	}
+
+	err = platform_driver_register(&ril_driver);
+	if(err) {
+		RIL_ERR("platform_driver_register failed\n");
+		goto driver_failed;
+	}
+
 	/* create device file(s) */
 	err = create_ril_files();
 	if (err < 0)
 		goto failed1;
+
+	/* need to init before request SAR_DET_3G irq */
+	spin_lock_init(&proximity_irq_lock);
 
 	/* request ril irq(s) */
 	err = request_irq(gpio_to_irq(SAR_DET_3G),
@@ -475,7 +376,6 @@ static int __init ril_init(void)
 		goto failed2;
 	}
 	disable_irq(gpio_to_irq(SAR_DET_3G));
-	proximity_enabled = 0;
 
 	err = request_irq(gpio_to_irq(SIM_CARD_DET),
 		ril_ipc_sim_det_irq,
@@ -491,57 +391,43 @@ static int __init ril_init(void)
 		IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING);
 	enable_irq_wake(gpio_to_irq(SIM_CARD_DET));
 
-	if (project_id == TEGRA3_PROJECT_TF300TG) {
-		err = request_irq(gpio_to_irq(XMM_GPIO_IPC_HSIC_SUS_REQ),
-			ril_ipc_sus_req_irq,
-			IRQF_TRIGGER_RISING,
-			"IPC_MOD_SUS_REQ",
-			NULL);
-		if (err < 0) {
-			pr_err("%s - request irq IPC_MOD_SUS_REQ failed\n",
-				__func__);
-			goto failed4;
-		}
-		tegra_pm_irq_set_wake_type(gpio_to_irq(XMM_GPIO_IPC_HSIC_SUS_REQ),
-			IRQF_TRIGGER_RISING);
-		enable_irq_wake(gpio_to_irq(XMM_GPIO_IPC_HSIC_SUS_REQ));
-	}
-
-	/* register proximity switch */
-	err = ril_proximity_init();
-	if (err < 0) {
-		pr_err("%s - register proximity switch failed\n",
-			__func__);
-		goto failed5;
-	}
-
-	if (project_id == TEGRA3_PROJECT_TF300TG) {
-		/* register crash dump switch */
-		err = ril_crash_det_init();
-		if (err < 0) {
-			pr_err("%s - register crash dump switch failed\n",
-				__func__);
-			goto failed6;
-		}
-	}
-
 	/* init work queue */
 	workqueue = create_singlethread_workqueue
 		("ril_workqueue");
 	if (!workqueue) {
 		pr_err("%s - cannot create workqueue\n", __func__);
 		err = -1;
+		goto failed4;
+	}
+
+	/* register proximity switch */
+	err = ril_proximity_init(dev, workqueue);
+	if (err < 0) {
+		pr_err("%s - register proximity switch failed\n",
+			__func__);
+		goto failed5;
+	}
+
+	/* wakeup control (TF-300TL only) */
+	if (TEGRA3_PROJECT_TF300TL == project_id) {
+		err = init_wakeup_control(workqueue);
+		if (err < 0) {
+			RIL_ERR("init wakeup_control failed\n");
+			goto failed6;
+		}
+    }
+
+	/* init SIM plug functions */
+	err = sim_hot_plug_init(dev, workqueue);
+	if (err < 0) {
+		pr_err("%s - init SIM hotplug failed\n",
+			__func__);
 		goto failed7;
 	}
 
-	/* init work objects */
-	INIT_WORK(&prox_work, ril_proximity_work);
-	INIT_WORK(&crash_work, ril_crash_dump_work);
-
-	/* init SIM plug functions */
-	err = init_sim_hot_plug(dev, workqueue);
+	err = ril_modem_crash_init(dev, workqueue);
 	if (err < 0) {
-		pr_err("%s - init SIM hotplug failed\n",
+		pr_err("%s - init modem crash handler failed\n",
 			__func__);
 		goto failed8;
 	}
@@ -549,19 +435,16 @@ static int __init ril_init(void)
 	RIL_INFO("RIL init successfully\n");
 	return 0;
 
-
 failed8:
-	destroy_workqueue(workqueue);
+	sim_hot_plug_exit();
 failed7:
-	if (project_id == TEGRA3_PROJECT_TF300TG) {
-		ril_crash_det_exit();
+	if (TEGRA3_PROJECT_TF300TL == project_id) {
+		free_wakeup_control();
 	}
 failed6:
 	ril_proximity_exit();
 failed5:
-	if (project_id == TEGRA3_PROJECT_TF300TG) {
-		free_irq(gpio_to_irq(XMM_GPIO_IPC_HSIC_SUS_REQ), NULL);
-	}
+	destroy_workqueue(workqueue);
 failed4:
 	free_irq(gpio_to_irq(SIM_CARD_DET), NULL);
 failed3:
@@ -569,6 +452,10 @@ failed3:
 failed2:
 	remove_ril_files();
 failed1:
+	platform_driver_unregister(&ril_driver);
+driver_failed:
+	platform_device_unregister(&ril_device);
+device_failed:
 	if (project_id == TEGRA3_PROJECT_TF300TG) {
 		gpio_free_array(ril_gpios_TF300TG,
 				ARRAY_SIZE(ril_gpios_TF300TG));
@@ -586,9 +473,6 @@ static void __exit ril_exit(void)
 	/* free irq(s) */
 	free_irq(gpio_to_irq(SAR_DET_3G), NULL);
 	free_irq(gpio_to_irq(SIM_CARD_DET), NULL);
-	if (project_id == TEGRA3_PROJECT_TF300TG) {
-		free_irq(gpio_to_irq(XMM_GPIO_IPC_HSIC_SUS_REQ), NULL);
-	}
 
 	/* free gpio(s) */
 	if (project_id == TEGRA3_PROJECT_TF300TG) {
@@ -599,20 +483,29 @@ static void __exit ril_exit(void)
 				ARRAY_SIZE(ril_gpios_TF300TL));
 	}
 
+	platform_driver_unregister(&ril_driver);
+	platform_device_unregister(&ril_device);
+
 	/* delete device file(s) */
 	remove_ril_files();
 
-	/* unregister switches */
+	/* unregister modem crash handler */
+	ril_modem_crash_exit();
+
+	/* unregister SIM hot plug */
+	sim_hot_plug_exit();
+
+	/* unregister proximity switch */
 	ril_proximity_exit();
-	if (project_id == TEGRA3_PROJECT_TF300TG) {
-		ril_crash_det_exit();
-	}
 
 	/* destroy workqueue */
 	destroy_workqueue(workqueue);
 
-	/* free resources for SIM hot plug */
-	free_sim_hot_plug();
+	/* free resources for wakeup control*/
+	if (TEGRA3_PROJECT_TF300TL == project_id) {
+		free_wakeup_control();
+	}
+
 }
 
 module_init(ril_init);

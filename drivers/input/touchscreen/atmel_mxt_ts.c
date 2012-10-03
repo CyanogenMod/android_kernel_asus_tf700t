@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2010 Samsung Electronics Co.Ltd
  * Copyright (C) 2011 Atmel Corporation
- * Copyright (C) 2011 NVIDIA Corporation
+ * Copyright (C) 2011-2012 NVIDIA Corporation
  * Author: Joonyoung Shim <jy0922.shim@samsung.com>
  *
  * This program is free software; you can redistribute  it and/or modify it
@@ -182,9 +182,15 @@
 #define MXT_VOLTAGE_DEFAULT	2700000
 #define MXT_VOLTAGE_STEP	10000
 
-/* Defines for MXT_TOUCH_CTRL */
-#define MXT_TOUCH_DISABLE	0
-#define MXT_TOUCH_ENABLE	0x83
+/* Defines for Suspend/Resume */
+#define MXT_SUSPEND_STATIC	0
+#define MXT_SUSPEND_DYNAMIC	1
+#define MXT_T7_IDLEACQ_DISABLE	0
+#define MXT_T7_ACTVACQ_DISABLE	0
+#define MXT_T7_ACTV2IDLE_DISABLE 0
+#define MXT_T9_DISABLE		0
+#define MXT_T9_ENABLE		0x83
+#define MXT_T22_DISABLE		0
 
 /* Define for MXT_GEN_COMMAND_T6 */
 #define MXT_BOOT_VALUE		0xa5
@@ -244,6 +250,8 @@
 
 #define RESUME_READS		100
 
+#define MXT_DEFAULT_PRESSURE	100
+
 struct mxt_info {
 	u8 family_id;
 	u8 variant_id;
@@ -277,6 +285,16 @@ struct mxt_finger {
 	int x;
 	int y;
 	int area;
+	int pressure;
+};
+
+/* This structure is used to save/restore values during suspend/resume */
+struct mxt_suspend {
+	u8 suspend_obj;
+	u8 suspend_reg;
+	u8 suspend_val;
+	u8 suspend_flags;
+	u8 restore_val;
 };
 
 /* Each client has this additional data */
@@ -311,6 +329,14 @@ struct mxt_data {
 	u8 slowscan_shad_actv_cycle_time;
 	u8 slowscan_shad_idle_cycle_time;
 	u8 slowscan_shad_actv2idle_timeout;
+};
+
+static struct mxt_suspend mxt_save[] = {
+	{MXT_TOUCH_MULTI_T9, MXT_TOUCH_CTRL, MXT_T9_DISABLE, MXT_SUSPEND_DYNAMIC, 0},
+	{MXT_PROCG_NOISE_T22, MXT_NOISE_CTRL, MXT_T22_DISABLE, MXT_SUSPEND_DYNAMIC, 0},
+	{MXT_GEN_POWER_T7, MXT_POWER_IDLEACQINT, MXT_T7_IDLEACQ_DISABLE, MXT_SUSPEND_DYNAMIC, 0},
+	{MXT_GEN_POWER_T7, MXT_POWER_ACTVACQINT, MXT_T7_ACTVACQ_DISABLE, MXT_SUSPEND_DYNAMIC, 0},
+	{MXT_GEN_POWER_T7, MXT_POWER_ACTV2IDLETO, MXT_T7_ACTV2IDLE_DISABLE, MXT_SUSPEND_DYNAMIC, 0}
 };
 
 #if defined(CONFIG_HAS_EARLYSUSPEND)
@@ -618,6 +644,8 @@ static void mxt_input_report(struct mxt_data *data, int single_id)
 				finger[id].x);
 		input_report_abs(input_dev, ABS_MT_POSITION_Y,
 				finger[id].y);
+		input_report_abs(input_dev, ABS_MT_PRESSURE,
+				finger[id].pressure);
 		input_mt_sync(input_dev);
 
 		if (finger[id].status == MXT_RELEASE)
@@ -631,6 +659,7 @@ static void mxt_input_report(struct mxt_data *data, int single_id)
 	if (status != MXT_RELEASE) {
 		input_report_abs(input_dev, ABS_X, finger[single_id].x);
 		input_report_abs(input_dev, ABS_Y, finger[single_id].y);
+		input_report_abs(input_dev, ABS_PRESSURE, finger[single_id].pressure);
 	}
 
 	input_sync(input_dev);
@@ -645,6 +674,7 @@ static void mxt_input_touchevent(struct mxt_data *data,
 	int x;
 	int y;
 	int area;
+	int pressure;
 
 	/* Check the touch is present on the screen */
 	if (!(status & MXT_DETECT)) {
@@ -652,6 +682,7 @@ static void mxt_input_touchevent(struct mxt_data *data,
 			dev_dbg(dev, "[%d] released\n", id);
 
 			finger[id].status = MXT_RELEASE;
+			finger[id].pressure = 0;
 			mxt_input_report(data, id);
 		}
 		return;
@@ -669,6 +700,10 @@ static void mxt_input_touchevent(struct mxt_data *data,
 		y = y >> 2;
 
 	area = message->message[4];
+	pressure = message->message[5];
+
+	if ((pressure <= 0) || (pressure > 255))
+		pressure = MXT_DEFAULT_PRESSURE;
 
 	dev_dbg(dev, "[%d] %s x: %d, y: %d, area: %d\n", id,
 		status & MXT_MOVE ? "moved" : "pressed",
@@ -679,6 +714,7 @@ static void mxt_input_touchevent(struct mxt_data *data,
 	finger[id].x = x;
 	finger[id].y = y;
 	finger[id].area = area;
+	finger[id].pressure = pressure;
 
 	mxt_input_report(data, id);
 }
@@ -1387,22 +1423,26 @@ static ssize_t mxt_slowscan_store(struct device *dev,
 	if ((ret == 1) || (ret == 2)) {
 		switch (fn) {
 		case SLOSCAN_DISABLE:
-			data->actv_cycle_time = data->slowscan_shad_actv_cycle_time;
-			data->idle_cycle_time = data->slowscan_shad_idle_cycle_time;
-			data->actv2idle_timeout = data->slowscan_shad_actv2idle_timeout;
-			data->slowscan_enabled = 0;
-			mxt_set_power_cfg(data, 0);
+			if (data->slowscan_enabled) {
+				data->actv_cycle_time = data->slowscan_shad_actv_cycle_time;
+				data->idle_cycle_time = data->slowscan_shad_idle_cycle_time;
+				data->actv2idle_timeout = data->slowscan_shad_actv2idle_timeout;
+				data->slowscan_enabled = 0;
+				mxt_set_power_cfg(data, 0);
+			}
 			break;
 
 		case SLOSCAN_ENABLE:
-			data->slowscan_shad_actv_cycle_time = data->actv_cycle_time;
-			data->slowscan_shad_idle_cycle_time = data->idle_cycle_time;
-			data->slowscan_shad_actv2idle_timeout = data->actv2idle_timeout;
-			data->actv_cycle_time = data->slowscan_actv_cycle_time;
-			data->idle_cycle_time = data->slowscan_idle_cycle_time;
-			data->actv2idle_timeout = data->slowscan_actv2idle_timeout;
-			data->slowscan_enabled = 1;
-			mxt_set_power_cfg(data, 0);
+			if (!data->slowscan_enabled) {
+				data->slowscan_shad_actv_cycle_time = data->actv_cycle_time;
+				data->slowscan_shad_idle_cycle_time = data->idle_cycle_time;
+				data->slowscan_shad_actv2idle_timeout = data->actv2idle_timeout;
+				data->actv_cycle_time = data->slowscan_actv_cycle_time;
+				data->idle_cycle_time = data->slowscan_idle_cycle_time;
+				data->actv2idle_timeout = data->slowscan_actv2idle_timeout;
+				data->slowscan_enabled = 1;
+				mxt_set_power_cfg(data, 0);
+			}
 			break;
 
 		case SLOSCAN_SET_ACTVACQINT:
@@ -1512,7 +1552,8 @@ static const struct attribute_group mxt_attr_group = {
 
 static void mxt_start(struct mxt_data *data)
 {
-	int error;
+	int error = 0;
+	int cnt;
 	struct device *dev = &data->client->dev;
 
 	dev_info(dev, "mxt_start:  is_stopped = %d\n", data->is_stopped);
@@ -1520,7 +1561,11 @@ static void mxt_start(struct mxt_data *data)
 		return;
 
 	/* Touch enable */
-	error = mxt_write_object(data, MXT_TOUCH_MULTI_T9, MXT_TOUCH_CTRL, MXT_TOUCH_ENABLE);
+	cnt = ARRAY_SIZE(mxt_save);
+	while (cnt--)
+		error |= mxt_write_object(data, mxt_save[cnt].suspend_obj,
+						mxt_save[cnt].suspend_reg,
+						mxt_save[cnt].restore_val);
 
 	if (!error)
 		dev_info(dev, "MXT started\n");
@@ -1530,7 +1575,8 @@ static void mxt_start(struct mxt_data *data)
 
 static void mxt_stop(struct mxt_data *data)
 {
-	int error;
+	int error = 0;
+	int i, cnt;
 	struct device *dev = &data->client->dev;
 
 	dev_info(dev, "mxt_stop:  is_stopped = %d\n", data->is_stopped);
@@ -1538,7 +1584,17 @@ static void mxt_stop(struct mxt_data *data)
 		return;
 
 	/* Touch disable */
-	error = mxt_write_object(data, MXT_TOUCH_MULTI_T9, MXT_TOUCH_CTRL, MXT_TOUCH_DISABLE);
+	cnt = ARRAY_SIZE(mxt_save);
+	for (i = 0; i < cnt; i++) {
+		if (mxt_save[i].suspend_flags == MXT_SUSPEND_DYNAMIC)
+			error |= mxt_read_object(data,
+						mxt_save[i].suspend_obj,
+						mxt_save[i].suspend_reg,
+						&mxt_save[i].restore_val);
+		error |= mxt_write_object(data, mxt_save[i].suspend_obj,
+						mxt_save[i].suspend_reg,
+						mxt_save[i].suspend_val);
+	}
 
 	if (!error)
 		dev_info(dev, "MXT suspended\n");
@@ -1586,6 +1642,7 @@ static int __devinit mxt_probe(struct i2c_client *client,
 	input_dev->dev.parent = &client->dev;
 	input_dev->open = mxt_input_open;
 	input_dev->close = mxt_input_close;
+	input_dev->hint_events_per_packet = 256U;
 
 	data->client = client;
 	data->input_dev = input_dev;
@@ -1604,6 +1661,8 @@ static int __devinit mxt_probe(struct i2c_client *client,
 			     0, data->max_x, 0, 0);
 	input_set_abs_params(input_dev, ABS_Y,
 			     0, data->max_y, 0, 0);
+	input_set_abs_params(input_dev, ABS_PRESSURE,
+			     0, 255, 0, 0);
 
 	/* For multi touch */
 	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR,
@@ -1612,6 +1671,8 @@ static int __devinit mxt_probe(struct i2c_client *client,
 			     0, data->max_x, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_POSITION_Y,
 			     0, data->max_y, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_PRESSURE,
+			     0, 255, 0, 0);
 
 	input_set_drvdata(input_dev, data);
 	i2c_set_clientdata(client, data);
@@ -1656,7 +1717,7 @@ static int __devinit mxt_probe(struct i2c_client *client,
 
 	sysfs_bin_attr_init(&data->mem_access_attr);
 	data->mem_access_attr.attr.name = "mem_access";
-	data->mem_access_attr.attr.mode = S_IRUGO | S_IWUGO;
+	data->mem_access_attr.attr.mode = S_IRUGO | S_IWUSR | S_IWGRP;
 	data->mem_access_attr.read = mxt_mem_access_read;
 	data->mem_access_attr.write = mxt_mem_access_write;
 	data->mem_access_attr.size = 65535;

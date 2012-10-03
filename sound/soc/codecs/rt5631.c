@@ -32,6 +32,8 @@
 
 #include "rt5631.h"
 
+#include <../board-cardhu.h>
+
 #define RTK_IOCTL
 #if defined(RTK_IOCTL)
 #include "rt56xx_ioctl.h"
@@ -70,6 +72,8 @@
 #define TF700T_PCB_ER1 (0x3)
 #define DEPOP_DELAY (1)
 
+#define CODEC_SPKVDD_POWER_5V0_EN_GPIO TPS6591X_GPIO_8
+
 struct rt5631_priv {
 	int codec_version;
 	int master;
@@ -92,13 +96,14 @@ static int input_source=INPUT_SOURCE_NORMAL;
 static int output_source=OUTPUT_SOURCE_NORMAL;
 static int input_agc = INPUT_SOURCE_NO_AGC;
 static int audio_codec_status = 0;
+static int project_id = 0;
 #if ENABLE_ALC
 static bool spk_out_flag = false;
 static bool ADC_flag = false;
 static bool DMIC_flag= true;   //heaset = false;
 #endif
-struct snd_soc_codec *global_audio_codec = NULL;
-EXPORT_SYMBOL(global_audio_codec) ;
+struct snd_soc_codec *rt5631_audio_codec = NULL;
+EXPORT_SYMBOL(rt5631_audio_codec) ;
 extern bool headset_alive;
 
 extern int asusAudiodec_i2c_write_data(char *data, int length);
@@ -276,8 +281,8 @@ static struct rt5631_init_reg init_list[] = {
 	{RT5631_ADC_CTRL_1		, 0x8080},
 	{RT5631_SPK_OUT_VOL		, 0xc7c7},
 	{RT5631_HP_OUT_VOL		, 0xc5c5},
-	{RT5631_ADC_REC_MIXER		, 0xb0f0},
 	{RT5631_MONO_AXO_1_2_VOL	, 0xe040},
+	{RT5631_ADC_REC_MIXER		, 0xb0f0},
 	{RT5631_MIC_CTRL_2		, 0x6600},
 	{RT5631_OUTMIXER_L_CTRL		, 0xdfC0},
 	{RT5631_OUTMIXER_R_CTRL		, 0xdfC0},
@@ -540,22 +545,37 @@ static int rt5631_set_gain(struct snd_kcontrol *kcontrol,
 		printk("%s(): set ALC AMIC parameter\n", __func__);
 		DMIC_flag = false;
 		if(!spk_out_flag){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000a);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe090);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000a);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe090);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0004);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe084);
+			}
 		}
 		#endif
 		/* set heaset mic gain */
-		printk("%s(): headset gain = 0dB\n", __func__);
-		rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0005, 0x001f);
+		printk("%s():set headset gain\n", __func__);
+		if(project_id == TEGRA3_PROJECT_TF700T)
+			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0005, 0x001f);
+		else
+			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0000, 0x001f);
 	}else{
 		#if ENABLE_ALC
 		printk("%s(): set ALC DMIC parameter\n", __func__);
 		DMIC_flag = true;
 		if(!spk_out_flag){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000e);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe099);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000e);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe099);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0006);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe09a);
+			}
 		}
 		#endif
 		/* set dmic gain */
@@ -564,7 +584,10 @@ static int rt5631_set_gain(struct snd_kcontrol *kcontrol,
 			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0000, 0x001f);	//boost 0dB
 		}else{
 			printk("%s(): use codec for capture gain\n", __func__);
+			if(project_id == TEGRA3_PROJECT_TF700T)
 			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0013, 0x00ff);
+			else
+			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x000f, 0x001f);    //boost 22.5dB
 		}
 	}
 	mutex_unlock(&codec->mutex);
@@ -579,7 +602,7 @@ SOC_ENUM("MIC1 Boost", rt5631_enum[6]),
 SOC_ENUM("MIC2 Mode Control", rt5631_enum[4]),
 SOC_ENUM("MIC2 Boost", rt5631_enum[7]),
 SOC_ENUM("MONOIN Mode Control", rt5631_enum[5]),
-SOC_DOUBLE("PCM Playback Volume", RT5631_STEREO_DAC_VOL_2, 8, 0, 255, 1),
+//SOC_DOUBLE("PCM Playback Volume", RT5631_STEREO_DAC_VOL_2, 8, 0, 255, 1),
 SOC_DOUBLE("PCM Playback Switch", RT5631_STEREO_DAC_VOL_1, 15, 7, 1, 1),
 SOC_DOUBLE("MONOIN_RX Capture Volume", RT5631_MONO_INPUT_VOL, 8, 0, 31, 1),
 SOC_DOUBLE("AXI Capture Volume", RT5631_AUX_IN_VOL, 8, 0, 31, 1),
@@ -703,11 +726,9 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 	static int spkl_out_enable, spkr_out_enable;
 	unsigned int rt531_dac_pwr = 0;
 	unsigned int tf700t_pcb_id = 0;
-	unsigned int project_id = 0;
 	unsigned int reg_val;
 
 	tf700t_pcb_id = tegra3_query_pcba_revision_pcbid();
-	project_id = tegra3_get_project_id();
 	rt531_dac_pwr = (rt5631_read(codec, RT5631_PWR_MANAG_ADD1) & 0x0300)>>8;
 
 	switch (event) {
@@ -733,11 +754,11 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 		#if ENABLE_EQ
 			if(rt531_dac_pwr==0x3 ){
 				  rt5631_write_mask(codec,RT5631_PWR_MANAG_ADD1, 0x8000, 0x8000); //enable IIS interface power
-				  if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201){
+				  if(project_id == TEGRA3_PROJECT_TF201){
 						rt5631_update_eqmode(codec,TF201_PAD);
-				  }else if(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG){
+				  }else if(project_id == TEGRA3_PROJECT_TF300TG){
 						rt5631_update_eqmode(codec,TF300TG);
-				  }else if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T){
+				  }else if(project_id == TEGRA3_PROJECT_TF700T){
 						rt5631_update_eqmode(codec,TF700T);
 				  }else{
 						rt5631_update_eqmode(codec,TF201_PAD);
@@ -824,13 +845,25 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 			//Disable ALC
 			rt5631_write_mask(codec, RT5631_ALC_CTRL_3, 0x2000,0xf000);
 		}else if(!spk_out_flag && DMIC_flag ){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000e);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe099);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000e);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe099);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0006);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe09a);
+			}
 		}else if(!spk_out_flag && !DMIC_flag ){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000a);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe090);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000a);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe090);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0004);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe084);
+			}
 		}
 		#endif
 		#if ENABLE_EQ
@@ -1042,6 +1075,7 @@ static int dac_to_hp_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMD:
+		
 		if (hp_en) {
 			if (rt5631->codec_version) {
 				hp_mute_unmute_depop_onebit(codec, 0);
@@ -1280,14 +1314,26 @@ static int adc_event(struct snd_soc_dapm_widget *w,
 		printk("adc_event --ALC_SND_SOC_DAPM_POST_PMU\n");
 		ADC_flag = true;
 		if(!spk_out_flag && DMIC_flag ){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000e);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe099);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000e);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe099);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0006);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe09a);
+			}
 		}else if(!spk_out_flag && !DMIC_flag ){
-			rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
-			rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000a);
-			rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe090);
-			rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0005, 0x0005);
+			if(project_id == TEGRA3_PROJECT_TF700T){
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x000a);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe090);
+				rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0005, 0x001f);
+			}else{
+				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0207);
+				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0004);
+				rt5631_write(codec, RT5631_ALC_CTRL_3, 0xe084);
+			}
 		}
 		msleep(DEPOP_DELAY);
 		rt5631_write_mask(codec, RT5631_ADC_CTRL_1, 0x0000, 0x8080);
@@ -1843,13 +1889,7 @@ static int rt5631_hifi_pcm_params(struct snd_pcm_substream *substream,
 		if(headset_alive)
 			rt5631_close_dmic(codec);
 	}
-/*
-	if (SNDRV_PCM_STREAM_PLAYBACK == stream){
-		printk("set audio dock unmute\n");
-		char data1[2] = {0x01, 0x01};
-        	asusAudiodec_i2c_write_data(data1, 2);
-	}
-*/	
+
 	rt5631_write_mask(codec, RT5631_SDP_CTRL, iface, SDP_I2S_DL_MASK);
 
 	if (coeff >= 0)
@@ -2421,10 +2461,6 @@ static int rt5631_set_bias_level(struct snd_soc_codec *codec,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-/*
-                printk("set audio dock mute\n");
-                char data1[2] = {0x03, 0x01};
-                asusAudiodec_i2c_write_data(data1, 2);*/
 		break;
 
 	case SND_SOC_BIAS_OFF:
@@ -2436,7 +2472,6 @@ static int rt5631_set_bias_level(struct snd_soc_codec *codec,
 		rt5631_write(codec, RT5631_PWR_MANAG_ADD2, 0x0000);
 		rt5631_write(codec, RT5631_PWR_MANAG_ADD3, 0x0000);
 		rt5631_write(codec, RT5631_PWR_MANAG_ADD4, 0x0000);
-
 		break;
 
 	default:
@@ -2630,6 +2665,20 @@ static int rt5631_probe(struct snd_soc_codec *codec)
 	unsigned int val;
 	int ret;
 
+	tegra_gpio_enable(CODEC_SPKVDD_POWER_5V0_EN_GPIO);
+	ret = gpio_request(CODEC_SPKVDD_POWER_5V0_EN_GPIO, "RT5631_5V");
+	if (ret) {
+		printk("gpio_request failed for input %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO);
+	}
+	ret = gpio_direction_output(CODEC_SPKVDD_POWER_5V0_EN_GPIO, 1) ;
+	if (ret) {
+		printk("gpio_direction_output failed for input %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO);
+	}
+	printk("GPIO = %d , state = %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO,
+			gpio_get_value(CODEC_SPKVDD_POWER_5V0_EN_GPIO));
+	gpio_set_value(CODEC_SPKVDD_POWER_5V0_EN_GPIO, 1);
+
+	project_id = tegra3_get_project_id();
 	ret = snd_soc_codec_set_cache_io(codec, 8, 16, SND_SOC_I2C);
 	if (ret != 0) {
 		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
@@ -2661,7 +2710,7 @@ static int rt5631_probe(struct snd_soc_codec *codec)
 
 	codec->dapm.bias_level = SND_SOC_BIAS_STANDBY;
 	rt5631_codec = codec;
-	global_audio_codec = codec;
+	rt5631_audio_codec = codec;
 	snd_soc_add_controls(codec, rt5631_snd_controls,
 		ARRAY_SIZE(rt5631_snd_controls));
 	rt5631_add_widgets(codec);

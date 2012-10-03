@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-harmony-panel.c
  *
- * Copyright (c) 2010-2011, NVIDIA Corporation.
+ * Copyright (c) 2010-2012, NVIDIA Corporation.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -26,13 +26,14 @@
 #include <mach/dc.h>
 #include <mach/irqs.h>
 #include <mach/iomap.h>
-#include <mach/nvmap.h>
+#include <linux/nvmap.h>
 #include <mach/tegra_fb.h>
 #include <mach/fb.h>
 
 #include "devices.h"
 #include "gpio-names.h"
 #include "board.h"
+#include "tegra2_host1x_devices.h"
 
 #define harmony_bl_enb		TEGRA_GPIO_PB5
 #define harmony_lvds_shutdown	TEGRA_GPIO_PB2
@@ -56,8 +57,6 @@ static int harmony_backlight_init(struct device *dev)
 	ret = gpio_direction_output(harmony_bl_enb, 1);
 	if (ret < 0)
 		gpio_free(harmony_bl_enb);
-	else
-		tegra_gpio_enable(harmony_bl_enb);
 
 	return ret;
 }
@@ -297,6 +296,7 @@ static struct nvhost_device harmony_disp2_device = {
 	},
 };
 
+#if defined(CONFIG_TEGRA_NVMAP)
 static struct nvmap_platform_carveout harmony_carveouts[] = {
 	[0] = NVMAP_HEAP_CARVEOUT_IRAM_INIT,
 	[1] = {
@@ -318,36 +318,43 @@ static struct platform_device harmony_nvmap_device = {
 		.platform_data = &harmony_nvmap_data,
 	},
 };
+#endif
 
 static struct platform_device *harmony_gfx_devices[] __initdata = {
+#if defined(CONFIG_TEGRA_NVMAP)
 	&harmony_nvmap_device,
-	&tegra_grhost_device,
+#endif
 	&tegra_pwfm0_device,
 	&harmony_backlight_device,
 };
 
-int __init harmony_panel_init(void) {
+int __init harmony_panel_init(void)
+{
 	int err;
 	struct resource *res;
 
 	gpio_request(harmony_en_vdd_pnl, "en_vdd_pnl");
 	gpio_direction_output(harmony_en_vdd_pnl, 1);
-	tegra_gpio_enable(harmony_en_vdd_pnl);
 
 	gpio_request(harmony_bl_vdd, "bl_vdd");
 	gpio_direction_output(harmony_bl_vdd, 1);
-	tegra_gpio_enable(harmony_bl_vdd);
 
 	gpio_request(harmony_lvds_shutdown, "lvds_shdn");
 	gpio_direction_output(harmony_lvds_shutdown, 1);
-	tegra_gpio_enable(harmony_lvds_shutdown);
 
 	gpio_request(harmony_hdmi_hpd, "hdmi_hpd");
 	gpio_direction_input(harmony_hdmi_hpd);
-	tegra_gpio_enable(harmony_hdmi_hpd);
 
+#if defined(CONFIG_TEGRA_NVMAP)
 	harmony_carveouts[1].base = tegra_carveout_start;
 	harmony_carveouts[1].size = tegra_carveout_size;
+#endif
+
+#ifdef CONFIG_TEGRA_GRHOST
+	err = tegra2_register_host1x_devices();
+	if (err)
+		return err;
+#endif
 
 	err = platform_add_devices(harmony_gfx_devices,
 				   ARRAY_SIZE(harmony_gfx_devices));

@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-whistler-panel.c
  *
- * Copyright (c) 2010-2011, NVIDIA Corporation.
+ * Copyright (c) 2010-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,7 +29,7 @@
 #include <linux/pwm_backlight.h>
 #include <linux/tegra_pwm_bl.h>
 #include <linux/nvhost.h>
-#include <mach/nvmap.h>
+#include <linux/nvmap.h>
 #include <mach/irqs.h>
 #include <mach/iomap.h>
 #include <mach/dc.h>
@@ -38,6 +38,7 @@
 #include "devices.h"
 #include "gpio-names.h"
 #include "board.h"
+#include "tegra2_host1x_devices.h"
 
 #define whistler_hdmi_hpd	TEGRA_GPIO_PN7
 
@@ -58,7 +59,6 @@ static struct platform_tegra_pwm_backlight_data whistler_disp1_backlight_data = 
 	.max_brightness	= 256,
 	.dft_brightness	= 77,
 	.gpio_conf_to_sfio	= TEGRA_GPIO_PW1,
-	.switch_to_sfio		= &tegra_gpio_disable,
 	.period	= 0x1F,
 	.clk_div = 3,
 	.clk_select = 2,
@@ -270,6 +270,7 @@ static struct nvhost_device whistler_disp2_device = {
 };
 #endif
 
+#if defined(CONFIG_TEGRA_NVMAP)
 static struct nvmap_platform_carveout whistler_carveouts[] = {
 	[0] = NVMAP_HEAP_CARVEOUT_IRAM_INIT,
 	[1] = {
@@ -293,11 +294,11 @@ static struct platform_device whistler_nvmap_device = {
 		.platform_data = &whistler_nvmap_data,
 	},
 };
+#endif
 
 static struct platform_device *whistler_gfx_devices[] __initdata = {
+#if defined(CONFIG_TEGRA_NVMAP)
 	&whistler_nvmap_device,
-#ifdef CONFIG_TEGRA_GRHOST
-	&tegra_grhost_device,
 #endif
 	&whistler_disp1_backlight_device,
 };
@@ -310,29 +311,26 @@ struct early_suspend whistler_panel_early_suspender;
 
 static void whistler_panel_early_suspend(struct early_suspend *h)
 {
-	unsigned i;
-	for (i = 0; i < num_registered_fb; i++)
-		fb_blank(registered_fb[i], FB_BLANK_POWERDOWN);
+	/* power down LCD, add use a blank screen for HDMI */
+	if (num_registered_fb > 0)
+		fb_blank(registered_fb[0], FB_BLANK_POWERDOWN);
+	if (num_registered_fb > 1)
+		fb_blank(registered_fb[1], FB_BLANK_NORMAL);
+
 #ifdef CONFIG_TEGRA_CONVSERVATIVE_GOV_ON_EARLYSUPSEND
-	cpufreq_save_default_governor();
-	cpufreq_set_conservative_governor();
-        cpufreq_set_conservative_governor_param("up_threshold",
-			SET_CONSERVATIVE_GOVERNOR_UP_THRESHOLD);
-
-	cpufreq_set_conservative_governor_param("down_threshold",
-			SET_CONSERVATIVE_GOVERNOR_DOWN_THRESHOLD);
-
-	cpufreq_set_conservative_governor_param("freq_step",
-		SET_CONSERVATIVE_GOVERNOR_FREQ_STEP);
+	cpufreq_store_default_gov();
+	cpufreq_change_gov(cpufreq_conservative_gov);
 #endif
 }
 
 static void whistler_panel_late_resume(struct early_suspend *h)
 {
 	unsigned i;
+
 #ifdef CONFIG_TEGRA_CONVSERVATIVE_GOV_ON_EARLYSUPSEND
-	cpufreq_restore_default_governor();
+	cpufreq_restore_default_gov();
 #endif
+
 	for (i = 0; i < num_registered_fb; i++)
 		fb_blank(registered_fb[i], FB_BLANK_UNBLANK);
 }
@@ -343,7 +341,6 @@ int __init whistler_panel_init(void)
 	int err;
 	struct resource __maybe_unused *res;
 
-	tegra_gpio_enable(whistler_hdmi_hpd);
 	gpio_request(whistler_hdmi_hpd, "hdmi_hpd");
 	gpio_direction_input(whistler_hdmi_hpd);
 
@@ -353,8 +350,17 @@ int __init whistler_panel_init(void)
 	whistler_panel_early_suspender.level = EARLY_SUSPEND_LEVEL_DISABLE_FB;
 	register_early_suspend(&whistler_panel_early_suspender);
 #endif
+
+#if defined(CONFIG_TEGRA_NVMAP)
 	whistler_carveouts[1].base = tegra_carveout_start;
 	whistler_carveouts[1].size = tegra_carveout_size;
+#endif
+
+#ifdef CONFIG_TEGRA_GRHOST
+	err = tegra2_register_host1x_devices();
+	if (err)
+		return err;
+#endif
 
 	err = platform_add_devices(whistler_gfx_devices,
 				   ARRAY_SIZE(whistler_gfx_devices));

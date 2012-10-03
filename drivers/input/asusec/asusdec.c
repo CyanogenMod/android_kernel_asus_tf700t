@@ -20,6 +20,7 @@
 #include <asm/uaccess.h>
 #include <linux/power_supply.h>
 #include <../gpio-names.h>
+#include <mach/board-cardhu-misc.h>
 
 #include "asusdec.h"
 #include "elan_i2c_asus.h"
@@ -618,9 +619,7 @@ static int asusdec_chip_init(struct i2c_client *client)
 	}
 	strcpy(ec_chip->ec_version, &ec_chip->i2c_dm_data[1]);
 	ASUSDEC_NOTICE("EC-FW Version: %s\n", ec_chip->ec_version);
-
-	msleep(700);
-
+	
 	if (asusdec_dockram_read_data(0x03) < 0){
 		goto fail_to_access_ec;
 	}
@@ -639,7 +638,7 @@ static int asusdec_chip_init(struct i2c_client *client)
 	ASUSDEC_NOTICE("EC-FW Behavior: %s\n", ec_chip->dock_behavior ?
 		"susb on when receive ec_req" : "susb on when system wakeup");
 
-	ec_chip->tf201_dock = (!strncmp(ec_chip->ec_version, "TF201-", 6));
+	ec_chip->tf_dock = 1;
 
 	if(factory_mode == 2)
 		asusdec_enter_factory_mode();
@@ -709,7 +708,6 @@ static irqreturn_t asusdec_interrupt_handler(int irq, void *dev_id){
 	int gpio = irq_to_gpio(irq);
 
 	if (gpio == asusdec_apwake_gpio){
-		printk("[%s] asusdec_apwake_gpio\n",__func__);
 		disable_irq_nosync(irq);
 		if (ec_chip->op_mode){
 			queue_delayed_work(asusdec_wq, &ec_chip->asusdec_fw_update_work, 0);			
@@ -741,6 +739,7 @@ static int asusdec_irq_hall_sensor(struct i2c_client *client)
 	unsigned gpio = asusdec_hall_sensor_gpio;
 	unsigned irq = gpio_to_irq(asusdec_hall_sensor_gpio);
 	const char* label = "asusdec_hall_sensor" ;
+	unsigned int pad_pid = tegra3_get_project_id();
 
 	ASUSDEC_INFO("gpio = %d, irq = %d\n", gpio, irq);
 	ASUSDEC_INFO("GPIO = %d , state = %d\n", gpio, gpio_get_value(gpio));
@@ -764,7 +763,13 @@ static int asusdec_irq_hall_sensor(struct i2c_client *client)
 		rc = -EIO;
 		goto err_gpio_request_irq_fail ;
 	}
-	enable_irq_wake(irq);
+
+	if ((pad_pid == TEGRA3_PROJECT_TF300T) || (pad_pid == TEGRA3_PROJECT_TF300TG)){
+		ASUSDEC_NOTICE("Disable hall sensor wakeup function due to pid = %u\n", pad_pid);
+	} else {
+		enable_irq_wake(irq);
+	}
+
 	ASUSDEC_INFO("LID irq = %d, rc = %d\n", irq, rc);
 
 	if (gpio_get_value(gpio)){
@@ -1467,7 +1472,7 @@ static int asusdec_get_version_num(void){
 	int v_len = strlen(ec_chip->ec_version);
 	char *v_str = ec_chip->ec_version;
 
-	if (ec_chip->tf201_dock){
+	if (ec_chip->tf_dock){
 		for ( i = v_len - 4; i < v_len; i++)
 			v_num = v_num * 10 + v_str[i] - '0';
 	}
@@ -1516,8 +1521,9 @@ static void asusdec_lid_report_function(struct work_struct *dat)
 	} else if (value == 0) {
     		value = 1;
 	}
-	input_report_switch(ec_chip->lid_indev, SW_LID, value);
-	ASUSDEC_NOTICE("SW_LID report value = %d\n", value);
+	input_report_switch(ec_chip->lid_indev, SW_LID, !value);
+	input_sync(ec_chip->lid_indev);
+	ASUSDEC_NOTICE("SW_LID report value = %d\n", !value);
 }
 
 static void asusdec_stresstest_work_function(struct work_struct *dat)
@@ -1571,7 +1577,7 @@ static void asusdec_dock_init_work_function(struct work_struct *dat)
 			isDockIn = 0;
 			ec_chip->init_success = 0;
 			ec_chip->tp_enable = 1;
-			ec_chip->tf201_dock = 0;
+			ec_chip->tf_dock = 0;
 			ec_chip->op_mode = 0;
 			ec_chip->dock_behavior = 0;
 			if ((ec_chip->dock_type == AUDIO_DOCK) || (ec_chip->dock_type == AUDIO_STAND)) {
@@ -1595,7 +1601,7 @@ static void asusdec_dock_init_work_function(struct work_struct *dat)
 			ASUSDEC_NOTICE("Dock-in detected\n");
 			if (gpio_get_value(asusdec_hall_sensor_gpio) || (!ec_chip->status)){
 				if (ec_chip->init_success == 0){
-					if ((!ec_chip->tf201_dock) || (!ec_chip->dock_behavior)){
+					if ((!ec_chip->tf_dock) || (!ec_chip->dock_behavior)){
 						ec_chip->susb_on = 1;
 						ec_chip->dock_type = DOCK_UNKNOWN;
 						msleep(200);
@@ -2172,8 +2178,38 @@ static ssize_t asusdec_show_lid_status(struct device *class,struct device_attrib
 }
 
 static int asusdec_suspend(struct i2c_client *client, pm_message_t mesg){
-	printk("asusdec_suspend+\n");
-	printk("asusdec_suspend-\n");
+	int ret_val;
+
+	ASUSDEC_NOTICE("asusdec_suspend+\n");
+	ec_chip->susb_on = 0;
+	flush_workqueue(asusdec_wq);
+	if (ec_chip->dock_in && (ec_chip->ec_in_s3 == 0)){
+		ret_val = asusdec_i2c_test(ec_chip->client);
+		if(ret_val < 0){
+			goto fail_to_access_ec;
+		}
+
+		asusdec_dockram_read_data(0x0A);
+
+		ec_chip->i2c_dm_data[0] = 8;
+		ec_chip->i2c_dm_data[5] = ec_chip->i2c_dm_data[5] & 0xDF;
+		ec_chip->i2c_dm_data[5] = ec_chip->i2c_dm_data[5] | 0x22;
+		if (ec_chip->ec_wakeup){
+			ec_chip->i2c_dm_data[5] = ec_chip->i2c_dm_data[5] | 0x80;
+		} else {
+			ec_chip->i2c_dm_data[5] = ec_chip->i2c_dm_data[5] & 0x7F;
+		}
+		asusdec_dockram_write_data(0x0A,9);
+	}
+
+fail_to_access_ec:
+	flush_workqueue(asusdec_wq);
+	ec_chip->suspend_state = 1;
+	ec_chip->dock_det = 0;
+	ec_chip->init_success = 0;
+	ec_chip->ec_in_s3 = 1;
+	ec_chip->touchpad_member = -1;
+	ASUSDEC_NOTICE("asusdec_suspend-\n");
 	return 0;
 }
 
@@ -2186,7 +2222,8 @@ static int asusdec_resume(struct i2c_client *client){
 	}
 
 	ec_chip->suspend_state = 0;
-	queue_delayed_work(asusdec_wq, &ec_chip->asusdec_hall_sensor_work, 0);
+	//queue_delayed_work(asusdec_wq, &ec_chip->asusdec_hall_sensor_work, 0);
+	asusdec_lid_report_function(NULL);
 	wake_lock(&ec_chip->wake_lock_init);
 	ec_chip->init_success = 0;
 	queue_delayed_work(asusdec_wq, &ec_chip->asusdec_dock_init_work, 0);
@@ -2294,7 +2331,7 @@ static long asusdec_ioctl(struct file *flip,
 				i2c_smbus_write_i2c_block_data(&dockram_client, 0x40, 3, ec_chip->i2c_dm_data);
 				ec_chip->init_success = 0;
 				ec_chip->dock_behavior = 0;
-				ec_chip->tf201_dock = 0;
+				ec_chip->tf_dock = 0;
 				msleep(1000);
 			} else {
 				ASUSDEC_NOTICE("No dock detected\n");
@@ -2571,44 +2608,6 @@ static int asusdec_dock_battery_get_property(struct power_supply *psy,
 error:
 	return -EINVAL;
 }
-
-int asusdec_suspend_hub_callback(void){
-	int ret_val;
-
-	ASUSDEC_NOTICE("suspend+\n");
-	ec_chip->susb_on = 0;
-	flush_workqueue(asusdec_wq);
-	if (ec_chip->dock_in && (ec_chip->ec_in_s3 == 0)){
-		ret_val = asusdec_i2c_test(ec_chip->client);
-		if(ret_val < 0){
-			goto fail_to_access_ec;
-		}
-		
-		asusdec_dockram_read_data(0x0A);
-
-		ec_chip->i2c_dm_data[0] = 8;
-		ec_chip->i2c_dm_data[5] = ec_chip->i2c_dm_data[5] & 0xDF;
-		ec_chip->i2c_dm_data[5] = ec_chip->i2c_dm_data[5] | 0x22;
-		if (ec_chip->ec_wakeup){
-			ec_chip->i2c_dm_data[5] = ec_chip->i2c_dm_data[5] | 0x80;
-		} else {
-			ec_chip->i2c_dm_data[5] = ec_chip->i2c_dm_data[5] & 0x7F;
-		}
-		asusdec_dockram_write_data(0x0A,9);	
-	}
-	
-fail_to_access_ec:
-	flush_workqueue(asusdec_wq);
-	ec_chip->suspend_state = 1;
-	ec_chip->dock_det = 0;
-	ec_chip->init_success = 0;
-	ec_chip->ec_in_s3 = 1;
-	ec_chip->touchpad_member = -1;
-	ASUSDEC_NOTICE("suspend-\n");
-	return 0;
-}
-EXPORT_SYMBOL(asusdec_suspend_hub_callback);
-
 
 int asusdec_is_ac_over_10v_callback(void){
 

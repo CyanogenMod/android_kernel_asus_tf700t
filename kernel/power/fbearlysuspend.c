@@ -45,7 +45,9 @@ static void stop_drawing_early_suspend(struct early_suspend *h)
 		pr_warning("stop_drawing_early_suspend: timeout waiting for "
 			   "userspace to stop drawing\n");
 
+#ifdef CONFIG_PM_DEBUG
 	pr_info("%sed\n", __func__);
+#endif
 }
 
 /* tell userspace to start drawing */
@@ -58,7 +60,9 @@ static void start_drawing_late_resume(struct early_suspend *h)
 	spin_unlock_irqrestore(&fb_state_lock, irq_flags);
 	wake_up(&fb_state_wq);
 
+#ifdef CONFIG_PM_DEBUG
 	pr_info("%sd\n", __func__);
+#endif
 }
 
 static struct early_suspend stop_drawing_early_suspend_desc = {

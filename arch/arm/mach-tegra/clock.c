@@ -37,7 +37,6 @@
 #include "clock.h"
 #include "dvfs.h"
 
-extern void rebuild_max_freq_table(max_rate);
 #define DISABLE_BOOT_CLOCKS 1
 
 /*
@@ -239,16 +238,9 @@ void clk_init(struct clk *c)
 static int clk_enable_locked(struct clk *c)
 {
 	int ret = 0;
-	int rate = clk_get_rate_locked(c);
-	bool set_rate = false;
-
-	if (rate > c->max_rate) {
-		rate = c->max_rate;
-		set_rate = true;
-	}
 
 	if (clk_is_auto_dvfs(c)) {
-		ret = tegra_dvfs_set_rate(c, rate);
+		ret = tegra_dvfs_set_rate(c, clk_get_rate_locked(c));
 		if (ret)
 			return ret;
 	}
@@ -259,9 +251,6 @@ static int clk_enable_locked(struct clk *c)
 			if (ret)
 				return ret;
 		}
-
-		if (set_rate)
-			clk_set_rate_locked(c, rate);
 
 		if (c->ops && c->ops->enable) {
 			ret = c->ops->enable(c);
@@ -526,12 +515,10 @@ unsigned long clk_get_rate_all_locked(struct clk *c)
 	return rate;
 }
 
-long clk_round_rate(struct clk *c, unsigned long rate)
+long clk_round_rate_locked(struct clk *c, unsigned long rate)
 {
-	unsigned long flags, max_rate;
+	unsigned long max_rate;
 	long ret;
-
-	clk_lock_save(c, &flags);
 
 	if (!c->ops || !c->ops->round_rate) {
 		ret = -ENOSYS;
@@ -545,6 +532,16 @@ long clk_round_rate(struct clk *c, unsigned long rate)
 	ret = c->ops->round_rate(c, rate);
 
 out:
+	return ret;
+}
+
+long clk_round_rate(struct clk *c, unsigned long rate)
+{
+	unsigned long flags;
+	long ret;
+
+	clk_lock_save(c, &flags);
+	ret = clk_round_rate_locked(c, rate);
 	clk_unlock_restore(c, &flags);
 	return ret;
 }
@@ -685,11 +682,7 @@ void __init tegra_init_max_rate(struct clk *c, unsigned long max_rate)
 
 	pr_warning("Lowering %s maximum rate from %lu to %lu\n",
 		c->name, c->max_rate, max_rate);
-	if(!strncmp(c->name,"cpu_g",strlen("cpu_g"))){
-		rebuild_max_freq_table(max_rate/1000);
-		pr_warning("Keep max_rate of %s  as %lu \n",c->name, c->max_rate);
-		return;
-	}
+
 	c->max_rate = max_rate;
 	list_for_each_entry(shared_bus_user,
 			    &c->shared_bus_list, u.shared_bus_user.node) {
@@ -1285,7 +1278,7 @@ static const struct file_operations possible_rates_fops = {
 
 static int clk_debugfs_register_one(struct clk *c)
 {
-	struct dentry *d, *child, *child_tmp;
+	struct dentry *d;
 
 	d = debugfs_create_dir(c->name, clk_debugfs_root);
 	if (!d)
@@ -1301,6 +1294,10 @@ static int clk_debugfs_register_one(struct clk *c)
 		goto err_out;
 
 	d = debugfs_create_u32("max", S_IRUGO, c->dent, (u32 *)&c->max_rate);
+	if (!d)
+		goto err_out;
+
+	d = debugfs_create_u32("min", S_IRUGO, c->dent, (u32 *)&c->min_rate);
 	if (!d)
 		goto err_out;
 
@@ -1341,10 +1338,7 @@ static int clk_debugfs_register_one(struct clk *c)
 	return 0;
 
 err_out:
-	d = c->dent;
-	list_for_each_entry_safe(child, child_tmp, &d->d_subdirs, d_u.d_child)
-		debugfs_remove(child);
-	debugfs_remove(c->dent);
+	debugfs_remove_recursive(c->dent);
 	return -ENOMEM;
 }
 

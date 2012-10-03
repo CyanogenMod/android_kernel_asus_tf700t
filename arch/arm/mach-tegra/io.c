@@ -26,7 +26,6 @@
 #include <linux/mm.h>
 #include <linux/io.h>
 
-#include <mach/hardware.h>
 #include <mach/iomap.h>
 #include <asm/page.h>
 #include <asm/mach/map.h>
@@ -76,6 +75,18 @@ static struct map_desc tegra_io_desc[] __initdata = {
 		.length = IO_SDMMC_SIZE,
 		.type = MT_DEVICE,
 	},
+	{
+		.virtual = IO_PPCS_VIRT,
+		.pfn = __phys_to_pfn(IO_PPCS_PHYS),
+		.length = IO_PPCS_SIZE,
+		.type = MT_DEVICE,
+	},
+	{
+		.virtual = IO_PCIE_VIRT,
+		.pfn = __phys_to_pfn(IO_PCIE_PHYS),
+		.length = IO_PCIE_SIZE,
+		.type = MT_DEVICE,
+	}
 };
 
 void __init tegra_map_common_io(void)

@@ -38,14 +38,17 @@ enum regulator_status {
  * One for each consumer device.
  */
 struct regulator {
-	struct device *dev;
-	struct list_head list;
-	int uA_load;
-	int min_uV;
-	int max_uV;
-	char *supply_name;
-	struct device_attribute dev_attr;
-	struct regulator_dev *rdev;
+        struct device *dev;
+        struct list_head list;
+        int uA_load;
+        int min_uV;
+        int max_uV;
+        char *supply_name;
+        struct device_attribute dev_attr;
+        struct regulator_dev *rdev;
+#ifdef CONFIG_DEBUG_FS
+        struct dentry *debugfs;
+#endif
 };
 
 /**

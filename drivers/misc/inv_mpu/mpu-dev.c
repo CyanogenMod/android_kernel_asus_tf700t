@@ -55,8 +55,10 @@
 #include <linux/mpu.h>
 
 #include "../../../arch/arm/mach-tegra/include/mach/board-cardhu-misc.h"
+#include "../../../../arch/arm/mach-tegra/board-cardhu.h"
+#include "../../../../arch/arm/mach-tegra/gpio-names.h"
 
-extern unsigned int factory_mode;
+//extern unsigned int factory_mode;
 extern bool flagLoadConfig;
 extern bool flagLoadAccelConfig;
 
@@ -89,6 +91,7 @@ struct mpu_private_data {
 	int gyro_status;
 	int accel_status;
 	int compass_status;
+	char *mpu_ver;
 	int pid;
 	struct module *slave_modules[EXT_SLAVE_NUM_TYPES];
 };
@@ -101,14 +104,14 @@ static ssize_t enable_load_accel_config(struct device *dev, struct device_attrib
 {       struct i2c_client *client = to_i2c_client(dev);
         struct mpu_private_data *data = i2c_get_clientdata(client);
         //flagLoadAccelConfig = false;
-        return sprintf(buf, "%d\n", flagLoadAccelConfig);
+        return sprintf(buf, "%d\n", 1);
 }
 
 static ssize_t enable_load_mag_config(struct device *dev, struct device_attribute *devattr, char *buf)
 {       struct i2c_client *client = to_i2c_client(dev);
         struct mpu_private_data *data = i2c_get_clientdata(client);
-        flagLoadConfig = false;
-        return sprintf(buf, "%d\n", flagLoadConfig);
+        //flagLoadConfig = false;
+        return sprintf(buf, "%d\n", 1);
 }
 
 static ssize_t read_compass_status(struct device *dev, struct device_attribute *devattr, char *buf)
@@ -127,6 +130,13 @@ static ssize_t read_gyro_status(struct device *dev, struct device_attribute *dev
 {	struct i2c_client *client = to_i2c_client(dev);
 	struct mpu_private_data *data = i2c_get_clientdata(client);
 	return sprintf(buf, "%d\n", data->gyro_status);
+}
+
+
+static ssize_t read_mpu_chip_version(struct device *dev, struct device_attribute *devattr, char *buf)
+{	struct i2c_client *client = to_i2c_client(dev);
+	struct mpu_private_data *data = i2c_get_clientdata(client);
+	return sprintf(buf, "%s\n", data->mpu_ver);
 }
 
 static ssize_t read_accel_raw(struct device *dev, struct device_attribute *devattr, char *buf)
@@ -218,17 +228,24 @@ DEVICE_ATTR(accel_raw, S_IRUGO, read_accel_raw, NULL);
 DEVICE_ATTR(compass_status, S_IRUGO, read_compass_status, NULL);
 DEVICE_ATTR(accel_status, S_IRUGO, read_accel_status, NULL);
 DEVICE_ATTR(gyro_status, S_IRUGO, read_gyro_status, NULL);
+DEVICE_ATTR(mpu_version, S_IRUGO, read_mpu_chip_version, NULL);
 DEVICE_ATTR(enLoadMagConfig, S_IRUGO, enable_load_mag_config, NULL);
 DEVICE_ATTR(enLoadAccelConfig, S_IRUGO, enable_load_accel_config, NULL);
 
 static struct attribute *mpu_3050_attr[] = {
 	&dev_attr_gyro_status.attr,
+	&dev_attr_mpu_version.attr,
 	&dev_attr_accel_status.attr,
 	&dev_attr_compass_status.attr,
 	&dev_attr_accel_raw.attr,
 	&dev_attr_compass_raw.attr,
 	&dev_attr_enLoadMagConfig,
 	&dev_attr_enLoadAccelConfig,
+	NULL
+};
+
+static struct attribute *mpu_3050_attr_user[] = {
+	&dev_attr_mpu_version.attr,
 	NULL
 };
 
@@ -297,7 +314,7 @@ static int mpu_dev_open(struct inode *inode, struct file *file)
 
 	result = mutex_lock_interruptible(&mpu->mutex);
 
-	if (factory_mode)	// for mpustatic test
+	if (1)	// for mpustatic test
 	{
 		if (result) {
 			mutex_unlock(&mpu->mutex);
@@ -1221,8 +1238,6 @@ static unsigned short normal_i2c[] = { I2C_CLIENT_END };
 
 static const struct i2c_device_id mpu_id[] = {
 	{"mpu3050", 0},
-	{"mpu6050", 0},
-	{"mpu6050_no_accel", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, mpu_id);
@@ -1305,6 +1320,22 @@ int mpu_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 		goto out_whoami_failed;
 	}
 
+	mpu->mpu_ver = "3050";
+	// MPU-IRQ assignment
+	tegra_gpio_enable(MPU_GYRO_IRQ_GPIO);
+	res = gpio_request(MPU_GYRO_IRQ_GPIO, MPU3050_GYRO_NAME);
+	if (res < 0) {
+		pr_err("%s: gpio_request failed %d\n", __func__, res);
+		return;
+	}
+
+	res = gpio_direction_input(MPU_GYRO_IRQ_GPIO);
+	if (res < 0) {
+		pr_err("%s: gpio_direction_input failed %d\n", __func__, res);
+		gpio_free(MPU_GYRO_IRQ_GPIO);
+		return;
+	}
+
 	mpu->dev.minor = MISC_DYNAMIC_MINOR;
 	mpu->dev.name = "mpu";
 	mpu->dev.fops = &mpu_fops;
@@ -1326,16 +1357,16 @@ int mpu_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 			 "Missing %s IRQ\n", MPU_NAME);
 	}
 
-	if(factory_mode){
-
+//	if(factory_mode)
 		mpu->attrs.attrs = mpu_3050_attr;
-		res = sysfs_create_group(&client->dev.kobj, &mpu->attrs);
+//	else
+//		mpu->attrs.attrs = mpu_3050_attr_user;
 
-		if (res) {
-			dev_err(&client->dev, "Not able to create the sysfs\n");
-			printk("%s:Not able to create the sysfs\n", __FUNCTION__);
-			goto out_attr_register_failed;
-		}
+	res = sysfs_create_group(&client->dev.kobj, &mpu->attrs);
+	if (res) {
+		dev_err(&client->dev, "Not able to create the sysfs\n");
+		printk("%s:Not able to create the sysfs\n", __FUNCTION__);
+		goto out_attr_register_failed;
 	}
 	mpu->gyro_status = 1;
 	printk(KERN_INFO "%s- #####\n", __func__);
@@ -1434,7 +1465,7 @@ static int mpu_delay_init(void)
 	printk(KERN_INFO "%s+ #####\n", __func__);
 
 	u32 project_info = tegra3_get_project_id();
-	if (project_info != TEGRA3_PROJECT_TF700T)
+	if (project_info == TEGRA3_PROJECT_TF201)
 	{
 		tegra_gpio_enable(143);
 		gpio_request(143, "gpio_pr7");

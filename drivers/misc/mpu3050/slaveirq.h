@@ -1,6 +1,6 @@
 /*
  $License:
-    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+    Copyright (C) 2010 InvenSense Corporation, All Rights Reserved.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -35,7 +35,8 @@
 
 void slaveirq_exit(struct ext_slave_platform_data *pdata);
 int slaveirq_init(struct i2c_adapter *slave_adapter,
-		  struct ext_slave_platform_data *pdata, char *name);
+		struct ext_slave_platform_data *pdata,
+		char *name);
 
 #endif
 

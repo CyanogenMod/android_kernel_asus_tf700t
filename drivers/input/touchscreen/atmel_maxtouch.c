@@ -43,7 +43,8 @@
 #include <mach/board-cardhu-misc.h>
 #include <linux/wakelock.h>
 #include <linux/switch.h>
-
+//Mars debug
+#include <linux/proc_fs.h>
 /*
  * This is a driver for the Atmel maXTouch Object Protocol
  *
@@ -134,6 +135,11 @@
 #define START_NORMAL	(HZ/5)
 #define START_HEAVY	(HZ/200)
 
+//Mars_Kao@20120411
+#define PROC_FS_NAME	"dbg_x"
+#define PROC_FS_MAX_LEN	8
+static struct proc_dir_entry *dbgProcFile;
+static bool touch_flag = false;
 
 static int poll_mode=0;
 struct delayed_work mxt_poll_data_work;
@@ -1789,8 +1795,14 @@ void process_T9_message(u8 *message, struct mxt_data *mxt, int last_touch)
 						 fingerInfo[i].pressure);
 				input_report_abs(mxt->input, ABS_MT_PRESSURE,
 					       fingerInfo[i].pressure);
-				input_report_abs(mxt->input, ABS_MT_POSITION_X,
-						 fingerInfo[i].x);
+				if(touch_flag){
+					input_report_abs(mxt->input, ABS_MT_POSITION_X,
+                                                (mxt->max_x_val-fingerInfo[i].x));
+				}else{
+					input_report_abs(mxt->input, ABS_MT_POSITION_X,
+                                                fingerInfo[i].x);
+				}
+
 				input_report_abs(mxt->input, ABS_MT_POSITION_Y,
 						 fingerInfo[i].y);
 				input_mt_sync(mxt->input);
@@ -3123,7 +3135,7 @@ static int __devinit mxt_probe(struct i2c_client *client,
 	__set_bit(EV_ABS, input->evbit);
 	__set_bit(EV_SYN, input->evbit);
 	__set_bit(EV_KEY, input->evbit);
-	__set_bit(EV_TOUCH, input->evbit);
+	//__set_bit(EV_TOUCH, input->evbit);
 
 	mxt_debug(DEBUG_TRACE, "maXTouch driver setting client data\n");
 	sema_init(&mxt->sem, 1); 
@@ -3365,6 +3377,69 @@ static struct i2c_driver mxt_driver = {
 #endif
 };
 
+static int atmel_proc_read(char *buffer, char **buffer_location, off_t offset, int buffer_length, int *eof, void *data )
+{
+        int ret;
+
+        printk("call proc_read!\n");
+
+        if(offset > 0)  /* we have finished to read, return 0 */
+                ret  = 0;
+        else
+		ret = sprintf(buffer, "Touch Flag Value: %s\n",touch_flag ?"TRUE":"FALSE");
+        return ret;
+}
+
+
+static int atmel_proc_write(struct file *file, const char *buffer, unsigned long count, void *data)
+{
+        char procfs_buffer_size = 0;
+        int i, ret;
+        unsigned char procfs_buf[8+1] = {0};
+        unsigned int command;
+
+        printk("call proc write!\n");
+
+        procfs_buffer_size = count;
+        if(procfs_buffer_size > PROC_FS_MAX_LEN )
+                procfs_buffer_size = PROC_FS_MAX_LEN+1;
+
+        if( copy_from_user(procfs_buf, buffer, procfs_buffer_size) )
+        {
+                printk(" proc_write faied at copy_from_user\n");
+                return -EFAULT;
+        }
+
+        command = 0;
+        for(i=0; i<procfs_buffer_size-1; i++)
+        {
+                if( procfs_buf[i]>='0' && procfs_buf[i]<='9' )
+                        command |= (procfs_buf[i]-'0');
+                else if( procfs_buf[i]>='A' && procfs_buf[i]<='F' )
+                        command |= (procfs_buf[i]-'A'+10);
+                else if( procfs_buf[i]>='a' && procfs_buf[i]<='f' )
+                        command |= (procfs_buf[i]-'a'+10);
+
+                if(i!=procfs_buffer_size-2)
+                        command <<= 4;
+        }
+
+        command = command&0xFFFFFFFF;
+      switch(command){
+      case 0xF1:
+                touch_flag = false;
+		break;
+      case 0xFF:
+                //set the tag to reverse x axis
+                touch_flag = true;
+                break;
+        }
+        printk("Run command: 0x%08X  result:%d\n", command, ret);
+
+        return count; // procfs_buffer_size;
+}
+
+
 static int __init mxt_init(void)
 {
 	int err;
@@ -3376,6 +3451,20 @@ static int __init mxt_init(void)
 	} else {
 		mxt_debug(DEBUG_TRACE, "Successfully added driver %s\n",
 			  mxt_driver.driver.name);
+		//Mars Add
+		dbgProcFile = create_proc_entry(PROC_FS_NAME, 0666, NULL);
+		if (dbgProcFile == NULL) 
+		{
+			remove_proc_entry(PROC_FS_NAME, NULL);
+			printk(" Could not initialize /proc/%s\n", PROC_FS_NAME);
+		}
+		else
+		{
+			printk("==========================\n");
+			dbgProcFile->read_proc = atmel_proc_read;
+			dbgProcFile->write_proc = atmel_proc_write;
+			printk(" /proc/%s created\n", PROC_FS_NAME);
+		}
 	}
 	printk(KERN_INFO "%s- #####\n", __func__);
 	return err;
@@ -3385,6 +3474,7 @@ static void __exit mxt_cleanup(void)
 {
 	i2c_del_driver(&mxt_driver);
 }
+
 
 module_init(mxt_init);
 module_exit(mxt_cleanup);

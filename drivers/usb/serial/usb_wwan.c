@@ -36,8 +36,16 @@
 #include <linux/usb/serial.h>
 #include <linux/serial.h>
 #include "usb-wwan.h"
+#include "../../ril/ril_wakeup.h"
 
 static int debug;
+static struct usb_interface *s_dev_id = NULL;
+
+struct usb_interface *get_usb_interface(void)
+{
+	return s_dev_id;
+}
+EXPORT_SYMBOL(get_usb_interface);
 
 void usb_wwan_dtr_rts(struct usb_serial_port *port, int on)
 {
@@ -400,6 +408,7 @@ int usb_wwan_open(struct tty_struct *tty, struct usb_serial_port *port)
 	struct usb_wwan_port_private *portdata;
 	struct usb_wwan_intf_private *intfdata;
 	struct usb_serial *serial = port->serial;
+	struct usb_device *usb_dev = serial->dev;
 	int i, err;
 	struct urb *urb;
 
@@ -430,6 +439,14 @@ int usb_wwan_open(struct tty_struct *tty, struct usb_serial_port *port)
 	/* this balances a get in the generic USB serial code */
 	usb_autopm_put_interface(serial->interface);
 
+	if (usb_dev->descriptor.idVendor == 0x05c6 &&
+		(usb_dev->descriptor.idProduct == 0x900b ||
+		usb_dev->descriptor.idProduct == 0x900d) &&
+		port->number == RIL_PORT_NUM) {
+		printk("%s: RIL port is opened, and set s_dev_id.\n", __func__);
+		s_dev_id = serial->interface;
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL(usb_wwan_open);
@@ -440,6 +457,7 @@ void usb_wwan_close(struct usb_serial_port *port)
 	struct usb_serial *serial = port->serial;
 	struct usb_wwan_port_private *portdata;
 	struct usb_wwan_intf_private *intfdata = port->serial->private;
+	struct usb_device *usb_dev = serial->dev;
 
 	dbg("%s", __func__);
 	portdata = usb_get_serial_port_data(port);
@@ -457,6 +475,13 @@ void usb_wwan_close(struct usb_serial_port *port)
 		/* balancing - important as an error cannot be handled*/
 		usb_autopm_get_interface_no_resume(serial->interface);
 		serial->interface->needs_remote_wakeup = 0;
+	}
+	if (usb_dev->descriptor.idVendor == 0x05c6 &&
+		(usb_dev->descriptor.idProduct == 0x900b ||
+		usb_dev->descriptor.idProduct == 0x900d) &&
+		port->number == RIL_PORT_NUM) {
+		printk("%s: RIL port is closed, and clear s_dev_id.\n", __func__);
+		s_dev_id = NULL;
 	}
 }
 EXPORT_SYMBOL(usb_wwan_close);
@@ -603,8 +628,16 @@ static void stop_read_write_urbs(struct usb_serial *serial)
 
 void usb_wwan_disconnect(struct usb_serial *serial)
 {
+	struct usb_device *usb_dev = serial->dev;
+
 	dbg("%s", __func__);
 
+	//Clear s_dev_id
+	if (usb_dev->descriptor.idVendor == 0x05c6 &&
+		(usb_dev->descriptor.idProduct == 0x900b ||
+		usb_dev->descriptor.idProduct == 0x900d)) {
+		s_dev_id = NULL;
+	}
 	stop_read_write_urbs(serial);
 }
 EXPORT_SYMBOL(usb_wwan_disconnect);
@@ -647,6 +680,8 @@ EXPORT_SYMBOL(usb_wwan_release);
 int usb_wwan_suspend(struct usb_serial *serial, pm_message_t message)
 {
 	struct usb_wwan_intf_private *intfdata = serial->private;
+	struct usb_device *usb_dev = serial->dev;
+	struct usb_interface *intf = serial->interface;
 	int b;
 
 	dbg("%s entered", __func__);
@@ -664,6 +699,12 @@ int usb_wwan_suspend(struct usb_serial *serial, pm_message_t message)
 	intfdata->suspended = 1;
 	spin_unlock_irq(&intfdata->susp_lock);
 	stop_read_write_urbs(serial);
+	if (usb_dev->descriptor.idVendor == 0x05c6 &&
+		(usb_dev->descriptor.idProduct == 0x900b ||
+		usb_dev->descriptor.idProduct == 0x900d) &&
+		intf->cur_altsetting->desc.bInterfaceNumber == LAST_SER_NUM) {
+		ril_wakeup_suspend();
+	}
 
 	return 0;
 }
@@ -712,6 +753,8 @@ int usb_wwan_resume(struct usb_serial *serial)
 	struct usb_wwan_intf_private *intfdata = serial->private;
 	struct usb_wwan_port_private *portdata;
 	struct urb *urb;
+	struct usb_device *usb_dev = serial->dev;
+	struct usb_interface *intf = serial->interface;
 	int err = 0;
 
 	dbg("%s entered", __func__);
@@ -731,15 +774,14 @@ int usb_wwan_resume(struct usb_serial *serial)
 		}
 	}
 
+	spin_lock_irq(&intfdata->susp_lock);
 	for (i = 0; i < serial->num_ports; i++) {
 		/* walk all ports */
 		port = serial->port[i];
 		portdata = usb_get_serial_port_data(port);
 
 		/* skip closed ports */
-		spin_lock_irq(&intfdata->susp_lock);
 		if (!portdata->opened) {
-			spin_unlock_irq(&intfdata->susp_lock);
 			continue;
 		}
 
@@ -754,12 +796,16 @@ int usb_wwan_resume(struct usb_serial *serial)
 			}
 		}
 		play_delayed(port);
-		spin_unlock_irq(&intfdata->susp_lock);
 	}
-	spin_lock_irq(&intfdata->susp_lock);
 	intfdata->suspended = 0;
 	spin_unlock_irq(&intfdata->susp_lock);
 err_out:
+	if (usb_dev->descriptor.idVendor == 0x05c6 &&
+		(usb_dev->descriptor.idProduct == 0x900b ||
+		usb_dev->descriptor.idProduct == 0x900d) &&
+		intf->cur_altsetting->desc.bInterfaceNumber == LAST_SER_NUM) {
+		ril_wakeup_resume();
+	}
 	return err;
 }
 EXPORT_SYMBOL(usb_wwan_resume);

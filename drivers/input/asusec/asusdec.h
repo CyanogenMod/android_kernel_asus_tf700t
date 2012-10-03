@@ -336,7 +336,7 @@ struct asusdec_chip {
 	int re_init;		// 0 : first time init, not re-init, 1: in re-init procedure
 	int ec_wakeup;		// 0 : ec shutdown when PAD in LP0, 1 : keep ec active when PAD in LP0,
 	int ap_wake_wakeup;	// 0 : no ap_wake wakeup signal, 1: get ap_wake wakeup signal
-	int tf201_dock;		// 0 : not tf201 dock, 1: tf201 dock
+	int tf_dock;		// 0 : not tf dock, 1: tf dock
 	int dock_behavior;	// 0: susb_on follows wakeup event, 1: susb_on follows ec_req
 	int ec_in_s3;		// 0: normal mode, 1: ec in deep sleep mode
 	int susb_on;	// 0: susb off, 1: susb on

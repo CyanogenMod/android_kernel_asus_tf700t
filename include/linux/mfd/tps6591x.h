@@ -104,7 +104,12 @@ struct tps6591x_platform_data {
 
 	struct tps6591x_gpio_init_data *gpio_init_data;
 	int num_gpioinit_data;
+
+	bool use_power_off;
 };
+
+int tps6591x_set_reg_enable_record(void);
+int tps6591x_set_reg_disable_record(void);
 
 /*
  * NOTE: the functions below are not intended for use outside
@@ -118,6 +123,5 @@ extern int tps6591x_set_bits(struct device *dev, int reg, uint8_t bit_mask);
 extern int tps6591x_clr_bits(struct device *dev, int reg, uint8_t bit_mask);
 extern int tps6591x_update(struct device *dev, int reg, uint8_t val,
 			   uint8_t mask);
-extern int tps6591x_power_off(void);
 
 #endif /*__LINUX_MFD_TPS6591X_H */

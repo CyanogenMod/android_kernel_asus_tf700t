@@ -49,6 +49,7 @@
 #include <linux/mutex.h>
 #include <scsi/scsi_host.h>
 #include <linux/wakelock.h>
+
 struct us_data;
 struct scsi_cmnd;
 

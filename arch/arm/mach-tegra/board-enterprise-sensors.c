@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-enterprise-sensors.c
  *
- * Copyright (c) 2011, NVIDIA CORPORATION, All rights reserved.
+ * Copyright (c) 2011-2012, NVIDIA CORPORATION, All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -51,7 +51,6 @@
 #include "board-enterprise.h"
 #include "board.h"
 
-#ifndef CONFIG_TEGRA_INTERNAL_TSENSOR_EDP_SUPPORT
 static int nct_get_temp(void *_data, long *temp)
 {
 	struct nct1008_data *data = _data;
@@ -102,6 +101,7 @@ static void nct1008_probe_callback(struct nct1008_data *data)
 
 	thermal_device->name = "nct1008";
 	thermal_device->data = data;
+	thermal_device->id = THERMAL_DEVICE_ID_NCT_EXT;
 	thermal_device->offset = TDIODE_OFFSET;
 	thermal_device->get_temp = nct_get_temp;
 	thermal_device->get_temp_low = nct_get_temp_low;
@@ -109,18 +109,15 @@ static void nct1008_probe_callback(struct nct1008_data *data)
 	thermal_device->set_alert = nct_set_alert;
 	thermal_device->set_shutdown_temp = nct_set_shutdown_temp;
 
-	tegra_thermal_set_device(thermal_device);
+	tegra_thermal_device_register(thermal_device);
 }
-#endif
 
 static struct nct1008_platform_data enterprise_nct1008_pdata = {
 	.supported_hwrev = true,
 	.ext_range = true,
 	.conv_rate = 0x08,
 	.offset = 8, /* 4 * 2C. Bug 844025 - 1C for device accuracies */
-#ifndef CONFIG_TEGRA_INTERNAL_TSENSOR_EDP_SUPPORT
 	.probe_callback = nct1008_probe_callback,
-#endif
 };
 
 static struct i2c_board_info enterprise_i2c4_nct1008_board_info[] = {
@@ -135,7 +132,6 @@ static void enterprise_nct1008_init(void)
 {
 	int ret;
 
-	tegra_gpio_enable(TEGRA_GPIO_PH7);
 	ret = gpio_request(TEGRA_GPIO_PH7, "temp_alert");
 	if (ret < 0) {
 		pr_err("%s: gpio_request failed %d\n", __func__, ret);
@@ -153,19 +149,28 @@ static void enterprise_nct1008_init(void)
 				ARRAY_SIZE(enterprise_i2c4_nct1008_board_info));
 }
 
-static struct mpu_platform_data mpu3050_data = {
+/* MPU board file definition	*/
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU3050)
+#define MPU_GYRO_NAME		"mpu3050"
+#endif
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU6050)
+#define MPU_GYRO_NAME		"mpu6050"
+#endif
+static struct mpu_platform_data mpu_gyro_data = {
 	.int_config	= 0x10,
 	.level_shifter	= 0,
 	.orientation	= MPU_GYRO_ORIENTATION,	/* Located in board_[platformname].h	*/
 };
 
-static struct ext_slave_platform_data mpu3050_accel_data = {
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU3050)
+static struct ext_slave_platform_data mpu_accel_data = {
 	.address	= MPU_ACCEL_ADDR,
 	.irq		= 0,
 	.adapt_num	= MPU_ACCEL_BUS_NUM,
 	.bus		= EXT_SLAVE_BUS_SECONDARY,
 	.orientation	= MPU_ACCEL_ORIENTATION,	/* Located in board_[platformname].h	*/
 };
+#endif
 
 static struct ext_slave_platform_data mpu_compass_data = {
 	.address	= MPU_COMPASS_ADDR,
@@ -179,15 +184,17 @@ static struct i2c_board_info __initdata inv_mpu_i2c2_board_info[] = {
 	{
 		I2C_BOARD_INFO(MPU_GYRO_NAME, MPU_GYRO_ADDR),
 		.irq = TEGRA_GPIO_TO_IRQ(MPU_GYRO_IRQ_GPIO),
-		.platform_data = &mpu3050_data,
+		.platform_data = &mpu_gyro_data,
 	},
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU3050)
 	{
 		I2C_BOARD_INFO(MPU_ACCEL_NAME, MPU_ACCEL_ADDR),
 #if	MPU_ACCEL_IRQ_GPIO
 		.irq = TEGRA_GPIO_TO_IRQ(MPU_ACCEL_IRQ_GPIO),
 #endif
-		.platform_data = &mpu3050_accel_data,
+		.platform_data = &mpu_accel_data,
 	},
+#endif
 	{
 		I2C_BOARD_INFO(MPU_COMPASS_NAME, MPU_COMPASS_ADDR),
 #if	MPU_COMPASS_IRQ_GPIO
@@ -203,9 +210,9 @@ static void mpuirq_init(void)
 
 	pr_info("*** MPU START *** mpuirq_init...\n");
 
+#if (MPU_GYRO_TYPE == MPU_TYPE_MPU3050)
 #if	MPU_ACCEL_IRQ_GPIO
 	/* ACCEL-IRQ assignment */
-	tegra_gpio_enable(MPU_ACCEL_IRQ_GPIO);
 	ret = gpio_request(MPU_ACCEL_IRQ_GPIO, MPU_ACCEL_NAME);
 	if (ret < 0) {
 		pr_err("%s: gpio_request failed %d\n", __func__, ret);
@@ -219,9 +226,9 @@ static void mpuirq_init(void)
 		return;
 	}
 #endif
+#endif
 
 	/* MPU-IRQ assignment */
-	tegra_gpio_enable(MPU_GYRO_IRQ_GPIO);
 	ret = gpio_request(MPU_GYRO_IRQ_GPIO, MPU_GYRO_NAME);
 	if (ret < 0) {
 		pr_err("%s: gpio_request failed %d\n", __func__, ret);
@@ -580,7 +587,6 @@ static int enterprise_cam_init(void)
 		gpio_direction_output(enterprise_cam_gpio_data[i].gpio,
 				      enterprise_cam_gpio_data[i].value);
 		gpio_export(enterprise_cam_gpio_data[i].gpio, false);
-		tegra_gpio_enable(enterprise_cam_gpio_data[i].gpio);
 	}
 
 	tegra_get_board_info(&bi);

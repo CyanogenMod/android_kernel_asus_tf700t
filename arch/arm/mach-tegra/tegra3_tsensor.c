@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/tegra3_tsensor.c
  *
- * Copyright (C) 2011 NVIDIA Corporation.
+ * Copyright (C) 2011-2012 NVIDIA Corporation.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -57,7 +57,6 @@
 
 #define TSENSOR_OFFSET	(4000 + 5000)
 
-#ifdef CONFIG_TEGRA_INTERNAL_TSENSOR_EDP_SUPPORT
 static int tsensor_get_temp(void *vdata, long *milli_temp)
 {
 	struct tegra_tsensor_data *data = vdata;
@@ -108,6 +107,7 @@ static void tegra3_tsensor_probe_callback(struct tegra_tsensor_data *data)
 
 	thermal_device->name = "tsensor";
 	thermal_device->data = data;
+	thermal_device->id = THERMAL_DEVICE_ID_TSENSOR;
 	thermal_device->offset = TSENSOR_OFFSET;
 	thermal_device->get_temp = tsensor_get_temp;
 	thermal_device->get_temp_low = tsensor_get_temp_low;
@@ -115,7 +115,8 @@ static void tegra3_tsensor_probe_callback(struct tegra_tsensor_data *data)
 	thermal_device->set_alert = tsensor_set_alert;
 	thermal_device->set_shutdown_temp = tsensor_set_shutdown_temp;
 
-	if (tegra_thermal_set_device(thermal_device)) /* This should not fail */
+	/* This should not fail */
+	if (tegra_thermal_device_register(thermal_device))
 		BUG();
 }
 
@@ -186,8 +187,3 @@ labelSkipPowerOff:
 labelEnd:
 	return;
 }
-#else
-void __init tegra3_tsensor_init(struct tegra_tsensor_pmu_data *data)
-{
-}
-#endif

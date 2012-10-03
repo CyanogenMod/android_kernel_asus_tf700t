@@ -15,8 +15,9 @@
 #include <linux/module.h>
 #include <linux/init.h>
 
-static int regmap_i2c_write(struct device *dev, const void *data, size_t count)
+static int regmap_i2c_write(void *context, const void *data, size_t count)
 {
+	struct device *dev = context;
 	struct i2c_client *i2c = to_i2c_client(dev);
 	int ret;
 
@@ -29,10 +30,11 @@ static int regmap_i2c_write(struct device *dev, const void *data, size_t count)
 		return -EIO;
 }
 
-static int regmap_i2c_gather_write(struct device *dev,
+static int regmap_i2c_gather_write(void *context,
 				   const void *reg, size_t reg_size,
 				   const void *val, size_t val_size)
 {
+	struct device *dev = context;
 	struct i2c_client *i2c = to_i2c_client(dev);
 	struct i2c_msg xfer[2];
 	int ret;
@@ -62,10 +64,11 @@ static int regmap_i2c_gather_write(struct device *dev,
 		return -EIO;
 }
 
-static int regmap_i2c_read(struct device *dev,
+static int regmap_i2c_read(void *context,
 			   const void *reg, size_t reg_size,
 			   void *val, size_t val_size)
 {
+	struct device *dev = context;
 	struct i2c_client *i2c = to_i2c_client(dev);
 	struct i2c_msg xfer[2];
 	int ret;
@@ -90,11 +93,9 @@ static int regmap_i2c_read(struct device *dev,
 }
 
 static struct regmap_bus regmap_i2c = {
-	.type = &i2c_bus_type,
 	.write = regmap_i2c_write,
 	.gather_write = regmap_i2c_gather_write,
 	.read = regmap_i2c_read,
-	.owner = THIS_MODULE,
 };
 
 /**
@@ -109,8 +110,25 @@ static struct regmap_bus regmap_i2c = {
 struct regmap *regmap_init_i2c(struct i2c_client *i2c,
 			       const struct regmap_config *config)
 {
-	return regmap_init(&i2c->dev, &regmap_i2c, config);
+	return regmap_init(&i2c->dev, &regmap_i2c, &i2c->dev, config);
 }
 EXPORT_SYMBOL_GPL(regmap_init_i2c);
+
+/**
+ * devm_regmap_init_i2c(): Initialise managed register map
+ *
+ * @i2c: Device that will be interacted with
+ * @config: Configuration for register map
+ *
+ * The return value will be an ERR_PTR() on error or a valid pointer
+ * to a struct regmap.  The regmap will be automatically freed by the
+ * device management code.
+ */
+struct regmap *devm_regmap_init_i2c(struct i2c_client *i2c,
+				    const struct regmap_config *config)
+{
+	return devm_regmap_init(&i2c->dev, &regmap_i2c, &i2c->dev, config);
+}
+EXPORT_SYMBOL_GPL(devm_regmap_init_i2c);
 
 MODULE_LICENSE("GPL");

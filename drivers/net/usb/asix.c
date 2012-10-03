@@ -49,7 +49,7 @@ KERN_INFO "ASIX USB Ethernet Adapter:v" DRV_VERSION
 KERN_INFO "    http://www.asix.com.tw\n";
 
 /* configuration of maximum bulk in size */
-static int bsize = AX88772B_MAX_BULKIN_16K;
+static int bsize = AX88772B_MAX_BULKIN_2K;
 module_param (bsize, int, 0);
 MODULE_PARM_DESC (bsize, "Maximum transfer size per bulk");
 
@@ -588,6 +588,8 @@ ax88772b_mdio_write_le(struct net_device *netdev, int phy_id, int loc, int val)
 	ax88772b_mdio_write( netdev, phy_id, loc, cpu_to_le16(val) );
 }
 
+static int ax88772b_reset(struct usbnet *dev);
+
 static int ax88772_suspend (struct usb_interface *intf,
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,10)
 			pm_message_t message)
@@ -679,11 +681,13 @@ static int ax88772b_resume (struct usb_interface *intf)
 				0, 0, NULL);
 	}
 
-	if (ax772b_data->psc & (AX_SWRESET_IPPSL_0 | AX_SWRESET_IPPSL_1)) {
+	//if (ax772b_data->psc & (AX_SWRESET_IPPSL_0 | AX_SWRESET_IPPSL_1)) {
 		ax88772a_phy_powerup (dev);
-	}
+	//}
 
-	netif_carrier_off (dev->net);
+	//netif_carrier_off (dev->net);
+
+	ax88772b_reset(dev);
 
 	return axusbnet_resume (intf);
 }
@@ -942,6 +946,288 @@ static struct ethtool_ops ax88772_ethtool_ops = {
 	.get_settings		= ax8817x_get_settings,
 	.set_settings		= ax8817x_set_settings,
 };
+
+static const struct net_device_ops ax88772b_netdev_ops;
+static struct ethtool_ops ax88772b_ethtool_ops;
+static int ax88772b_set_csums(struct usbnet *dev);
+
+static int ax88772b_reset(struct usbnet *dev)
+{
+	int ret;
+	void *buf;
+	struct ax8817x_data *data = (struct ax8817x_data *)&dev->data;
+	struct ax88772b_data *ax772b_data;
+	u16 *tmp16;
+	u8 i;
+	u8 TempPhySelect;
+	bool InternalPhy;
+
+	buf = kmalloc (6, GFP_KERNEL);
+	if (!buf) {
+		deverr(dev, "Cannot allocate memory for buffer");
+		return -ENOMEM;
+	}
+	tmp16 = (u16 *)buf;
+
+	ax772b_data = kmalloc (sizeof(*ax772b_data), GFP_KERNEL);
+	if (!ax772b_data) {
+		deverr(dev, "Cannot allocate memory for AX88772B data");
+		kfree (buf);
+		return -ENOMEM;
+	}
+	memset (ax772b_data, 0, sizeof(*ax772b_data));
+	dev->priv = ax772b_data;
+
+	ax772b_data->ax_work = create_singlethread_workqueue ("ax88772b");
+	if (!ax772b_data->ax_work) {
+		kfree (buf);
+		kfree (ax772b_data);
+		return -ENOMEM;
+	}
+
+	ax772b_data->dev = dev;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+	INIT_WORK (&ax772b_data->check_link, ax88772b_link_reset, dev);
+#else
+	INIT_WORK (&ax772b_data->check_link, ax88772b_link_reset);
+#endif
+
+	if ((ret = ax8817x_read_cmd (dev, AX_CMD_SW_PHY_STATUS, 0, 0, 1,
+        					&TempPhySelect)) < 0) {
+		deverr(dev, "read SW interface selection status register"
+							"failed: %d\n", ret);
+		goto err_out;
+	}
+
+	TempPhySelect &= 0x0C;
+
+	if (TempPhySelect == AX_PHYSEL_SSRMII) {
+		InternalPhy = false;
+		ax772b_data->OperationMode = OPERATION_MAC_MODE;
+		ax772b_data->PhySelect = 0x00;
+	}
+	else if (TempPhySelect == AX_PHYSEL_SSRRMII) {
+		InternalPhy = true;
+		ax772b_data->OperationMode = OPERATION_PHY_MODE;
+		ax772b_data->PhySelect = 0x00;
+	}
+	else if (TempPhySelect == AX_PHYSEL_SSMII) {
+		InternalPhy = true;
+		ax772b_data->OperationMode = OPERATION_MAC_MODE;
+		ax772b_data->PhySelect = 0x01;
+	}
+	else {
+		deverr(dev, "Unknown MII type\n");
+		goto err_out;
+	}
+
+	/* reload eeprom data */
+	if ((ret = ax8817x_write_cmd(dev, AX_CMD_WRITE_GPIOS,
+			AXGPIOS_RSE, 0, 0, NULL)) < 0) {
+		deverr(dev, "Failed to enable GPIO finction: %d", ret);
+		goto err_out;
+	}
+	msleep(5);
+
+	/* Get the EEPROM data*/
+	if ((ret = ax8817x_read_cmd (dev, AX_CMD_READ_EEPROM,
+				     0x18, 0, 2, (void *)tmp16)) < 0) {
+		deverr(dev, "read SROM address 18h failed: %d", ret);
+		goto err_out;
+	}
+	le16_to_cpus(tmp16);
+	ax772b_data->psc = *tmp16 & 0xFF00;
+	/* End of get EEPROM data */
+
+	/* Get the MAC address from EEPROM */
+	memset(buf, 0, ETH_ALEN);
+	for (i = 0; i < (ETH_ALEN >> 1); i++) {
+		if ((ret = ax8817x_read_cmd (dev, AX_CMD_READ_EEPROM,
+					0x04 + i, 0, 2, (buf + i * 2))) < 0) {
+			deverr(dev, "read SROM address 04h failed: %d", ret);
+			goto err_out;
+		}
+	}
+	memcpy(dev->net->dev_addr, buf, ETH_ALEN);
+
+	/* Set the MAC address */
+	if ((ret = ax8817x_write_cmd (dev, AX88772_CMD_WRITE_NODE_ID,
+			0, 0, ETH_ALEN, buf)) < 0) {
+		deverr(dev, "set MAC address failed: %d", ret);
+		goto err_out;
+	}
+
+	/* Initialize MII structure */
+	dev->mii.dev = dev->net;
+	dev->mii.mdio_read = ax8817x_mdio_read_le;
+	dev->mii.mdio_write = ax88772b_mdio_write_le;
+	dev->mii.phy_id_mask = 0xff;
+	dev->mii.reg_num_mask = 0xff;
+
+	/* Get the PHY id */
+	if ((ret = ax8817x_read_cmd(dev, AX_CMD_READ_PHY_ID,
+			0, 0, 2, buf)) < 0) {
+		deverr(dev, "Error reading PHY ID: %02x", ret);
+		goto err_out;
+	} else if (ret < 2) {
+		/* this should always return 2 bytes */
+		deverr(dev, "Read PHYID returned less than 2 bytes: ret=%02x",
+		    ret);
+		ret = -EIO;
+		goto err_out;
+	}
+
+	if (InternalPhy)
+		dev->mii.phy_id = *((u8 *)buf + 1);
+	else
+		dev->mii.phy_id = *((u8 *)buf);
+
+	if ((ret = ax8817x_write_cmd(dev, AX_CMD_SW_PHY_SELECT, 
+			ax772b_data->PhySelect, 0, 0, NULL)) < 0) {
+		deverr(dev, "Select PHY #1 failed: %d", ret);
+		goto err_out;
+	}
+
+#if 0
+	/* select the embedded 10/100 Ethernet PHY */
+	if ((ret = ax8817x_write_cmd(dev, AX_CMD_SW_PHY_SELECT,
+			AX_PHYSEL_SSEN | AX_PHYSEL_PSEL | AX_PHYSEL_SSMII
+						, 0, 0, NULL)) < 0) {
+		deverr(dev, "Select PHY #1 failed: %d", ret);
+		goto err_out;
+	}
+
+	if(dev->mii.phy_id != 0x10) {
+		deverr(dev, "Got wrong PHY ID: %02x", dev->mii.phy_id);
+		ret = -EIO;
+		goto err_out;
+	}
+#endif
+	if ((ret = ax88772a_phy_powerup (dev)) < 0)
+		goto err_out;
+
+	/* stop MAC operation */
+	if ((ret = ax8817x_write_cmd(dev, AX_CMD_WRITE_RX_CTL,
+			AX_RX_CTL_STOP, 0, 0, NULL)) < 0) {
+		deverr(dev, "Reset RX_CTL failed: %d", ret);
+		goto err_out;
+	}
+
+	/* make sure the driver can enable sw mii operation */
+	if ((ret = ax8817x_write_cmd(dev, AX_CMD_SET_SW_MII,
+			0, 0, 0, NULL)) < 0) {
+		deverr(dev, "Enabling software MII failed: %d", ret);
+		goto err_out;
+	}
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
+	dev->net->do_ioctl = ax8817x_ioctl;
+	dev->net->set_multicast_list = ax88772b_set_multicast;
+	dev->net->set_mac_address = ax8817x_set_mac_addr;
+#else
+	dev->net->netdev_ops = &ax88772b_netdev_ops;
+#endif
+
+	dev->net->ethtool_ops = &ax88772b_ethtool_ops;
+
+	/* Register suspend and resume functions */
+	data->suspend = ax88772b_suspend;
+	data->resume = ax88772b_resume;
+
+	if (ax772b_data->OperationMode == OPERATION_PHY_MODE)
+		ax8817x_mdio_write_le(dev->net, dev->mii.phy_id
+						, MII_BMCR, 0x3900);
+
+	if (dev->mii.phy_id != 0x10)
+		ax8817x_mdio_write_le(dev->net, 0x10, MII_BMCR, 0x3900);
+		
+
+	if (dev->mii.phy_id == 0x10 && ax772b_data->OperationMode 
+						!= OPERATION_PHY_MODE) {
+
+		*tmp16 = ax8817x_mdio_read_le(dev->net, dev->mii.phy_id, 0x12);
+		ax8817x_mdio_write_le(dev->net, dev->mii.phy_id, 0x12,
+					((*tmp16 & 0xFF9F) | 0x0040));
+	}
+	
+	ax8817x_mdio_write_le(dev->net, dev->mii.phy_id, MII_ADVERTISE,
+			ADVERTISE_ALL | ADVERTISE_CSMA | ADVERTISE_PAUSE_CAP);
+
+	mii_nway_restart(&dev->mii);
+
+	if ((ret = ax8817x_write_cmd(dev, AX_CMD_WRITE_MEDIUM_MODE,
+				AX88772_MEDIUM_DEFAULT, 0, 0, NULL)) < 0) {
+		deverr(dev, "Failed to write medium mode: %d", ret);
+		goto err_out;
+	}
+
+	if ((ret = ax8817x_write_cmd(dev, AX_CMD_WRITE_IPG0,
+			AX88772A_IPG0_DEFAULT | AX88772A_IPG1_DEFAULT << 8,
+			AX88772A_IPG2_DEFAULT, 0, NULL)) < 0) {
+		deverr(dev, "Failed to write interframe gap: %d", ret);
+		goto err_out;
+	}
+
+	dev->net->features |= NETIF_F_IP_CSUM;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,22)
+	dev->net->features |= NETIF_F_IPV6_CSUM;
+#endif
+
+	ax772b_data->checksum = AX_RX_CHECKSUM | AX_TX_CHECKSUM;
+	if ((ret = ax88772b_set_csums(dev)) < 0) {
+		deverr(dev, "Write RX_COE/TX_COE failed: %d", ret);
+		goto err_out;
+	}
+
+	dev->rx_size = bsize & 0x07;
+	if (dev->udev->speed == USB_SPEED_HIGH) {
+
+		if ((ret = ax8817x_write_cmd (dev, 0x2A,
+				AX88772B_BULKIN_SIZE[dev->rx_size].byte_cnt,
+				AX88772B_BULKIN_SIZE[dev->rx_size].threshold,
+				0, NULL)) < 0) {
+			deverr(dev, "Reset RX_CTL failed: %d", ret);
+			goto err_out;
+		}
+
+		dev->rx_urb_size = AX88772B_BULKIN_SIZE[dev->rx_size].size;
+	} else {
+		if ((ret = ax8817x_write_cmd (dev, 0x2A,
+				0x8000, 0x8001, 0, NULL)) < 0) {
+			deverr(dev, "Reset RX_CTL failed: %d", ret);
+			goto err_out;
+		}
+		dev->rx_urb_size = 2048;
+	}
+
+	/* Configure RX header type */
+	if ((ret = ax8817x_write_cmd (dev, AX_CMD_WRITE_RX_CTL,
+		      (AX_RX_CTL_START | AX_RX_CTL_AB | AX_RX_HEADER_DEFAULT),
+		      0, 0, NULL)) < 0) {
+		deverr(dev, "Reset RX_CTL failed: %d", ret);
+		goto err_out;
+	}
+
+	/* Overwrite power saving configuration from eeprom */
+	if ((ret = ax8817x_write_cmd (dev, AX_CMD_SW_RESET,
+	    AX_SWRESET_IPRL | (ax772b_data->psc & 0x7FFF), 0, 0, NULL)) < 0) {
+		deverr(dev, "Failed to configure PHY power saving: %d", ret);
+		goto err_out;
+	}
+
+	if (ax772b_data->OperationMode == OPERATION_PHY_MODE)
+		netif_carrier_on(dev->net);
+
+	kfree (buf);
+	printk (version);
+
+	return ret;
+err_out:
+	destroy_workqueue (ax772b_data->ax_work);
+	kfree (buf);
+	kfree (ax772b_data);
+	return ret;
+}
 
 static int ax88772_bind(struct usbnet *dev, struct usb_interface *intf)
 {
@@ -1203,7 +1489,7 @@ static int ax88772a_phy_powerup (struct usbnet *dev)
 	/* set the embedded Ethernet PHY in power-down state */
 	if ((ret = ax8817x_write_cmd(dev, AX_CMD_SW_RESET,
 			AX_SWRESET_IPPD | AX_SWRESET_IPRL, 0, 0, NULL)) < 0) {
-		deverr(dev, "Failed to power down PHY: %d", ret);
+		printk("Failed to power down PHY: %d", ret);
 		return ret;
 	}
 
@@ -1213,7 +1499,7 @@ static int ax88772a_phy_powerup (struct usbnet *dev)
 	/* set the embedded Ethernet PHY in power-up state */
 	if ((ret = ax8817x_write_cmd(dev, AX_CMD_SW_RESET,
 			AX_SWRESET_IPRL, 0, 0, NULL)) < 0) {
-		deverr(dev, "Failed to reset PHY: %d", ret);
+		printk("Failed to reset PHY: %d", ret);
 		return ret;
 	}
 
@@ -1222,16 +1508,18 @@ static int ax88772a_phy_powerup (struct usbnet *dev)
 	/* set the embedded Ethernet PHY in reset state */
 	if ((ret = ax8817x_write_cmd(dev, AX_CMD_SW_RESET,
 			AX_SWRESET_CLEAR, 0, 0, NULL)) < 0) {
-		deverr(dev, "Failed to power up PHY: %d", ret);
+		printk("Failed to power up PHY: %d", ret);
 		return ret;
 	}
 
 	/* set the embedded Ethernet PHY in power-up state */
 	if ((ret = ax8817x_write_cmd(dev, AX_CMD_SW_RESET,
 			AX_SWRESET_IPRL, 0, 0, NULL)) < 0) {
-		deverr(dev, "Failed to reset PHY: %d", ret);
+		printk("Failed to reset PHY: %d", ret);
 		return ret;
 	}
+
+	printk("\n---ax88772a_phy_powerup: ok!!!---\n\n");
 
 	return 0;
 }
@@ -3373,6 +3661,7 @@ static const struct driver_info ax88772b_info = {
 	.bind = ax88772b_bind,
 	.unbind = ax88772b_unbind,
 	.status = ax88772b_status,
+	.reset = ax88772b_reset,
 	.flags = FLAG_ETHER | FLAG_FRAMING_AX | FLAG_HW_IP_ALIGNMENT,
 	.rx_fixup = ax88772b_rx_fixup,
 	.tx_fixup = ax88772b_tx_fixup,

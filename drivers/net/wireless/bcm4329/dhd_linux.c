@@ -42,6 +42,7 @@
 #include <linux/fs.h>
 #include <linux/inetdevice.h>
 #include <linux/mutex.h>
+#include <linux/device.h>
 
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
@@ -184,6 +185,7 @@ static int wifi_remove(struct platform_device *pdev)
 	mdelay(500);
 	return 0;
 }
+
 static int wifi_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	DHD_TRACE(("##> %s\n", __FUNCTION__));
@@ -323,7 +325,6 @@ typedef struct dhd_info {
 	int wl_count;
 	int wl_packet;
 
-	int hang_was_sent; /* flag that message was send at least once */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 25))
 	struct mutex wl_start_lock; /* mutex when START called to prevent any other Linux calls */
 #endif
@@ -569,7 +570,6 @@ static void dhd_set_packet_filter(int value, dhd_pub_t *dhd)
 #if defined(CONFIG_HAS_EARLYSUSPEND)
 static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 {
-	int power_mode = PM_FAST;
 	/* wl_pkt_filter_enable_t	enable_parm; */
 	char iovbuf[32];
 	int bcn_li_dtim = 3;
@@ -585,9 +585,6 @@ static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 			printf("Wi-Fi early-suspend+\n");
 			/* Kernel suspended */
 			DHD_TRACE(("%s: force extra Suspend setting \n", __FUNCTION__));
-
-			dhdcdc_set_ioctl(dhd, 0, WLC_SET_PM,
-				(char *)&power_mode, sizeof(power_mode));
 
 			/* Enable packet filter, only allow unicast packet to send up */
 			dhd_set_packet_filter(1, dhd);
@@ -610,10 +607,6 @@ static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 			printf("Wi-Fi late-resume+\n");
 			/* Kernel resumed  */
 			DHD_TRACE(("%s: Remove extra suspend setting \n", __FUNCTION__));
-
-			power_mode = PM_FAST;
-			dhdcdc_set_ioctl(dhd, 0, WLC_SET_PM, (char *)&power_mode,
-				sizeof(power_mode));
 
 			/* disable pkt filter */
 			dhd_set_packet_filter(0, dhd);
@@ -1537,7 +1530,8 @@ dhd_dpc_thread(void *data)
 					dhd_os_wake_unlock(&dhd->pub);
 				}
 			} else {
-				dhd_bus_stop(dhd->pub.bus, TRUE);
+				if (dhd->pub.up)
+					dhd_bus_stop(dhd->pub.bus, TRUE);
 				dhd_os_wake_unlock(&dhd->pub);
 			}
 		}
@@ -1827,6 +1821,14 @@ dhd_ioctl_entry(struct net_device *net, struct ifreq *ifr, int cmd)
 
 	dhd_os_wake_lock(&dhd->pub);
 
+	/* send to dongle only if we are not waiting for reload already */
+	if (dhd->pub.hang_was_sent) {
+		DHD_ERROR(("%s: HANG was sent up earlier\n", __FUNCTION__));
+		dhd_os_wake_lock_timeout_enable(&dhd->pub);
+		dhd_os_wake_unlock(&dhd->pub);
+		return OSL_ERROR(BCME_DONGLE_DOWN);
+	}
+
 	ifidx = dhd_net2idx(dhd, net);
 	DHD_TRACE(("%s: ifidx %d, cmd 0x%04x\n", __FUNCTION__, ifidx, cmd));
 
@@ -1968,7 +1970,7 @@ dhd_stop(struct net_device *net)
 #else
 	DHD_ERROR(("BYPASS %s:due to BRCM compilation : under investigation ...\n", __FUNCTION__));
 #endif /* !defined(IGNORE_ETH0_DOWN) */
-
+	dhd->pub.hang_was_sent = 0;
 	OLD_MOD_DEC_USE_COUNT;
 	return 0;
 }
@@ -1988,8 +1990,9 @@ dhd_open(struct net_device *net)
 	ifidx = dhd_net2idx(dhd, net);
 	DHD_TRACE(("%s: ifidx %d\n", __FUNCTION__, ifidx));
 
-	if(ifidx < 0)
+	if (ifidx == DHD_BAD_IF)
 		return -1;
+
 	if ((dhd->iflist[ifidx]) && (dhd->iflist[ifidx]->state == WLC_E_IF_DEL)) {
 		DHD_ERROR(("%s: Error: called when IF already deleted\n", __FUNCTION__));
 		return -1;
@@ -2092,7 +2095,7 @@ dhd_del_if(dhd_info_t *dhd, int ifidx)
 
 
 dhd_pub_t *
-dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
+dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen, void *dev)
 {
 	dhd_info_t *dhd = NULL;
 	struct net_device *net;
@@ -2109,7 +2112,7 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 		DHD_ERROR(("%s: OOM - alloc_etherdev\n", __FUNCTION__));
 		goto fail;
 	}
-
+	SET_NETDEV_DEV(net, (struct device *)dev);
 	/* Allocate primary dhd_info */
 	if (!(dhd = MALLOC(osh, sizeof(dhd_info_t)))) {
 		DHD_ERROR(("%s: OOM - alloc dhd_info\n", __FUNCTION__));
@@ -2344,7 +2347,7 @@ dhd_bus_start(dhd_pub_t *dhdp)
 	setbit(dhdp->eventmask, WLC_E_NDIS_LINK);
 	setbit(dhdp->eventmask, WLC_E_MIC_ERROR);
 	setbit(dhdp->eventmask, WLC_E_PMKID_CACHE);
-	setbit(dhdp->eventmask, WLC_E_TXFAIL);
+	//setbit(dhdp->eventmask, WLC_E_TXFAIL);
 	setbit(dhdp->eventmask, WLC_E_JOIN_START);
 	setbit(dhdp->eventmask, WLC_E_SCAN_COMPLETE);
 	setbit(dhdp->eventmask, WLC_E_RELOAD);
@@ -2354,10 +2357,14 @@ dhd_bus_start(dhd_pub_t *dhdp)
 
 /* enable dongle roaming event */
 	setbit(dhdp->eventmask, WLC_E_ROAM);
+	//setbit(dhdp->eventmask, WLC_E_TRACE);
 
-	dhdp->pktfilter_count = 1;
+	dhdp->pktfilter_count = 4;
 	/* Setup filter to allow only unicast */
 	dhdp->pktfilter[0] = "100 0 0 0 0x01 0x00";
+	dhdp->pktfilter[1] = NULL;
+	dhdp->pktfilter[2] = NULL;
+	dhdp->pktfilter[3] = NULL;
 #endif /* EMBEDDED_PLATFORM */
 
 	/* Bus is ready, do any protocol initialization */
@@ -3158,6 +3165,35 @@ int net_os_set_dtim_skip(struct net_device *dev, int val)
 	return 0;
 }
 
+int net_os_rxfilter_add_remove(struct net_device *dev, int add_remove, int num)
+{
+	dhd_info_t *dhd = *(dhd_info_t **)netdev_priv(dev);
+	char *filterp = NULL;
+	int ret = 0;
+
+	if (!dhd || (num == DHD_UNICAST_FILTER_NUM))
+		return ret;
+	if (num >= dhd->pub.pktfilter_count)
+		return -EINVAL;
+	if (add_remove) {
+		switch (num) {
+		case DHD_BROADCAST_FILTER_NUM:
+			filterp = "101 0 0 0 0xFFFFFFFFFFFF 0xFFFFFFFFFFFF";
+			break;
+		case DHD_MULTICAST4_FILTER_NUM:
+			filterp = "102 0 0 0 0xFFFFFF 0x01005E";
+			break;
+		case DHD_MULTICAST6_FILTER_NUM:
+			filterp = "103 0 0 0 0xFFFF 0x3333";
+			break;
+		default:
+			return -EINVAL;
+		}
+	}
+	dhd->pub.pktfilter[num] = filterp;
+	return ret;
+}
+
 int net_os_set_packet_filter(struct net_device *dev, int val)
 {
 	dhd_info_t *dhd = *(dhd_info_t **)netdev_priv(dev);
@@ -3236,8 +3272,8 @@ int net_os_send_hang_message(struct net_device *dev)
 	int ret = 0;
 
 	if (dhd) {
-		if (!dhd->hang_was_sent) {
-			dhd->hang_was_sent = 1;
+		if (!dhd->pub.hang_was_sent) {
+			dhd->pub.hang_was_sent = 1;
 			ret = wl_iw_send_priv_event(dev, "HANG");
 		}
 	}

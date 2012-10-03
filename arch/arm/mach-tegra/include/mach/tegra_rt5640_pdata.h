@@ -15,6 +15,8 @@
  */
 
 struct tegra_rt5640_platform_data {
+	const char *codec_name;
+	const char *codec_dai_name;
 	int gpio_spkr_en;
 	int gpio_hp_det;
 	int gpio_hp_mute;

@@ -39,6 +39,7 @@
 #include "../gpio-names.h"
 #include <mach/board-cardhu-misc.h>
 #include "../codecs/wm8903.h"
+#include "../codecs/rt5640.h"
 
 MODULE_DESCRIPTION("Headset detection driver");
 MODULE_LICENSE("GPL");
@@ -76,8 +77,14 @@ enum{
 	HEADSET_WITHOUT_MIC = 2,
 };
 
+enum{
+	NO_LINEOUT = 0,
+	LINEOUT_IN = 1,
+};
+
 struct headset_data {
 	struct switch_dev sdev;
+	struct switch_dev ldev;
 	struct input_dev *input;
 	unsigned int irq;
 	struct hrtimer timer;
@@ -93,8 +100,9 @@ EXPORT_SYMBOL(lineout_alive);
 static struct workqueue_struct *g_detection_work_queue;
 static DECLARE_WORK(g_detection_work, detection_work);
 
-extern struct snd_soc_codec *global_audio_codec;
+extern struct snd_soc_codec *rt5631_audio_codec;
 extern struct snd_soc_codec *wm8903_codec;
+extern struct snd_soc_codec *rt5640_audio_codec;
 struct work_struct headset_work;
 struct work_struct lineout_work;
 struct snd_soc_codec *global_codec;
@@ -105,6 +113,31 @@ extern int force_headphone;
 extern int audio_dock_in_out(u8 status);
 extern bool isAudioStandIn(void);
 extern int audio_stand_route(bool);
+
+static ssize_t lineout_name_show(struct switch_dev *ldev, char *buf)
+{
+        switch (switch_get_state(&hs_data->ldev)){
+        case NO_LINEOUT:{
+                return sprintf(buf, "%s\n", "No Device");
+                }
+        case LINEOUT_IN:{
+                return sprintf(buf, "%s\n", "LINEOUT_IN");
+                }
+        }
+        return -EINVAL;
+}
+
+static ssize_t lineout_state_show(struct switch_dev *ldev, char *buf)
+{
+        switch (switch_get_state(&hs_data->ldev)){
+        case NO_LINEOUT:
+                return sprintf(buf, "%d\n", 0);
+        case LINEOUT_IN:
+                return sprintf(buf, "%d\n", 1);
+        }
+        return -EINVAL;
+}
+
 
 static ssize_t headset_name_show(struct switch_dev *sdev, char *buf)
 {
@@ -274,10 +307,12 @@ static void lineout_work_queue(struct work_struct *work)
 		printk("LINEOUT: LineOut inserted\n");
 		lineout_alive = true;
 		audio_stand_route(true);
+		switch_set_state(&hs_data->ldev, LINEOUT_IN);
 	}else if(gpio_get_value(LINEOUT_GPIO)){
 		printk("LINEOUT: LineOut removed\n");
 		lineout_alive = false;
 		audio_stand_route(false);
+		switch_set_state(&hs_data->ldev, NO_DEVICE);
 	}
 
 }
@@ -303,9 +338,11 @@ static int lineout_config_gpio()
 	if (gpio_get_value(LINEOUT_GPIO) == 0){
 		lineout_alive = true;
 		audio_stand_route(true);
+		switch_set_state(&hs_data->ldev, LINEOUT_IN);
 	}else{
 		lineout_alive = false;
 		audio_stand_route(false);
+		switch_set_state(&hs_data->ldev, NO_DEVICE);
 	}
 
 	return 0;
@@ -357,14 +394,14 @@ static int codec_micbias_power(int on)
 		 if(project_info == TEGRA3_PROJECT_TF201 || project_info == TEGRA3_PROJECT_TF300TG ||
 			project_info == TEGRA3_PROJECT_TF700T || project_info == TEGRA3_PROJECT_TF300TL)
 		{
-			if(global_audio_codec == NULL){
-				printk("%s: No rt5631 global_audio_codec - set micbias on fail\n", __func__);
+			if(rt5631_audio_codec == NULL){
+				printk("%s: No rt5631 rt5631_audio_codec - set micbias on fail\n", __func__);
 				return 0;
 			}
 			/* Mic Bias enable */
-			CtrlReg = snd_soc_read(global_audio_codec, 0x3B);
+			CtrlReg = snd_soc_read(rt5631_audio_codec, 0x3B);
 			CtrlReg = CtrlReg | (1 << 3);
-			snd_soc_write(global_audio_codec, 0x3B, CtrlReg);
+			snd_soc_write(rt5631_audio_codec, 0x3B, CtrlReg);
 		}else if(project_info == TEGRA3_PROJECT_TF300T){
 			if(wm8903_codec == NULL){
 				printk("%s: No wm8903_codec - set micbias on fail\n", __func__);
@@ -372,19 +409,26 @@ static int codec_micbias_power(int on)
 			}
 			CtrlReg = MICBIAS_ENA | MICDET_ENA;
 			snd_soc_write(wm8903_codec, WM8903_MIC_BIAS_CONTROL_0, CtrlReg);
+		}else if(project_info == TEGRA3_PROJECT_TF500T || project_info == TEGRA3_PROJECT_P1801){
+			if(rt5640_audio_codec == NULL){
+				printk("%s: No RT5642_codec - set micbias on fail\n", __func__);
+				return 0;
+			}
+			snd_soc_update_bits(rt5640_audio_codec, RT5640_PWR_ANLG1, RT5640_PWR_LDO2, RT5640_PWR_LDO2); /* Enable LDO2 */
+			snd_soc_update_bits(rt5640_audio_codec, RT5640_PWR_ANLG2, RT5640_PWR_MB1, RT5640_PWR_MB1); /*Enable MicBias1 */
 		}
 	}else{
 		 if(project_info == TEGRA3_PROJECT_TF201 || project_info == TEGRA3_PROJECT_TF300TG ||
                         project_info == TEGRA3_PROJECT_TF700T || project_info == TEGRA3_PROJECT_TF300TL)
 		{
-			if(global_audio_codec == NULL){
-				printk("%s: No rt5631 global_audio_codec - set micbias off fail\n", __func__);
+			if(rt5631_audio_codec == NULL){
+				printk("%s: No rt5631 rt5631_audio_codec - set micbias off fail\n", __func__);
 				return 0;
 			}
 			/* Mic Bias diable*/
-			CtrlReg = snd_soc_read(global_audio_codec, 0x3B);
+			CtrlReg = snd_soc_read(rt5631_audio_codec, 0x3B);
 			CtrlReg = CtrlReg & (0xFFFFFFF7);
-			snd_soc_write(global_audio_codec, 0x3B, CtrlReg);
+			snd_soc_write(rt5631_audio_codec, 0x3B, CtrlReg);
 		}else if(project_info == TEGRA3_PROJECT_TF300T){
 			if(wm8903_codec == NULL){
 				printk("%s: No wm8903_codec - set micbias off fail\n", __func__);
@@ -392,6 +436,13 @@ static int codec_micbias_power(int on)
 			}
 			CtrlReg = 0;
 			snd_soc_write(wm8903_codec, WM8903_MIC_BIAS_CONTROL_0, CtrlReg);
+		}else if(project_info == TEGRA3_PROJECT_TF500T || project_info == TEGRA3_PROJECT_P1801){
+			if(rt5640_audio_codec == NULL){
+				printk("%s: No RT5642_codec - set micbias on fail\n", __func__);
+				return 0;
+			}
+			snd_soc_update_bits(rt5640_audio_codec, RT5640_PWR_ANLG2, RT5640_PWR_MB1, 0); /* Disable MicBias1 */
+			snd_soc_update_bits(rt5640_audio_codec, RT5640_PWR_ANLG1, RT5640_PWR_LDO2, 0); /* Disable LDO2 */
 		}
 	}
 	return 0;
@@ -438,7 +489,15 @@ static int __init headset_init(void)
 	hs_data->sdev.print_name = headset_name_show;
 	hs_data->sdev.print_state = headset_state_show;
 
+	hs_data->ldev.name = "lineout";
+	hs_data->ldev.print_name = lineout_name_show;
+	hs_data->ldev.print_state = lineout_state_show;
+
 	ret = switch_dev_register(&hs_data->sdev);
+	if (ret < 0)
+		goto err_switch_dev_register;
+
+	ret = switch_dev_register(&hs_data->ldev);
 	if (ret < 0)
 		goto err_switch_dev_register;
 

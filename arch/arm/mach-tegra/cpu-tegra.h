@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/cpu-tegra.h
  *
- * Copyright (c) 2011, NVIDIA Corporation.
+ * Copyright (c) 2011-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,12 +22,13 @@
 #define __MACH_TEGRA_CPU_TEGRA_H
 
 unsigned int tegra_getspeed(unsigned int cpu);
+int tegra_update_cpu_speed(unsigned long rate);
 int tegra_cpu_set_speed_cap(unsigned int *speed_cap);
 unsigned int tegra_count_slow_cpus(unsigned long speed_limit);
 unsigned int tegra_get_slowest_cpu_n(void);
 unsigned long tegra_cpu_lowest_speed(void);
 unsigned long tegra_cpu_highest_speed(void);
-int Asus_camera_enable_set_emc_rate(void);
+int Asus_camera_enable_set_emc_rate(unsigned long rate);
 int Asus_camera_disable_set_emc_rate(void);
 
 #ifdef CONFIG_TEGRA_THERMAL_THROTTLE
@@ -76,6 +77,13 @@ static inline bool tegra_cpu_edp_favor_up(unsigned int n, int mp_overhead)
 { return true; }
 static inline bool tegra_cpu_edp_favor_down(unsigned int n, int mp_overhead)
 { return false; }
+#endif
+
+#ifdef CONFIG_CPU_FREQ
+int tegra_suspended_target(unsigned int target_freq);
+#else
+static inline int tegra_suspended_target(unsigned int target_freq)
+{ return -ENOSYS; }
 #endif
 
 #endif /* __MACH_TEGRA_CPU_TEGRA_H */

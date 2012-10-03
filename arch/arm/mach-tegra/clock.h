@@ -76,6 +76,12 @@ struct clk_mux_sel {
 	u32		value;
 };
 
+struct clk_backup {
+	struct clk	*input;
+	u32		value;
+	unsigned long	bus_rate;
+};
+
 struct clk_pll_freq_table {
 	unsigned long	input_rate;
 	unsigned long	output_rate;
@@ -152,7 +158,7 @@ struct clk {
 	u32				reg_shift;
 
 	struct list_head		shared_bus_list;
-	struct clk_mux_sel		shared_bus_backup;
+	struct clk_backup		shared_bus_backup;
 
 	union {
 		struct {
@@ -231,7 +237,7 @@ void tegra_soc_init_clocks(void);
 void tegra_init_max_rate(struct clk *c, unsigned long max_rate);
 void clk_init(struct clk *clk);
 struct clk *tegra_get_clock_by_name(const char *name);
-unsigned long clk_measure_input_freq(void);
+unsigned long tegra_clk_measure_input_freq(void);
 int clk_reparent(struct clk *c, struct clk *parent);
 void tegra_clk_init_from_table(struct tegra_clk_init_table *table);
 void clk_set_cansleep(struct clk *c);
@@ -240,6 +246,7 @@ unsigned long clk_get_min_rate(struct clk *c);
 unsigned long clk_get_rate_locked(struct clk *c);
 int clk_set_rate_locked(struct clk *c, unsigned long rate);
 int clk_set_parent_locked(struct clk *c, struct clk *parent);
+long clk_round_rate_locked(struct clk *c, unsigned long rate);
 int tegra_clk_shared_bus_update(struct clk *c);
 void tegra2_sdmmc_tap_delay(struct clk *c, int delay);
 void tegra3_set_cpu_skipper_delay(int delay);
@@ -248,9 +255,12 @@ long tegra_emc_round_rate(unsigned long rate);
 struct clk *tegra_emc_predict_parent(unsigned long rate, u32 *div_value);
 void tegra_emc_timing_invalidate(void);
 #ifdef CONFIG_ARCH_TEGRA_2x_SOC
+static inline int tegra_emc_backup(unsigned long rate)
+{ return 0; }
 static inline bool tegra_clk_is_parent_allowed(struct clk *c, struct clk *p)
 { return true; }
 #else
+int tegra_emc_backup(unsigned long rate);
 bool tegra_clk_is_parent_allowed(struct clk *c, struct clk *p);
 #endif
 

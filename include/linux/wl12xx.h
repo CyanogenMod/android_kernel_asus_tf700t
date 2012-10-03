@@ -26,11 +26,14 @@
 
 /* Reference clock values */
 enum {
-	WL12XX_REFCLOCK_19 = 0,	/* 19.2 MHz */
-	WL12XX_REFCLOCK_26 = 1,	/* 26 MHz */
-	WL12XX_REFCLOCK_38 = 2,	/* 38.4 MHz */
-	WL12XX_REFCLOCK_54 = 3,	/* 54 MHz */
+	WL12XX_REFCLOCK_19	= 0, /* 19.2 MHz */
+	WL12XX_REFCLOCK_26	= 1, /* 26 MHz */
+	WL12XX_REFCLOCK_38	= 2, /* 38.4 MHz */
+	WL12XX_REFCLOCK_52	= 3, /* 52 MHz */
+	WL12XX_REFCLOCK_38_XTAL = 4, /* 38.4 MHz, XTAL */
+	WL12XX_REFCLOCK_26_XTAL = 5, /* 26 MHz, XTAL */
 };
+
 
 /* TCXO clock values */
 enum {
@@ -45,7 +48,8 @@ enum {
 };
 
 struct wl12xx_platform_data {
-	void (*set_power)(bool enable);
+	int (*set_power)(int power_on);
+	int (*set_carddetect)(int val);
 	/* SDIO only: IRQ number if WLAN_IRQ line is used, 0 for SDIO IRQs */
 	int irq;
 	bool use_eeprom;

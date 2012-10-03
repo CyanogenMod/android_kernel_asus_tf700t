@@ -30,10 +30,10 @@
 /*
  * If we have Intel graphics, we're not going to have anything other than
  * an Intel IOMMU. So make the correct use of the PCI DMA API contingent
- * on the Intel IOMMU support (CONFIG_DMAR).
+ * on the Intel IOMMU support (CONFIG_INTEL_IOMMU).
  * Only newer chipsets need to bother with this, of course.
  */
-#ifdef CONFIG_DMAR
+#ifdef CONFIG_INTEL_IOMMU
 #define USE_PCI_DMA_API 1
 #else
 #define USE_PCI_DMA_API 0
@@ -1420,6 +1420,16 @@ static const struct intel_gtt_driver_description {
 	    "Sandybridge", &sandybridge_gtt_driver },
 	{ PCI_DEVICE_ID_INTEL_SANDYBRIDGE_S_IG,
 	    "Sandybridge", &sandybridge_gtt_driver },
+	{ PCI_DEVICE_ID_INTEL_IVYBRIDGE_GT1_IG,
+	    "Ivybridge", &sandybridge_gtt_driver },
+	{ PCI_DEVICE_ID_INTEL_IVYBRIDGE_GT2_IG,
+	    "Ivybridge", &sandybridge_gtt_driver },
+	{ PCI_DEVICE_ID_INTEL_IVYBRIDGE_M_GT1_IG,
+	    "Ivybridge", &sandybridge_gtt_driver },
+	{ PCI_DEVICE_ID_INTEL_IVYBRIDGE_M_GT2_IG,
+	    "Ivybridge", &sandybridge_gtt_driver },
+	{ PCI_DEVICE_ID_INTEL_IVYBRIDGE_S_GT1_IG,
+	    "Ivybridge", &sandybridge_gtt_driver },
 	{ 0, NULL, NULL }
 };
 

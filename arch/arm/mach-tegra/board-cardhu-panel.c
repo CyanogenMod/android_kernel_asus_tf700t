@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-cardhu-panel.c
  *
- * Copyright (c) 2010-2011, NVIDIA Corporation.
+ * Copyright (c) 2010-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,8 @@
  */
 
 #include <linux/delay.h>
+#include <linux/ion.h>
+#include <linux/tegra_ion.h>
 #include <linux/gpio.h>
 #include <linux/regulator/consumer.h>
 #include <linux/resource.h>
@@ -28,28 +30,30 @@
 #include <linux/pwm_backlight.h>
 #include <asm/atomic.h>
 #include <linux/nvhost.h>
-#include <mach/nvmap.h>
+#include <linux/nvmap.h>
 #include <mach/irqs.h>
 #include <mach/iomap.h>
 #include <mach/dc.h>
 #include <mach/fb.h>
+#include <mach/smmu.h>
 #include <mach/board-cardhu-misc.h>
 
 #include "board.h"
 #include "board-cardhu.h"
 #include "devices.h"
 #include "gpio-names.h"
+#include "tegra3_host1x_devices.h"
 #include <linux/i2c.h>
 
-/* Select DSI panel to be used. */
-#define DSI_PANEL_219 0
-#define DSI_PANEL_218 1
+#define DC_CTRL_MODE	(TEGRA_DC_OUT_ONE_SHOT_MODE | \
+			 TEGRA_DC_OUT_ONE_SHOT_LP_MODE)
+
 #define AVDD_LCD PMU_TCA6416_GPIO_PORT17
-#define DSI_PANEL_RESET 0
+#define DSI_PANEL_RESET 1
 
 /* Select LVDS panel resolution. 13X7 is default */
 #define PM313_LVDS_PANEL_19X12			1
-#define PM313_LVDS_PANEL_BPP			1 /* 0:24bpp, 1:18bpp */
+#define PM313_LVDS_PANEL_BPP			0 /* 0:24bpp, 1:18bpp */
 
 /* PM313 display board specific pins */
 #define pm313_R_FDE			TEGRA_GPIO_PW0
@@ -57,7 +61,14 @@
 #define pm313_MODE0			TEGRA_GPIO_PZ4
 #define pm313_MODE1			TEGRA_GPIO_PW1
 #define pm313_BPP			TEGRA_GPIO_PN6 /* 0:24bpp, 1:18bpp */
-#define pm313_lvds_shutdown		TEGRA_GPIO_PH1
+#define pm313_lvds_shutdown		TEGRA_GPIO_PL2
+
+/* E1506 display board pins */
+#define e1506_lcd_te		TEGRA_GPIO_PJ1
+#define e1506_dsi_vddio		TEGRA_GPIO_PH1
+#define e1506_dsia_bl_pwm	TEGRA_GPIO_PH0
+#define e1506_panel_enb		TEGRA_GPIO_PW1
+#define e1506_bl_enb		TEGRA_GPIO_PH2
 
 /* E1247 reworked for pm269 pins */
 #define e1247_pm269_lvds_shutdown	TEGRA_GPIO_PN6
@@ -75,11 +86,11 @@
 #define cardhu_hdmi_hpd			TEGRA_GPIO_PN7
 #define cardhu_hdmi_enb         	TEGRA_GPIO_PP2
 
-#if defined(DSI_PANEL_219) || defined(DSI_PANEL_218)
+/* common dsi panel pins */
 #define cardhu_dsia_bl_enb		TEGRA_GPIO_PW1
 #define cardhu_dsib_bl_enb		TEGRA_GPIO_PW0
-#define cardhu_dsi_panel_reset		TEGRA_GPIO_PD2
-#endif
+#define cardhu_dsi_pnl_reset		TEGRA_GPIO_PD2
+#define cardhu_dsi_219_pnl_reset	TEGRA_GPIO_PW0
 
 #ifdef CONFIG_TEGRA_DC
 static struct regulator *cardhu_hdmi_reg = NULL;
@@ -89,16 +100,14 @@ static struct regulator *cardhu_hdmi_vddio = NULL;
 
 static atomic_t sd_brightness = ATOMIC_INIT(255);
 
-#ifdef CONFIG_TEGRA_CARDHU_DSI
 static struct regulator *cardhu_dsi_reg = NULL;
-#else
 static struct regulator *cardhu_lvds_reg = NULL;
 static struct regulator *cardhu_lvds_vdd_bl = NULL;
 static struct regulator *cardhu_lvds_vdd_panel = NULL;
-#endif
 
 static struct board_info board_info;
 static struct board_info display_board_info;
+extern bool isRecording;
 
 static tegra_dc_bl_output cardhu_bl_output_measured = {
 	0, 1, 2, 3, 4, 5, 6, 7,
@@ -135,99 +144,116 @@ static tegra_dc_bl_output cardhu_bl_output_measured = {
 	248, 249, 250, 251, 252, 253, 254, 255
 };
 
-static p_tegra_dc_bl_output bl_output;
+static p_tegra_dc_bl_output bl_output = cardhu_bl_output_measured;
 
-static int cardhu_backlight_init(struct device *dev) {
-	int ret;
+static bool is_panel_218;
+static bool is_panel_219;
+static bool is_panel_1506;
 
-	bl_output = cardhu_bl_output_measured;
+static bool is_dsi_panel(void)
+{
+	return is_panel_218 || is_panel_219 || is_panel_1506;
+}
+
+static int cardhu_backlight_init(struct device *dev)
+{
+	int ret = 0;
 
 	if (WARN_ON(ARRAY_SIZE(cardhu_bl_output_measured) != 256))
 		pr_err("bl_output array does not have 256 elements\n");
 
-#ifndef CONFIG_TEGRA_CARDHU_DSI
-	tegra_gpio_disable(cardhu_bl_pwm);
+	if (!is_dsi_panel()) {
+		tegra_gpio_disable(cardhu_bl_pwm);
+		ret = gpio_request(cardhu_bl_enb, "backlight_enb");
+		if (ret < 0)
+			return ret;
 
-	ret = gpio_request(cardhu_bl_enb, "backlight_enb");
-	if (ret < 0)
-		return ret;
+		ret = gpio_direction_output(cardhu_bl_enb, 1);
+		if (ret < 0)
+			gpio_free(cardhu_bl_enb);
+	} else if (is_panel_218) {
+		/* Enable back light for DSIa panel */
+		ret = gpio_request(cardhu_dsia_bl_enb, "dsia_bl_enable");
+		if (ret < 0)
+			return ret;
 
-	ret = gpio_direction_output(cardhu_bl_enb, 1);
-	if (ret < 0)
-		gpio_free(cardhu_bl_enb);
-	else
-		tegra_gpio_enable(cardhu_bl_enb);
+		ret = gpio_direction_output(cardhu_dsia_bl_enb, 1);
+		if (ret < 0)
+			gpio_free(cardhu_dsia_bl_enb);
 
-	return ret;
-#endif
+		/* Enable back light for DSIb panel */
+		ret = gpio_request(cardhu_dsib_bl_enb, "dsib_bl_enable");
+		if (ret < 0)
+			return ret;
 
-#if DSI_PANEL_219 || DSI_PANEL_218
-	/* Enable back light for DSIa panel */
-	printk("cardhu_dsi_backlight_init\n");
-	ret = gpio_request(cardhu_dsia_bl_enb, "dsia_bl_enable");
-	if (ret < 0)
-		return ret;
+		ret = gpio_direction_output(cardhu_dsib_bl_enb, 1);
+		if (ret < 0)
+			gpio_free(cardhu_dsib_bl_enb);
+	} else if (is_panel_219) {
+		/* Enable back light for DSIa panel */
+		ret = gpio_request(cardhu_dsia_bl_enb, "dsia_bl_enable");
+		if (ret < 0)
+			return ret;
 
-	ret = gpio_direction_output(cardhu_dsia_bl_enb, 1);
-	if (ret < 0)
-		gpio_free(cardhu_dsia_bl_enb);
-	else
-		tegra_gpio_enable(cardhu_dsia_bl_enb);
-
-	/* Enable back light for DSIb panel */
-	ret = gpio_request(cardhu_dsib_bl_enb, "dsib_bl_enable");
-	if (ret < 0)
-		return ret;
-
-	ret = gpio_direction_output(cardhu_dsib_bl_enb, 1);
-	if (ret < 0)
-		gpio_free(cardhu_dsib_bl_enb);
-	else
-		tegra_gpio_enable(cardhu_dsib_bl_enb);
-#endif
+		ret = gpio_direction_output(cardhu_dsia_bl_enb, 1);
+		if (ret < 0)
+			gpio_free(cardhu_dsia_bl_enb);
+	}
 
 	return ret;
 };
 
-static void cardhu_backlight_exit(struct device *dev) {
-#ifndef CONFIG_TEGRA_CARDHU_DSI
-	/* int ret; */
-	/*ret = gpio_request(cardhu_bl_enb, "backlight_enb");*/
-	gpio_set_value(cardhu_bl_enb, 0);
-	gpio_free(cardhu_bl_enb);
-	tegra_gpio_disable(cardhu_bl_enb);
-	return;
-#endif
-#if DSI_PANEL_219 || DSI_PANEL_218
-	/* Disable back light for DSIa panel */
-	gpio_set_value(cardhu_dsia_bl_enb, 0);
-	gpio_free(cardhu_dsia_bl_enb);
-	tegra_gpio_disable(cardhu_dsia_bl_enb);
+static void cardhu_backlight_exit(struct device *dev)
+{
+	if (!is_dsi_panel()) {
+		/* int ret; */
+		/*ret = gpio_request(cardhu_bl_enb, "backlight_enb");*/
+		gpio_set_value(cardhu_bl_enb, 0);
+		gpio_free(cardhu_bl_enb);
+	} else if (is_panel_218) {
+		/* Disable back light for DSIa panel */
+		gpio_set_value(cardhu_dsia_bl_enb, 0);
+		gpio_free(cardhu_dsia_bl_enb);
 
-	/* Disable back light for DSIb panel */
-	gpio_set_value(cardhu_dsib_bl_enb, 0);
-	gpio_free(cardhu_dsib_bl_enb);
-	tegra_gpio_disable(cardhu_dsib_bl_enb);
+		/* Disable back light for DSIb panel */
+		gpio_set_value(cardhu_dsib_bl_enb, 0);
+		gpio_free(cardhu_dsib_bl_enb);
 
-	gpio_set_value(cardhu_lvds_shutdown, 1);
-	mdelay(20);
-#endif
+		gpio_set_value(cardhu_lvds_shutdown, 1);
+		mdelay(20);
+	} else if (is_panel_219) {
+		/* Disable back light for DSIa panel */
+		gpio_set_value(cardhu_dsia_bl_enb, 0);
+		gpio_free(cardhu_dsia_bl_enb);
+
+		gpio_set_value(cardhu_lvds_shutdown, 1);
+		mdelay(20);
+	}
 }
 
 static int cardhu_backlight_notify(struct device *unused, int brightness)
 {
 	int cur_sd_brightness = atomic_read(&sd_brightness);
 
-#ifndef CONFIG_TEGRA_CARDHU_DSI
-	/* Set the backlight GPIO pin mode to 'backlight_enable' */
-	gpio_set_value(cardhu_bl_enb, !!brightness);
-#elif DSI_PANEL_219 || DSI_PANEL_218
-	/* DSIa */
-	gpio_set_value(cardhu_dsia_bl_enb, !!brightness);
+	if (!is_dsi_panel()) {
+		/* Set the backlight GPIO pin mode to 'backlight_enable' */
+		gpio_set_value(cardhu_bl_enb, !!brightness);
+	} else if (is_panel_218) {
+		/* DSIa */
+		gpio_set_value(cardhu_dsia_bl_enb, !!brightness);
 
-	/* DSIb */
-	gpio_set_value(cardhu_dsib_bl_enb, !!brightness);
-#endif
+		/* DSIb */
+		gpio_set_value(cardhu_dsib_bl_enb, !!brightness);
+	} else if (is_panel_219) {
+		/* DSIa */
+		gpio_set_value(cardhu_dsia_bl_enb, !!brightness);
+	} else if (is_panel_1506) {
+		/* DSIa */
+		gpio_set_value(e1506_bl_enb, !!brightness);
+	}
+
+	if(isRecording && (tegra3_get_project_id() == TEGRA3_PROJECT_TF201 || tegra3_get_project_id() == TEGRA3_PROJECT_TF500T))
+		gpio_set_value(cardhu_bl_enb, 1);
 
 	/* SD brightness is a percentage, 8-bit value. */
 	brightness = (brightness * cur_sd_brightness) / 255;
@@ -236,13 +262,7 @@ static int cardhu_backlight_notify(struct device *unused, int brightness)
 	if (brightness > 255) {
 		pr_info("Error: Brightness > 255!\n");
 	} else {
-		/* This value depends on the panel.
-		  Current 19X12 panel with PM313 gets
-		  full brightness when the output is 0. */
-		if (display_board_info.board_id == BOARD_DISPLAY_PM313)
-			brightness = 255 - bl_output[brightness];
-		else
-			brightness = bl_output[brightness];
+		brightness = bl_output[brightness];
 	}
 
 	return brightness;
@@ -253,7 +273,7 @@ static int cardhu_disp1_check_fb(struct device *dev, struct fb_info *info);
 static struct platform_pwm_backlight_data cardhu_backlight_data = {
 	.pwm_id		= 0,
 	.max_brightness	= 255,
-	.dft_brightness	= 224,
+	.dft_brightness	= 100,
 	.pwm_period_ns	= 4000000,
 	.init		= cardhu_backlight_init,
 	.exit		= cardhu_backlight_exit,
@@ -270,19 +290,42 @@ static struct platform_device cardhu_backlight_device = {
 	},
 };
 
-#ifndef CONFIG_TEGRA_CARDHU_DSI
+static int cardhu_panel_postpoweron(void)
+{
+	printk("Check cardhu_panel_postpoweron \n");
+	if(tegra3_get_project_id()!=0x4)
+	{
+		if (cardhu_lvds_reg == NULL) {
+			cardhu_lvds_reg = regulator_get(NULL, "vdd_lvds");
+			if (WARN_ON(IS_ERR(cardhu_lvds_reg)))
+				pr_err("%s: couldn't get regulator vdd_lvds: %ld\n",
+					__func__, PTR_ERR(cardhu_lvds_reg));
+			else
+				regulator_enable(cardhu_lvds_reg);
+		}
+
+		gpio_set_value(e1247_pm269_lvds_shutdown, 1);
+		msleep(210);
+
+		if (cardhu_lvds_vdd_bl == NULL) {
+			cardhu_lvds_vdd_bl = regulator_get(NULL, "vdd_backlight");
+			if (WARN_ON(IS_ERR(cardhu_lvds_vdd_bl)))
+				pr_err("%s: couldn't get regulator vdd_backlight: %ld\n",
+				__func__, PTR_ERR(cardhu_lvds_vdd_bl));
+			else
+				regulator_enable(cardhu_lvds_vdd_bl);
+		}
+		msleep(10);
+	}
+	return 0;
+}
+
 static int cardhu_panel_enable(void)
 {
 	int ret;
 	printk("Check cardhu_panel_enable \n");
 
 	if (tegra3_get_project_id()==0x4){
-		ret = gpio_request(TEGRA_GPIO_PU5, "LDO_EN");
-		if (ret < 0){
-			printk("Check request TEGRA_GPIO_PU5 fail \n");
-			return ret;
-		}
-
 		if (gpio_get_value(TEGRA_GPIO_PI6)==0){	//Panel is Panasonic
 			printk("Check panel is panasonic \n");
 			if (cardhu_lvds_vdd_bl == NULL) {
@@ -300,8 +343,6 @@ static int cardhu_panel_enable(void)
 				gpio_free(TEGRA_GPIO_PU5);
 				return ret;
 			}
-			else
-				tegra_gpio_enable(TEGRA_GPIO_PU5);
 		}
 		else{								//Panel is hydis
 			printk("Check panel is hydis \n");
@@ -312,166 +353,124 @@ static int cardhu_panel_enable(void)
 				gpio_free(TEGRA_GPIO_PU5);
 				return ret;
 			}
-			else
-				tegra_gpio_enable(TEGRA_GPIO_PU5);
 		}
 		mdelay(5);
 	}
 
-	if (cardhu_lvds_reg == NULL) {
-		cardhu_lvds_reg = regulator_get(NULL, "vdd_lvds");
-		if (WARN_ON(IS_ERR(cardhu_lvds_reg)))
-			pr_err("%s: couldn't get regulator vdd_lvds: %ld\n",
-			       __func__, PTR_ERR(cardhu_lvds_reg));
-		else
-			regulator_enable(cardhu_lvds_reg);
+	if (tegra3_get_project_id()==0x4)
+	{
+		if (cardhu_lvds_reg == NULL) {
+			cardhu_lvds_reg = regulator_get(NULL, "vdd_lvds");
+			if (WARN_ON(IS_ERR(cardhu_lvds_reg)))
+				pr_err("%s: couldn't get regulator vdd_lvds: %ld\n",
+					__func__, PTR_ERR(cardhu_lvds_reg));
+			else
+				regulator_enable(cardhu_lvds_reg);
+		}
 	}
 
 	if (cardhu_lvds_vdd_panel == NULL) {
 		cardhu_lvds_vdd_panel = regulator_get(NULL, "vdd_lcd_panel");
 		if (WARN_ON(IS_ERR(cardhu_lvds_vdd_panel)))
 			pr_err("%s: couldn't get regulator vdd_lcd_panel: %ld\n",
-			       __func__, PTR_ERR(cardhu_lvds_vdd_panel));
+				__func__, PTR_ERR(cardhu_lvds_vdd_panel));
 		else
 			regulator_enable(cardhu_lvds_vdd_panel);
 	}
-	msleep(20);
 
 	if (tegra3_get_project_id()==0x4){
+		msleep(20);
+	}
+	if (tegra3_get_project_id()==0x4){
 			printk("Check power on/off for bridge IC \n");
-			ret = gpio_request(TEGRA_GPIO_PBB3, "TF301_1.2V");
-			if (ret < 0){
-				printk("Check request TEGRA_GPIO_PBB3 fail \n");
-				return ret;
-			}
 			ret = gpio_direction_output(TEGRA_GPIO_PBB3, 1);
 			if (ret < 0) {
 					printk("Check can not pull high TEGRA_GPIO_PBB3 \n");
 					gpio_free(TEGRA_GPIO_PBB3);
 					return ret;
 			}
-			else
-					tegra_gpio_enable(TEGRA_GPIO_PBB3);
-	
-	
-			ret = gpio_request(TEGRA_GPIO_PC6, "TF301_1.8V");
-			if (ret < 0) {
-					printk("Check request TF301_1.8V fail \n");
-					return ret;
-			}
+
 			ret = gpio_direction_output(TEGRA_GPIO_PC6, 1);
 			if (ret < 0) {
-					printk("Check can not pull high TF301_1.8V \n");
+					printk("Check can not pull high TF700T_1.8V(TEGRA_GPIO_PC6) \n");
 					gpio_free(TEGRA_GPIO_PC6);
 					return ret;
 			}
-			else{
-					printk("Check enable TF301_1.8V \n");
-					tegra_gpio_enable(TEGRA_GPIO_PC6);
-			}
-	
+
 			mdelay(10);
-			
-			ret = gpio_request(TEGRA_GPIO_PX0, "TF301_I2C_Switch");
-			if (ret < 0) {
-					printk("Check request TF301_I2C_Switch fail \n");
-					return ret;
-			}
-			
+
 			ret = gpio_direction_output(TEGRA_GPIO_PX0, 1);
 			if (ret < 0) {
-					printk("Check can not pull high TF301_I2C_Switch \n");
+					printk("Check can not pull high TF700T_I2C_Switch(TEGRA_GPIO_PX0) \n");
 					gpio_free(TEGRA_GPIO_PX0);
 					return ret;
 			}
-			else{
-					printk("Check enable TF301_I2C_Switch \n");
-					tegra_gpio_enable(TEGRA_GPIO_PX0);
-			}
-			
 			mdelay(10);
 
 	}
-
-	if (display_board_info.board_id == BOARD_DISPLAY_PM313) {
-		/* lvds configuration */
-		gpio_set_value(pm313_R_FDE, 1);
-		gpio_set_value(pm313_R_FB, 1);
-		gpio_set_value(pm313_MODE0, 1);
-		gpio_set_value(pm313_MODE1, 0);
-		gpio_set_value(pm313_BPP, PM313_LVDS_PANEL_BPP);
-
-		/* FIXME : it may require more or less delay for latching
-		  values correctly before enabling RGB2LVDS */
-		mdelay(100);
-		gpio_set_value(pm313_lvds_shutdown, 1);
-	}
-	else
+	if(tegra3_get_project_id()==0x4)
 	{
-		gpio_set_value(e1247_pm269_lvds_shutdown, 1);
-	}
-	
-	if (tegra3_get_project_id()!=0x4 ){
-		msleep(210);
-	}
+		if (display_board_info.board_id == BOARD_DISPLAY_PM313) {
+			/* lvds configuration */
+			gpio_set_value(pm313_R_FDE, 1);
+			gpio_set_value(pm313_R_FB, 1);
+			gpio_set_value(pm313_MODE0, 1);
+			gpio_set_value(pm313_MODE1, 0);
+			gpio_set_value(pm313_BPP, PM313_LVDS_PANEL_BPP);
 
-	if (tegra3_get_project_id()==0x4 ){
-		ret = gpio_request(TEGRA_GPIO_PD2, "TF301_OSC");
-		if (ret < 0) {
-			printk("Check request TF301_OSC fail \n");
-			return ret;
+			/* FIXME : it may require more or less delay for latching
+			  values correctly before enabling RGB2LVDS */
+			mdelay(100);
+			gpio_set_value(pm313_lvds_shutdown, 1);
+		} else {
+			gpio_set_value(e1247_pm269_lvds_shutdown, 1);
 		}
 
 		ret = gpio_direction_output(TEGRA_GPIO_PD2, 1);
 		if (ret < 0) {
-			printk("Check can not pull high TF301_OSC \n");
+			printk("Check can not pull high TF700T_OSC(TEGRA_GPIO_PD2) \n");
 			gpio_free(TEGRA_GPIO_PD2);
 			return ret;
 		}
-		else{
-			printk("Check enable TF301_OSC \n");
-			tegra_gpio_enable(TEGRA_GPIO_PD2);
-		}
+		msleep(10);
 	}
+	return 0;
+}
 
+static int cardhu_panel_prepoweroff(void)
+{
 	if (tegra3_get_project_id()!=0x4 ){
-		if (cardhu_lvds_vdd_bl == NULL) {
-			cardhu_lvds_vdd_bl = regulator_get(NULL, "vdd_backlight");
-			if (WARN_ON(IS_ERR(cardhu_lvds_vdd_bl)))
-				pr_err("%s: couldn't get regulator vdd_backlight: %ld\n",
-				__func__, PTR_ERR(cardhu_lvds_vdd_bl));
-			else
-				regulator_enable(cardhu_lvds_vdd_bl);
+		if (display_board_info.board_id == BOARD_DISPLAY_PM313) {
+			gpio_set_value(pm313_lvds_shutdown, 0);
+		} else {
+			gpio_set_value(e1247_pm269_lvds_shutdown, 0);
 		}
+		msleep(20);
 	}
-	msleep(10);
-
 	return 0;
 }
 
 static int cardhu_panel_disable(void)
 {
 	if (tegra3_get_project_id()==0x4 ){
-		printk("Check cardhu_panel_disable in TF202\n");
-        	gpio_set_value(TEGRA_GPIO_PD2, 0);
-        	gpio_free(TEGRA_GPIO_PD2);
-		tegra_gpio_disable(TEGRA_GPIO_PD2);
+		printk("Check cardhu_panel_disable in TF700T\n");
+		gpio_set_value(TEGRA_GPIO_PD2, 0);
 
 		gpio_set_value(e1247_pm269_lvds_shutdown, 0);
 
 		gpio_set_value(TEGRA_GPIO_PX0, 0);
-        	gpio_free(TEGRA_GPIO_PX0);
-		tegra_gpio_disable(TEGRA_GPIO_PX0);
-		
+
 		gpio_set_value(TEGRA_GPIO_PC6, 0);
-        	gpio_free(TEGRA_GPIO_PC6);
-		tegra_gpio_disable(TEGRA_GPIO_PC6);
 
 		gpio_set_value(TEGRA_GPIO_PBB3, 0);
-        	gpio_free(TEGRA_GPIO_PBB3);
-		tegra_gpio_disable(TEGRA_GPIO_PBB3);
 
-		mdelay(100);
+		if (gpio_get_value(TEGRA_GPIO_PI6)==0 ){	//panel is panasonic
+			msleep(85);
+		}
+		else {	//panel is hydis
+			msleep(10);
+		}
+
 		if(cardhu_lvds_vdd_panel) {
 			regulator_disable(cardhu_lvds_vdd_panel);
 			regulator_put(cardhu_lvds_vdd_panel);
@@ -479,8 +478,6 @@ static int cardhu_panel_disable(void)
 		}
 
 		gpio_set_value(TEGRA_GPIO_PU5, 0);
-		gpio_free(TEGRA_GPIO_PU5);
-		tegra_gpio_disable(TEGRA_GPIO_PU5);
 
 		if (cardhu_lvds_vdd_bl) {
 			regulator_disable(cardhu_lvds_vdd_bl);
@@ -492,34 +489,31 @@ static int cardhu_panel_disable(void)
         	regulator_put(cardhu_lvds_reg);
         	cardhu_lvds_reg = NULL;
 */
-	        return 0;
+		return 0;
 	}
 
-	regulator_disable(cardhu_lvds_reg);
-	regulator_put(cardhu_lvds_reg);
-	cardhu_lvds_reg = NULL;
+	if(cardhu_lvds_reg) {
+		regulator_disable(cardhu_lvds_reg);
+		regulator_put(cardhu_lvds_reg);
+		cardhu_lvds_reg = NULL;
+	}
 
 	msleep(10);
-	regulator_disable(cardhu_lvds_vdd_bl);
-	regulator_put(cardhu_lvds_vdd_bl);
-	cardhu_lvds_vdd_bl = NULL;
+	if(cardhu_lvds_vdd_bl) {
+		regulator_disable(cardhu_lvds_vdd_bl);
+		regulator_put(cardhu_lvds_vdd_bl);
+		cardhu_lvds_vdd_bl = NULL;
+	}
 	msleep(250);
 
-	if (display_board_info.board_id == BOARD_DISPLAY_PM313) {
-		gpio_set_value(pm313_lvds_shutdown, 0);
+	if(cardhu_lvds_vdd_panel) {
+		regulator_disable(cardhu_lvds_vdd_panel);
+		regulator_put(cardhu_lvds_vdd_panel);
+		cardhu_lvds_vdd_panel= NULL;
 	}
-	else {
-		gpio_set_value(e1247_pm269_lvds_shutdown, 0);
-	}
-	msleep(20);
-
-	regulator_disable(cardhu_lvds_vdd_panel);
-	regulator_put(cardhu_lvds_vdd_panel);
-	cardhu_lvds_vdd_panel= NULL;
 
 	return 0;
 }
-#endif
 
 #ifdef CONFIG_TEGRA_DC
 static int cardhu_hdmi_vddio_enable(void)
@@ -590,13 +584,16 @@ static int cardhu_hdmi_enable(void)
 
 static int cardhu_hdmi_disable(void)
 {
-	regulator_disable(cardhu_hdmi_reg);
-	regulator_put(cardhu_hdmi_reg);
-	cardhu_hdmi_reg = NULL;
-
-	regulator_disable(cardhu_hdmi_pll);
-	regulator_put(cardhu_hdmi_pll);
-	cardhu_hdmi_pll = NULL;
+	if (cardhu_hdmi_reg) {
+		regulator_disable(cardhu_hdmi_reg);
+		regulator_put(cardhu_hdmi_reg);
+		cardhu_hdmi_reg = NULL;
+	}
+	if(cardhu_hdmi_pll) {
+		regulator_disable(cardhu_hdmi_pll);
+		regulator_put(cardhu_hdmi_pll);
+		cardhu_hdmi_pll = NULL;
+	}
 	return 0;
 }
 
@@ -636,6 +633,33 @@ static struct resource cardhu_disp1_resources[] = {
 #endif
 };
 
+static struct resource cardhu_disp1_resources_P1801[] = {
+	{
+		.name	= "irq",
+		.start	= INT_DISPLAY_GENERAL,
+		.end	= INT_DISPLAY_GENERAL,
+		.flags	= IORESOURCE_IRQ,
+	},
+	{
+		.name	= "regs",
+		.start	= TEGRA_DISPLAY_BASE,
+		.end	= TEGRA_DISPLAY_BASE + TEGRA_DISPLAY_SIZE-1,
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.name	= "fbmem",
+		.start	= 0,	/* Filled in by cardhu_panel_init() */
+		.end	= 0,	/* Filled in by cardhu_panel_init() */
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.name   = "hdmi_regs",
+		.start  = TEGRA_HDMI_BASE,
+		.end    = TEGRA_HDMI_BASE + TEGRA_HDMI_SIZE - 1,
+		.flags  = IORESOURCE_MEM,
+	},
+};
+
 static struct resource cardhu_disp2_resources[] = {
 	{
 		.name	= "irq",
@@ -664,7 +688,6 @@ static struct resource cardhu_disp2_resources[] = {
 };
 #endif
 
-#ifndef CONFIG_TEGRA_CARDHU_DSI
 static struct tegra_dc_mode panel_19X12_modes[] = {
 	{
 		.pclk = 154000000,
@@ -681,21 +704,65 @@ static struct tegra_dc_mode panel_19X12_modes[] = {
 	},
 };
 
+static struct tegra_dc_mode cardhu_panel_modes_P1801[] = {
+	{
+		.pclk = 148500000,
+		.h_ref_to_sync = 1,
+		.v_ref_to_sync = 1,
+		.h_sync_width = 44,
+		.v_sync_width = 5,
+		.h_back_porch = 148,
+		.v_back_porch = 36,
+		.h_active = 1920,
+		.v_active = 1080,
+		.h_front_porch = 88,
+		.v_front_porch = 4,
+	},
+};
+
 static struct tegra_dc_mode cardhu_panel_modes[] = {
-  {
-    /* 1366x768@59Hz */
-    .pclk = 68000000,
-    .h_ref_to_sync = 4,
-    .v_ref_to_sync = 2,
-    .h_sync_width = 30,
-    .v_sync_width = 5,
-    .h_back_porch = 18,
-    .v_back_porch = 12,
-    .h_active = 1280,
-    .v_active = 800,
-    .h_front_porch = 48,
-    .v_front_porch = 3,
-  },
+	{
+		/* 1366x768@60Hz */
+		.pclk = 68000000,
+		.h_ref_to_sync = 4,
+		.v_ref_to_sync = 2,
+		.h_sync_width = 30,
+		.v_sync_width = 5,
+		.h_back_porch = 18,
+		.v_back_porch = 12,
+		.h_active = 1280,
+		.v_active = 800,
+		.h_front_porch = 48,
+		.v_front_porch = 3,
+	},
+	{
+		/* 1366x768@50Hz */
+		.pclk = 74180000,
+		.h_ref_to_sync = 1,
+		.v_ref_to_sync = 1,
+		.h_sync_width = 30,
+		.v_sync_width = 5,
+		.h_back_porch = 56,
+		.v_back_porch = 80,
+		.h_active = 1366,
+		.v_active = 768,
+		.h_front_porch = 64,
+		.v_front_porch = 125,
+	},
+	{
+		/* 1366x768@48 */
+		.pclk = 74180000,
+		.h_ref_to_sync = 1,
+		.v_ref_to_sync = 1,
+		.h_sync_width = 30,
+		.v_sync_width = 5,
+		.h_back_porch = 52,
+		.v_back_porch = 98,
+		.h_active = 1366,
+		.v_active = 768,
+		.h_front_porch = 64,
+		.v_front_porch = 152,
+	},
 };
 
 static struct tegra_dc_mode cardhu_panel_modes_55hz[] = {
@@ -714,7 +781,6 @@ static struct tegra_dc_mode cardhu_panel_modes_55hz[] = {
 		.v_front_porch = 25,
 	},
 };
-#endif
 
 static struct tegra_dc_sd_settings cardhu_sd_settings = {
 	.enable = 1, /* enabled by default. */
@@ -809,7 +875,6 @@ static struct tegra_dc_sd_settings cardhu_sd_settings = {
 };
 
 #ifdef CONFIG_TEGRA_DC
-#ifndef CONFIG_TEGRA_CARDHU_DSI
 static struct tegra_fb_data cardhu_fb_data = {
 	.win		= 0,
 	.xres		= 1280,
@@ -817,7 +882,6 @@ static struct tegra_fb_data cardhu_fb_data = {
 	.bits_per_pixel	= 32,
 //	.flags		= TEGRA_FB_FLIP_ON_PROBE,
 };
-#endif
 
 static struct tegra_fb_data cardhu_hdmi_fb_data = {
 	.win		= 0,
@@ -827,12 +891,10 @@ static struct tegra_fb_data cardhu_hdmi_fb_data = {
 //	.flags		= TEGRA_FB_FLIP_ON_PROBE,
 };
 
-
-
-
 static struct tegra_dc_out cardhu_disp2_out = {
 	.type		= TEGRA_DC_OUT_HDMI,
 	.flags		= TEGRA_DC_OUT_HOTPLUG_HIGH,
+	.parent_clk	= "pll_d2_out0",
 
 	.dcc_bus	= 3,
 	.hotplug_gpio	= cardhu_hdmi_hpd,
@@ -850,14 +912,13 @@ static struct tegra_dc_out cardhu_disp2_out = {
 };
 
 static struct tegra_dc_platform_data cardhu_disp2_pdata = {
-	.flags		= 0,
+	.flags		= TEGRA_DC_FLAG_ENABLED,
 	.default_out	= &cardhu_disp2_out,
 	.fb		= &cardhu_hdmi_fb_data,
 	.emc_clk_rate	= 300000000,
 };
 #endif
 
-#ifdef CONFIG_TEGRA_CARDHU_DSI
 static int cardhu_dsi_panel_enable(void)
 {
 	int ret;
@@ -865,104 +926,135 @@ static int cardhu_dsi_panel_enable(void)
 	if (cardhu_dsi_reg == NULL) {
 		cardhu_dsi_reg = regulator_get(NULL, "avdd_dsi_csi");
 		if (IS_ERR_OR_NULL(cardhu_dsi_reg)) {
-		pr_err("dsi: Could not get regulator avdd_dsi_csi\n");
+			pr_err("dsi: Could not get regulator avdd_dsi_csi\n");
 			cardhu_dsi_reg = NULL;
 			return PTR_ERR(cardhu_dsi_reg);
 		}
 	}
+
 	regulator_enable(cardhu_dsi_reg);
 
-	ret = gpio_request(TEGRA_GPIO_PJ1, "DSI TE");
-	if (ret < 0)
-		return ret;
-
-	ret = gpio_direction_input(TEGRA_GPIO_PJ1);
-	if (ret < 0) {
-		gpio_free(TEGRA_GPIO_PJ1);
-		return ret;
+	if (!is_panel_1506) {
+		ret = gpio_request(AVDD_LCD, "avdd_lcd");
+		if (ret < 0)
+			gpio_free(AVDD_LCD);
+		ret = gpio_direction_output(AVDD_LCD, 1);
+		if (ret < 0)
+			gpio_free(AVDD_LCD);
 	}
-	tegra_gpio_enable(TEGRA_GPIO_PJ1);
 
-#if DSI_PANEL_219
+	if (is_panel_219) {
+		ret = gpio_request(cardhu_bl_pwm, "bl_pwm");
+		if (ret < 0)
+			return ret;
+		ret = gpio_direction_output(cardhu_bl_pwm, 0);
+		if (ret < 0) {
+			gpio_free(cardhu_bl_pwm);
+			return ret;
+		}
 
-	ret = gpio_request(TEGRA_GPIO_PH0, "ph0");
-	if (ret < 0)
-		return ret;
-	ret = gpio_direction_output(TEGRA_GPIO_PH0, 0);
-	if (ret < 0) {
-		gpio_free(TEGRA_GPIO_PH0);
-		return ret;
+		ret = gpio_request(cardhu_bl_enb, "bl_enb");
+		if (ret < 0)
+			return ret;
+		ret = gpio_direction_output(cardhu_bl_enb, 0);
+		if (ret < 0) {
+			gpio_free(cardhu_bl_enb);
+			return ret;
+		}
+
+		gpio_set_value(cardhu_lvds_shutdown, 1);
+		mdelay(20);
+		gpio_set_value(cardhu_bl_pwm, 1);
+		mdelay(10);
+		gpio_set_value(cardhu_bl_enb, 1);
+		mdelay(15);
+	} else if (is_panel_1506) {
+		ret = gpio_request(e1506_dsi_vddio, "e1506_dsi_vddio");
+		if (ret < 0)
+			return ret;
+		ret = gpio_direction_output(e1506_dsi_vddio, 0);
+		if (ret < 0) {
+			gpio_free(e1506_dsi_vddio);
+			return ret;
+		}
+
+		ret = gpio_request(e1506_panel_enb, "e1506_panel_enb");
+		if (ret < 0)
+			return ret;
+		ret = gpio_direction_output(e1506_panel_enb, 0);
+		if (ret < 0) {
+			gpio_free(e1506_panel_enb);
+			return ret;
+		}
+
+		ret = gpio_request(e1506_bl_enb, "e1506_bl_enb");
+		if (ret < 0)
+			return ret;
+		ret = gpio_direction_output(e1506_bl_enb, 0);
+		if (ret < 0) {
+			gpio_free(e1506_bl_enb);
+			return ret;
+		}
+
+		gpio_set_value(e1506_dsi_vddio, 1);
+		mdelay(1);
+		gpio_set_value(e1506_panel_enb, 1);
+		mdelay(10);
+		gpio_set_value(e1506_bl_enb, 1);
+		mdelay(15);
 	}
-	else
-		tegra_gpio_enable(TEGRA_GPIO_PH0);
-
-	ret = gpio_request(TEGRA_GPIO_PH2, "ph2");
-	if (ret < 0)
-		return ret;
-	ret = gpio_direction_output(TEGRA_GPIO_PH2, 0);
-	if (ret < 0) {
-		gpio_free(TEGRA_GPIO_PH2);
-		return ret;
-	}
-	else
-		tegra_gpio_enable(TEGRA_GPIO_PH2);
-
-	ret = gpio_request(TEGRA_GPIO_PU2, "pu2");
-	if (ret < 0)
-		return ret;
-	ret = gpio_direction_output(TEGRA_GPIO_PU2, 0);
-	if (ret < 0) {
-		gpio_free(TEGRA_GPIO_PU2);
-		return ret;
-	}
-	else
-		tegra_gpio_enable(TEGRA_GPIO_PU2);
-
-	gpio_set_value(cardhu_lvds_shutdown, 1);
-	mdelay(20);
-	gpio_set_value(TEGRA_GPIO_PH0, 1);
-	mdelay(10);
-	gpio_set_value(TEGRA_GPIO_PH2, 1);
-	mdelay(15);
-	gpio_set_value(TEGRA_GPIO_PU2, 0);
-	gpio_set_value(TEGRA_GPIO_PU2, 1);
-	mdelay(10);
-	gpio_set_value(TEGRA_GPIO_PU2, 0);
-	mdelay(10);
-	gpio_set_value(TEGRA_GPIO_PU2, 1);
-	mdelay(15);
-#endif
-
-#if DSI_PANEL_218
-	printk("DSI_PANEL_218 is enabled\n");
-	ret = gpio_request(AVDD_LCD, "avdd_lcd");
-	if(ret < 0)
-		gpio_free(AVDD_LCD);
-	ret = gpio_direction_output(AVDD_LCD, 1);
-	if(ret < 0)
-		gpio_free(AVDD_LCD);
-	else
-		tegra_gpio_enable(AVDD_LCD);
 
 #if DSI_PANEL_RESET
-	ret = gpio_request(TEGRA_GPIO_PD2, "pd2");
-	if (ret < 0){
-		return ret;
-	}
-	ret = gpio_direction_output(TEGRA_GPIO_PD2, 0);
-	if (ret < 0) {
-		gpio_free(TEGRA_GPIO_PD2);
-		return ret;
-	}
-	else
-		tegra_gpio_enable(TEGRA_GPIO_PD2);
+	if (is_panel_218) {
+		ret = gpio_request(cardhu_dsi_pnl_reset, "dsi_panel_reset");
+		if (ret < 0)
+			return ret;
 
-	gpio_set_value(TEGRA_GPIO_PD2, 1);
-	gpio_set_value(TEGRA_GPIO_PD2, 0);
-	mdelay(2);
-	gpio_set_value(TEGRA_GPIO_PD2, 1);
-	mdelay(2);
-#endif
+		ret = gpio_direction_output(cardhu_dsi_pnl_reset, 0);
+		if (ret < 0) {
+			gpio_free(cardhu_dsi_pnl_reset);
+			return ret;
+		}
+
+		gpio_set_value(cardhu_dsi_pnl_reset, 1);
+		gpio_set_value(cardhu_dsi_pnl_reset, 0);
+		mdelay(2);
+		gpio_set_value(cardhu_dsi_pnl_reset, 1);
+		mdelay(2);
+	} else if (is_panel_219) {
+		ret = gpio_request(cardhu_dsi_219_pnl_reset, "dsi_panel_reset");
+		if (ret < 0)
+			return ret;
+		ret = gpio_direction_output(cardhu_dsi_219_pnl_reset, 0);
+		if (ret < 0) {
+			gpio_free(cardhu_dsi_219_pnl_reset);
+			return ret;
+		}
+
+		gpio_set_value(cardhu_dsi_219_pnl_reset, 0);
+		gpio_set_value(cardhu_dsi_219_pnl_reset, 1);
+		mdelay(10);
+		gpio_set_value(cardhu_dsi_219_pnl_reset, 0);
+		mdelay(10);
+		gpio_set_value(cardhu_dsi_219_pnl_reset, 1);
+		mdelay(15);
+	} else if (is_panel_1506) {
+		ret = gpio_request(cardhu_dsi_pnl_reset, "dsi_panel_reset");
+		if (ret < 0)
+			return ret;
+		ret = gpio_direction_output(cardhu_dsi_pnl_reset, 0);
+		if (ret < 0) {
+			gpio_free(cardhu_dsi_pnl_reset);
+			return ret;
+		}
+
+		gpio_set_value(cardhu_dsi_pnl_reset, 1);
+		mdelay(1);
+		gpio_set_value(cardhu_dsi_pnl_reset, 0);
+		mdelay(1);
+		gpio_set_value(cardhu_dsi_pnl_reset, 1);
+		mdelay(20);
+	}
 #endif
 
 	return 0;
@@ -973,24 +1065,24 @@ static int cardhu_dsi_panel_disable(void)
 	int err;
 
 	err = 0;
-	printk(KERN_INFO "DSI panel disable\n");
 
-#if DSI_PANEL_219
-	tegra_gpio_disable(TEGRA_GPIO_PU2);
-	gpio_free(TEGRA_GPIO_PU2);
-	tegra_gpio_disable(TEGRA_GPIO_PH2);
-	gpio_free(TEGRA_GPIO_PH2);
-	tegra_gpio_disable(TEGRA_GPIO_PH0);
-	gpio_free(TEGRA_GPIO_PH0);
-	tegra_gpio_disable(TEGRA_GPIO_PL2);
-	gpio_free(TEGRA_GPIO_PL2);
-#endif
-
-#if DSI_PANEL_218
-	tegra_gpio_disable(TEGRA_GPIO_PD2);
-	gpio_free(TEGRA_GPIO_PD2);
-#endif
-
+	if (is_panel_219) {
+		gpio_free(cardhu_dsi_219_pnl_reset);
+		gpio_free(cardhu_bl_enb);
+		gpio_free(cardhu_bl_pwm);
+		gpio_free(cardhu_lvds_shutdown);
+	} else if (is_panel_218) {
+		gpio_free(cardhu_dsi_pnl_reset);
+	} else if (is_panel_1506) {
+		tegra_gpio_disable(e1506_bl_enb);
+		gpio_free(e1506_bl_enb);
+		tegra_gpio_disable(cardhu_dsi_pnl_reset);
+		gpio_free(cardhu_dsi_pnl_reset);
+		tegra_gpio_disable(e1506_panel_enb);
+		gpio_free(e1506_panel_enb);
+		tegra_gpio_disable(e1506_dsi_vddio);
+		gpio_free(e1506_dsi_vddio);
+	}
 	return err;
 }
 
@@ -1010,32 +1102,88 @@ static int cardhu_dsi_panel_postsuspend(void)
 		cardhu_dsi_reg = NULL;
 	}
 
-#if DSI_PANEL_218
-	tegra_gpio_disable(AVDD_LCD);
-	gpio_free(AVDD_LCD);
-#endif
+	if (is_panel_218)
+		gpio_free(AVDD_LCD);
 
 	return err;
 }
 
-static struct tegra_dsi_cmd dsi_init_cmd[]= {
+static struct tegra_dsi_cmd dsi_init_cmd[] = {
 	DSI_CMD_SHORT(0x05, 0x11, 0x00),
 	DSI_DLY_MS(150),
+#if (DC_CTRL_MODE & TEGRA_DC_OUT_ONE_SHOT_MODE)
+	DSI_CMD_SHORT(0x15, 0x35, 0x00),
+#endif
+	DSI_CMD_SHORT(0x05, 0x29, 0x00),
+	DSI_DLY_MS(20),
+};
+
+u8 password_array[] = {0xb9, 0xff, 0x83, 0x92};
+
+static struct tegra_dsi_cmd dsi_init_cmd_1506[] = {
+	DSI_CMD_SHORT(0x05, 0x11, 0x00),
+	DSI_DLY_MS(150),
+	DSI_CMD_LONG(0x39, password_array),
+	DSI_DLY_MS(10),
+	DSI_CMD_SHORT(0x15, 0xd4, 0x0c),
+	DSI_DLY_MS(10),
+	DSI_CMD_SHORT(0x15, 0xba, 0x11),
+	DSI_DLY_MS(10),
+#if (DC_CTRL_MODE & TEGRA_DC_OUT_ONE_SHOT_MODE)
+	DSI_CMD_SHORT(0x15, 0x35, 0x00),
+#endif
+	DSI_CMD_SHORT(0x05, 0x29, 0x00),
+	DSI_DLY_MS(20),
+};
+
+static struct tegra_dsi_cmd dsi_early_suspend_cmd[] = {
+	DSI_CMD_SHORT(0x05, 0x28, 0x00),
+	DSI_DLY_MS(20),
+#if (DC_CTRL_MODE & TEGRA_DC_OUT_ONE_SHOT_MODE)
+	DSI_CMD_SHORT(0x05, 0x34, 0x00),
+#endif
+};
+
+static struct tegra_dsi_cmd dsi_late_resume_cmd[] = {
+#if (DC_CTRL_MODE & TEGRA_DC_OUT_ONE_SHOT_MODE)
+	DSI_CMD_SHORT(0x15, 0x35, 0x00),
+#endif
 	DSI_CMD_SHORT(0x05, 0x29, 0x00),
 	DSI_DLY_MS(20),
 };
 
 static struct tegra_dsi_cmd dsi_suspend_cmd[] = {
 	DSI_CMD_SHORT(0x05, 0x28, 0x00),
-	DSI_DLY_MS(20),
+	DSI_DLY_MS(120),
+#if (DC_CTRL_MODE & TEGRA_DC_OUT_ONE_SHOT_MODE)
+	DSI_CMD_SHORT(0x05, 0x34, 0x00),
+#endif
 	DSI_CMD_SHORT(0x05, 0x10, 0x00),
 	DSI_DLY_MS(5),
+};
+
+static struct tegra_dsi_cmd dsi_suspend_cmd_1506[] = {
+	DSI_CMD_SHORT(0x05, 0x28, 0x00),
+	DSI_CMD_SHORT(0x05, 0x10, 0x00),
+	DSI_DLY_MS(120),
 };
 
 struct tegra_dsi_out cardhu_dsi = {
 	.n_data_lanes = 2,
 	.pixel_format = TEGRA_DSI_PIXEL_FORMAT_24BIT_P,
+
+#if (DC_CTRL_MODE & TEGRA_DC_OUT_ONE_SHOT_MODE)
+	/*
+	 * The one-shot frame time must be shorter than the time between TE.
+	 * Increasing refresh_rate will result in a decrease in the frame time
+	 * for one-shot. rated_refresh_rate is only an approximation of the
+	 * TE rate, and is only used to report refresh rate to upper layers.
+	 */
+	.refresh_rate = 66,
+	.rated_refresh_rate = 60,
+#else
 	.refresh_rate = 60,
+#endif
 	.virtual_channel = TEGRA_DSI_VIRTUAL_CHANNEL_0,
 
 	.panel_has_frame_buffer = true,
@@ -1045,9 +1193,13 @@ struct tegra_dsi_out cardhu_dsi = {
 	.dsi_instance = 0,
 #endif
 	.panel_reset = DSI_PANEL_RESET,
+	.power_saving_suspend = true,
 
-	.n_init_cmd = ARRAY_SIZE(dsi_init_cmd),
-	.dsi_init_cmd = dsi_init_cmd,
+	.n_early_suspend_cmd = ARRAY_SIZE(dsi_early_suspend_cmd),
+	.dsi_early_suspend_cmd = dsi_early_suspend_cmd,
+
+	.n_late_resume_cmd = ARRAY_SIZE(dsi_late_resume_cmd),
+	.dsi_late_resume_cmd = dsi_late_resume_cmd,
 
 	.n_suspend_cmd = ARRAY_SIZE(dsi_suspend_cmd),
 	.dsi_suspend_cmd = dsi_suspend_cmd,
@@ -1056,8 +1208,7 @@ struct tegra_dsi_out cardhu_dsi = {
 	.lp_cmd_mode_freq_khz = 430000,
 };
 
-static struct tegra_dc_mode cardhu_dsi_modes[] = {
-#if DSI_PANEL_219
+static struct tegra_dc_mode cardhu_dsi_modes_219[] = {
 	{
 		.pclk = 10000000,
 		.h_ref_to_sync = 4,
@@ -1071,9 +1222,9 @@ static struct tegra_dc_mode cardhu_dsi_modes[] = {
 		.h_front_porch = 32,
 		.v_front_porch = 2,
 	},
-#endif
+};
 
-#if DSI_PANEL_218
+static struct tegra_dc_mode cardhu_dsi_modes_218[] = {
 	{
 		.pclk = 323000000,
 		.h_ref_to_sync = 11,
@@ -1087,59 +1238,64 @@ static struct tegra_dc_mode cardhu_dsi_modes[] = {
 		.h_front_porch = 16,
 		.v_front_porch = 4,
 	},
-#endif
+};
 
+static struct tegra_dc_mode cardhu_dsi_modes_1506[] = {
+	{
+		.pclk = 61417000,
+		.h_ref_to_sync = 2,
+		.v_ref_to_sync = 2,
+		.h_sync_width = 4,
+		.v_sync_width = 4,
+		.h_back_porch = 100,
+		.v_back_porch = 14,
+		.h_active = 720,
+		.v_active = 1280,
+		.h_front_porch = 4,
+		.v_front_porch = 4,
+	},
 };
 
 
 static struct tegra_fb_data cardhu_dsi_fb_data = {
-#if DSI_PANEL_219
 	.win		= 0,
-	.xres		= 540,
-	.yres		= 960,
 	.bits_per_pixel	= 32,
-#endif
-
-#if DSI_PANEL_218
-	.win		= 0,
-	.xres		= 864,
-	.yres		= 480,
-	.bits_per_pixel	= 32,
-#endif
 	.flags		= TEGRA_FB_FLIP_ON_PROBE,
 };
-#endif
 
 static struct tegra_dc_out cardhu_disp1_out = {
 	.align		= TEGRA_DC_ALIGN_MSB,
 	.order		= TEGRA_DC_ORDER_RED_BLUE,
 	.sd_settings	= &cardhu_sd_settings,
 	.parent_clk	= "pll_p",
-//       	.out_pins       = cardhu_dc_out_pins,
-//       	.n_out_pins = ARRAY_SIZE(cardhu_dc_out_pins),
 
-#ifndef CONFIG_TEGRA_CARDHU_DSI
-	.parent_clk_backup = "pll_d2_out0",
+	.postpoweron	= cardhu_panel_postpoweron,
+	.prepoweroff	= cardhu_panel_prepoweroff,
+};
 
-	.type		= TEGRA_DC_OUT_RGB,
+static struct tegra_dc_out cardhu_disp1_out_P1801 = {
+	.align		= TEGRA_DC_ALIGN_MSB,
+	.order		= TEGRA_DC_ORDER_RED_BLUE,
+	.sd_settings	= &cardhu_sd_settings,
+	.parent_clk	= "pll_d_out0",
 
-	.modes	 	= cardhu_panel_modes,
-	.n_modes 	= ARRAY_SIZE(cardhu_panel_modes),
+	.depth		= 18,
+	.dither		= TEGRA_DC_ORDERED_DITHER,
 
-	.enable		= cardhu_panel_enable,
-	.disable	= cardhu_panel_disable,
-#else
-	.type		= TEGRA_DC_OUT_DSI,
+	.modes		= cardhu_panel_modes_P1801,
+	.n_modes	= ARRAY_SIZE(cardhu_panel_modes_P1801),
 
-	.modes	 	= cardhu_dsi_modes,
-	.n_modes 	= ARRAY_SIZE(cardhu_dsi_modes),
+	.type		= TEGRA_DC_OUT_HDMI,
+	.flags		= TEGRA_DC_OUT_HOTPLUG_HIGH,
+	.dcc_bus	= 3,
+	.hotplug_gpio	= cardhu_hdmi_hpd,
+	.max_pixclock	= KHZ2PICOS(148500),
 
-	.dsi		= &cardhu_dsi,
+	.enable		= cardhu_hdmi_enable,
+	.disable	= cardhu_hdmi_disable,
 
-	.enable		= cardhu_dsi_panel_enable,
-	.disable	= cardhu_dsi_panel_disable,
-	.postsuspend	= cardhu_dsi_panel_postsuspend,
-#endif
+	.postsuspend	= cardhu_hdmi_vddio_disable,
+	.hotplug_init	= cardhu_hdmi_vddio_enable,
 };
 
 #ifdef CONFIG_TEGRA_DC
@@ -1147,11 +1303,6 @@ static struct tegra_dc_platform_data cardhu_disp1_pdata = {
 	.flags		= TEGRA_DC_FLAG_ENABLED,
 	.default_out	= &cardhu_disp1_out,
 	.emc_clk_rate	= 300000000,
-#ifndef CONFIG_TEGRA_CARDHU_DSI
-	.fb		= &cardhu_fb_data,
-#else
-	.fb		= &cardhu_dsi_fb_data,
-#endif
 };
 
 static struct nvhost_device cardhu_disp1_device = {
@@ -1185,6 +1336,7 @@ static int cardhu_disp1_check_fb(struct device *dev, struct fb_info *info)
 }
 #endif
 
+#if defined(CONFIG_TEGRA_NVMAP)
 static struct nvmap_platform_carveout cardhu_carveouts[] = {
 	[0] = NVMAP_HEAP_CARVEOUT_IRAM_INIT,
 	[1] = {
@@ -1208,12 +1360,68 @@ static struct platform_device cardhu_nvmap_device = {
 		.platform_data = &cardhu_nvmap_data,
 	},
 };
+#endif
 
+#if defined(CONFIG_ION_TEGRA)
+
+static struct platform_device tegra_iommu_device = {
+	.name = "tegra_iommu_device",
+	.id = -1,
+	.dev = {
+		.platform_data = (void *)((1 << HWGRP_COUNT) - 1),
+	},
+};
+
+static struct ion_platform_data tegra_ion_data = {
+	.nr = 4,
+	.heaps = {
+		{
+			.type = ION_HEAP_TYPE_CARVEOUT,
+			.id = TEGRA_ION_HEAP_CARVEOUT,
+			.name = "carveout",
+			.base = 0,
+			.size = 0,
+		},
+		{
+			.type = ION_HEAP_TYPE_CARVEOUT,
+			.id = TEGRA_ION_HEAP_IRAM,
+			.name = "iram",
+			.base = TEGRA_IRAM_BASE + TEGRA_RESET_HANDLER_SIZE,
+			.size = TEGRA_IRAM_SIZE - TEGRA_RESET_HANDLER_SIZE,
+		},
+		{
+			.type = ION_HEAP_TYPE_CARVEOUT,
+			.id = TEGRA_ION_HEAP_VPR,
+			.name = "vpr",
+			.base = 0,
+			.size = 0,
+		},
+		{
+			.type = ION_HEAP_TYPE_IOMMU,
+			.id = TEGRA_ION_HEAP_IOMMU,
+			.name = "iommu",
+			.base = TEGRA_SMMU_BASE,
+			.size = TEGRA_SMMU_SIZE,
+			.priv = &tegra_iommu_device.dev,
+		},
+	},
+};
+
+static struct platform_device tegra_ion_device = {
+	.name = "ion-tegra",
+	.id = -1,
+	.dev = {
+		.platform_data = &tegra_ion_data,
+	},
+};
+#endif
 
 static struct platform_device *cardhu_gfx_devices[] __initdata = {
+#if defined(CONFIG_TEGRA_NVMAP)
 	&cardhu_nvmap_device,
-#ifdef CONFIG_TEGRA_GRHOST
-	&tegra_grhost_device,
+#endif
+#if defined(CONFIG_ION_TEGRA)
+	&tegra_ion_device,
 #endif
 	&tegra_pwfm0_device,
 	&cardhu_backlight_device,
@@ -1228,24 +1436,106 @@ struct early_suspend cardhu_panel_early_suspender;
 
 static void cardhu_panel_early_suspend(struct early_suspend *h)
 {
-	unsigned i;
-
 	/* power down LCD, add use a black screen for HDMI */
 	if (num_registered_fb > 0)
 		fb_blank(registered_fb[0], FB_BLANK_POWERDOWN);
 	if (num_registered_fb > 1)
 		fb_blank(registered_fb[1], FB_BLANK_NORMAL);
-	printk(KERN_INFO "%sed\n", __func__);
+
+#ifdef CONFIG_TEGRA_CONVSERVATIVE_GOV_ON_EARLYSUPSEND
+	cpufreq_store_default_gov();
+	cpufreq_change_gov(cpufreq_conservative_gov);
+#endif
+
+#ifdef CONFIG_PM_DEBUG
+        pr_info("%sed\n", __func__);
+#endif
 }
 
 static void cardhu_panel_late_resume(struct early_suspend *h)
 {
 	unsigned i;
+#ifdef CONFIG_TEGRA_CONVSERVATIVE_GOV_ON_EARLYSUPSEND
+	cpufreq_restore_default_gov();
+#endif
 	for (i = 0; i < num_registered_fb; i++)
 		fb_blank(registered_fb[i], FB_BLANK_UNBLANK);
-	printk(KERN_INFO "%sd\n", __func__);
+
+#ifdef CONFIG_PM_DEBUG
+	pr_info("%sd\n", __func__);
+#endif
 }
 #endif
+
+static void cardhu_panel_preinit(void)
+{
+	if (display_board_info.board_id == BOARD_DISPLAY_E1213)
+		is_panel_218 = true;
+	else if (display_board_info.board_id == BOARD_DISPLAY_E1253)
+		is_panel_219 = true;
+	else if (display_board_info.board_id == BOARD_DISPLAY_E1506)
+		is_panel_1506 = true;
+
+	if (!is_dsi_panel()) {
+		cardhu_disp1_out.parent_clk_backup = "pll_d2_out0";
+		cardhu_disp1_out.type = TEGRA_DC_OUT_RGB;
+		cardhu_disp1_out.depth = 18;
+		cardhu_disp1_out.dither = TEGRA_DC_ORDERED_DITHER;
+		cardhu_disp1_out.modes = cardhu_panel_modes;
+		cardhu_disp1_out.n_modes = ARRAY_SIZE(cardhu_panel_modes);
+		cardhu_disp1_out.enable = cardhu_panel_enable;
+		cardhu_disp1_out.disable = cardhu_panel_disable;
+		/* Set height and width in mm. */
+		cardhu_disp1_out.height = 127;
+		cardhu_disp1_out.width = 216;
+
+		cardhu_disp1_pdata.fb = &cardhu_fb_data;
+	} else {
+		cardhu_disp1_out.flags = DC_CTRL_MODE;
+		cardhu_disp1_out.type = TEGRA_DC_OUT_DSI;
+		cardhu_disp1_out.dsi = &cardhu_dsi;
+		cardhu_disp1_out.enable = cardhu_dsi_panel_enable;
+		cardhu_disp1_out.disable = cardhu_dsi_panel_disable;
+		cardhu_disp1_out.postsuspend = cardhu_dsi_panel_postsuspend;
+
+		cardhu_dsi.n_init_cmd = ARRAY_SIZE(dsi_init_cmd);
+		cardhu_dsi.dsi_init_cmd = dsi_init_cmd;
+		cardhu_dsi.n_suspend_cmd = ARRAY_SIZE(dsi_suspend_cmd);
+		cardhu_dsi.dsi_suspend_cmd = dsi_suspend_cmd;
+
+		if (is_panel_218) {
+			cardhu_disp1_out.modes	= cardhu_dsi_modes_218;
+			cardhu_disp1_out.n_modes =
+				ARRAY_SIZE(cardhu_dsi_modes_218);
+			cardhu_dsi_fb_data.xres = 864;
+			cardhu_dsi_fb_data.yres = 480;
+		} else if (is_panel_219) {
+			cardhu_disp1_out.modes	= cardhu_dsi_modes_219;
+			cardhu_disp1_out.n_modes =
+				ARRAY_SIZE(cardhu_dsi_modes_219);
+			cardhu_dsi_fb_data.xres = 540;
+			cardhu_dsi_fb_data.yres = 960;
+		} else if (is_panel_1506) {
+			cardhu_disp1_out.modes	= cardhu_dsi_modes_1506;
+			cardhu_disp1_out.n_modes =
+				ARRAY_SIZE(cardhu_dsi_modes_1506);
+			cardhu_dsi.n_init_cmd = ARRAY_SIZE(dsi_init_cmd_1506);
+			cardhu_dsi.dsi_init_cmd = dsi_init_cmd_1506;
+			cardhu_dsi.n_suspend_cmd =
+				ARRAY_SIZE(dsi_suspend_cmd_1506);
+			cardhu_dsi.dsi_suspend_cmd = dsi_suspend_cmd_1506;
+			cardhu_dsi.panel_send_dc_frames = true;
+			cardhu_dsi.suspend_aggr = DSI_HOST_SUSPEND_LV0;
+			cardhu_dsi_fb_data.xres = 720;
+			cardhu_dsi_fb_data.yres = 1280;
+			/* Set height and width in mm. */
+			cardhu_disp1_out.height = 95;
+			cardhu_disp1_out.width = 53;
+		}
+
+		cardhu_disp1_pdata.fb = &cardhu_dsi_fb_data;
+	}
+}
 
 int __init cardhu_panel_init(void)
 {
@@ -1255,18 +1545,29 @@ int __init cardhu_panel_init(void)
 	tegra_get_board_info(&board_info);
 	tegra_get_display_board_info(&display_board_info);
 
+#if defined(CONFIG_TEGRA_NVMAP)
 	cardhu_carveouts[1].base = tegra_carveout_start;
 	cardhu_carveouts[1].size = tegra_carveout_size;
+#endif
 
-	if (board_info.board_id == BOARD_E1291 &&
-		((board_info.sku & SKU_TOUCHSCREEN_MECH_FIX) == 0)) {
+#if defined(CONFIG_ION_TEGRA)
+	tegra_ion_data.heaps[0].base = tegra_carveout_start;
+	tegra_ion_data.heaps[0].size = tegra_carveout_size;
+#endif
+
+	cardhu_panel_preinit();
+	if (is_dsi_panel())
+		goto skip_lvds;
+#if defined(CONFIG_TEGRA_DC)
+	if (WARN_ON(board_info.board_id == BOARD_E1291 &&
+		((board_info.sku & SKU_TOUCHSCREEN_MECH_FIX) == 0))) {
 		/* use 55Hz panel timings to reduce noise on sensitive touch */
 		printk("Using cardhu_panel_modes_55hz\n");
+		cardhu_disp1_out.parent_clk = "pll_p";
 		cardhu_disp1_out.modes = cardhu_panel_modes_55hz;
 		cardhu_disp1_out.n_modes = ARRAY_SIZE(cardhu_panel_modes_55hz);
 	}
 
-#if defined(CONFIG_TEGRA_DC) && !defined(CONFIG_TEGRA_CARDHU_DSI)
 	if (display_board_info.board_id == BOARD_DISPLAY_PM313) {
 		/* initialize the values */
 #if defined(PM313_LVDS_PANEL_19X12)
@@ -1278,6 +1579,9 @@ int __init cardhu_panel_init(void)
 #else
 		cardhu_disp1_out.depth = 24;
 #endif
+		/* Set height and width in mm. */
+		cardhu_disp1_out.height = 127;
+		cardhu_disp1_out.width = 203;
 		cardhu_fb_data.xres = 1920;
 		cardhu_fb_data.yres = 1200;
 
@@ -1289,69 +1593,67 @@ int __init cardhu_panel_init(void)
 		/* lvds configuration */
 		err = gpio_request(pm313_R_FDE, "R_FDE");
 		err |= gpio_direction_output(pm313_R_FDE, 1);
-		tegra_gpio_enable(pm313_R_FDE);
 
 		err |= gpio_request(pm313_R_FB, "R_FB");
 		err |= gpio_direction_output(pm313_R_FB, 1);
-		tegra_gpio_enable(pm313_R_FB);
 
 		err |= gpio_request(pm313_MODE0, "MODE0");
 		err |= gpio_direction_output(pm313_MODE0, 1);
-		tegra_gpio_enable(pm313_MODE0);
 
 		err |= gpio_request(pm313_MODE1, "MODE1");
 		err |= gpio_direction_output(pm313_MODE1, 0);
-		tegra_gpio_enable(pm313_MODE1);
 
 		err |= gpio_request(pm313_BPP, "BPP");
 		err |= gpio_direction_output(pm313_BPP, PM313_LVDS_PANEL_BPP);
-		tegra_gpio_enable(pm313_BPP);
 
 		err = gpio_request(pm313_lvds_shutdown, "lvds_shutdown");
 		/* free ride provided by bootloader */
 		err |= gpio_direction_output(pm313_lvds_shutdown, 1);
-		tegra_gpio_enable(pm313_lvds_shutdown);
 
 		if (err)
 			printk(KERN_ERR "ERROR(s) in LVDS configuration\n");
 	}
-/*	else if ((display_board_info.board_id == BOARD_DISPLAY_E1247 &&
+/*        else if ((display_board_info.board_id == BOARD_DISPLAY_E1247 &&
 				board_info.board_id == BOARD_PM269) ||
 				(board_info.board_id == BOARD_E1257) ||
 				(board_info.board_id == BOARD_PM305) ||
 				(board_info.board_id == BOARD_PM311)) {
 		gpio_request(e1247_pm269_lvds_shutdown, "lvds_shutdown");
 		gpio_direction_output(e1247_pm269_lvds_shutdown, 1);
-		tegra_gpio_enable(e1247_pm269_lvds_shutdown);
 	} else {
 		gpio_request(cardhu_lvds_shutdown, "lvds_shutdown");
 		gpio_direction_output(cardhu_lvds_shutdown, 1);
-		tegra_gpio_enable(cardhu_lvds_shutdown);
 	}
 */
-	if (tegra3_get_project_id()== TEGRA3_PROJECT_TF300TG ){
-		cardhu_disp1_out.modes->pclk = 83900000;
-		cardhu_disp1_out.modes->h_front_porch = 377;
-		cardhu_disp1_out.parent_clk = "pll_d_out0";
+	if ( tegra3_get_project_id() == TEGRA3_PROJECT_P1801 ){
+		printk("P1801 display setting, set HDMI as main display\n ");
+		cardhu_fb_data.xres = 1920;
+		cardhu_fb_data.yres = 1080;
 
-		cardhu_disp2_out.parent_clk = "pll_d2_out0";
-
-		printk("########## TF300TG: Set LCD pclk as %d Hz, parent_clk=%s\n", cardhu_disp1_out.modes->pclk, cardhu_disp1_out.parent_clk);
+		cardhu_disp1_pdata.default_out = &cardhu_disp1_out_P1801;
+		cardhu_disp1_device.resource	= cardhu_disp1_resources_P1801;
+		cardhu_disp1_device.num_resources = ARRAY_SIZE(cardhu_disp1_resources_P1801);
 	}
 
 	if (tegra3_get_project_id()==0x4 ){
-		printk("Check TF202T setting \n ");
+		printk("Check TF700T setting \n ");
 		cardhu_disp1_out.modes = panel_19X12_modes;
 		cardhu_disp1_out.n_modes = ARRAY_SIZE(panel_19X12_modes);
 		cardhu_disp1_out.parent_clk = "pll_d_out0";
 		cardhu_disp1_out.depth = 24;
-	
+
 		cardhu_fb_data.xres = 1920;
 		cardhu_fb_data.yres = 1200;
-	
+
 		cardhu_disp2_out.parent_clk = "pll_d2_out0";
 		cardhu_hdmi_fb_data.xres = 1920;
 		cardhu_hdmi_fb_data.yres = 1200;
+
+		gpio_request(TEGRA_GPIO_PU5, "LDO_EN");
+		gpio_request(TEGRA_GPIO_PBB3, "TF700T_1.2V");
+		gpio_request(TEGRA_GPIO_PC6, "TF700T_1.8V");
+		gpio_request(TEGRA_GPIO_PX0, "TF700T_I2C_Switch");
+		gpio_request(TEGRA_GPIO_PD2, "TF700T_OSC");
 	}
 
 #endif
@@ -1363,17 +1665,29 @@ int __init cardhu_panel_init(void)
 		tegra_gpio_enable(cardhu_hdmi_enb);
 		gpio_request(cardhu_hdmi_enb, "hdmi_5v_en");
 		gpio_direction_output(cardhu_hdmi_enb, 1);
-	}	
+	}
 
-	tegra_gpio_enable(cardhu_hdmi_hpd);
+skip_lvds:
 	gpio_request(cardhu_hdmi_hpd, "hdmi_hpd");
 	gpio_direction_input(cardhu_hdmi_hpd);
+
+#if !(DC_CTRL_MODE & TEGRA_DC_OUT_ONE_SHOT_MODE)
+	tegra_gpio_enable(e1506_lcd_te);
+	gpio_request(e1506_lcd_te, "lcd_te");
+	gpio_direction_input(e1506_lcd_te);
+#endif
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	cardhu_panel_early_suspender.suspend = cardhu_panel_early_suspend;
 	cardhu_panel_early_suspender.resume = cardhu_panel_late_resume;
 	cardhu_panel_early_suspender.level = EARLY_SUSPEND_LEVEL_DISABLE_FB;
 	register_early_suspend(&cardhu_panel_early_suspender);
+#endif
+
+#ifdef CONFIG_TEGRA_GRHOST
+	err = tegra3_register_host1x_devices();
+	if (err)
+		return err;
 #endif
 
 	err = platform_add_devices(cardhu_gfx_devices,
@@ -1394,12 +1708,21 @@ int __init cardhu_panel_init(void)
 	if (!err)
 		err = nvhost_device_register(&cardhu_disp1_device);
 
-	res = nvhost_get_resource_byname(&cardhu_disp2_device,
-					 IORESOURCE_MEM, "fbmem");
-	res->start = tegra_fb2_start;
-	res->end = tegra_fb2_start + tegra_fb2_size - 1;
-	if (!err)
-		err = nvhost_device_register(&cardhu_disp2_device);
+	if ( tegra3_get_project_id() != TEGRA3_PROJECT_P1801 ){
+
+		res = nvhost_get_resource_byname(&cardhu_disp2_device,
+						 IORESOURCE_MEM, "fbmem");
+		res->start = tegra_fb2_start;
+		res->end = tegra_fb2_start + tegra_fb2_size - 1;
+
+		/* Copy the bootloader fb to the fb2. */
+		tegra_move_framebuffer(tegra_fb2_start, tegra_bootloader_fb_start,
+					min(tegra_fb2_size, tegra_bootloader_fb_size));
+
+		if (!err)
+			err = nvhost_device_register(&cardhu_disp2_device);
+	}
+
 #endif
 
 #if defined(CONFIG_TEGRA_GRHOST) && defined(CONFIG_TEGRA_NVAVP)

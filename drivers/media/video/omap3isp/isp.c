@@ -391,7 +391,7 @@ static inline void isp_isr_dbg(struct isp_device *isp, u32 irqstatus)
 	};
 	int i;
 
-	dev_dbg(isp->dev, "");
+	dev_dbg(isp->dev, "ISP IRQ: ");
 
 	for (i = 0; i < ARRAY_SIZE(name); i++) {
 		if ((1 << i) & irqstatus)
@@ -1107,8 +1107,7 @@ isp_restore_context(struct isp_device *isp, struct isp_reg *reg_list)
 static void isp_save_ctx(struct isp_device *isp)
 {
 	isp_save_context(isp, isp_reg_list);
-	if (isp->iommu)
-		iommu_save_ctx(isp->iommu);
+	omap_iommu_save_ctx(isp->dev);
 }
 
 /*
@@ -1121,8 +1120,7 @@ static void isp_save_ctx(struct isp_device *isp)
 static void isp_restore_ctx(struct isp_device *isp)
 {
 	isp_restore_context(isp, isp_reg_list);
-	if (isp->iommu)
-		iommu_restore_ctx(isp->iommu);
+	omap_iommu_restore_ctx(isp->dev);
 	omap3isp_ccdc_restore_context(isp);
 	omap3isp_preview_restore_context(isp);
 }
@@ -1748,7 +1746,7 @@ static int isp_register_entities(struct isp_device *isp)
 		goto done;
 
 	/* Register external entities */
-	for (subdevs = pdata->subdevs; subdevs->subdevs; ++subdevs) {
+	for (subdevs = pdata->subdevs; subdevs && subdevs->subdevs; ++subdevs) {
 		struct v4l2_subdev *sensor;
 		struct media_entity *input;
 		unsigned int flags;
@@ -1975,7 +1973,8 @@ static int isp_remove(struct platform_device *pdev)
 	isp_cleanup_modules(isp);
 
 	omap3isp_get(isp);
-	iommu_put(isp->iommu);
+	iommu_detach_device(isp->domain, &pdev->dev);
+	iommu_domain_free(isp->domain);
 	omap3isp_put(isp);
 
 	free_irq(isp->irq_num, isp);
@@ -2122,12 +2121,17 @@ static int isp_probe(struct platform_device *pdev)
 		}
 	}
 
-	/* IOMMU */
-	isp->iommu = iommu_get("isp");
-	if (IS_ERR_OR_NULL(isp->iommu)) {
-		isp->iommu = NULL;
-		ret = -ENODEV;
+	isp->domain = iommu_domain_alloc(pdev->dev.bus);
+	if (!isp->domain) {
+		dev_err(isp->dev, "can't alloc iommu domain\n");
+		ret = -ENOMEM;
 		goto error_isp;
+	}
+
+	ret = iommu_attach_device(isp->domain, &pdev->dev);
+	if (ret) {
+		dev_err(&pdev->dev, "can't attach iommu device: %d\n", ret);
+		goto free_domain;
 	}
 
 	/* Interrupt */
@@ -2135,13 +2139,13 @@ static int isp_probe(struct platform_device *pdev)
 	if (isp->irq_num <= 0) {
 		dev_err(isp->dev, "No IRQ resource\n");
 		ret = -ENODEV;
-		goto error_isp;
+		goto detach_dev;
 	}
 
 	if (request_irq(isp->irq_num, isp_isr, IRQF_SHARED, "OMAP3 ISP", isp)) {
 		dev_err(isp->dev, "Unable to request IRQ\n");
 		ret = -EINVAL;
-		goto error_isp;
+		goto detach_dev;
 	}
 
 	/* Entities */
@@ -2162,8 +2166,11 @@ error_modules:
 	isp_cleanup_modules(isp);
 error_irq:
 	free_irq(isp->irq_num, isp);
+detach_dev:
+	iommu_detach_device(isp->domain, &pdev->dev);
+free_domain:
+	iommu_domain_free(isp->domain);
 error_isp:
-	iommu_put(isp->iommu);
 	omap3isp_put(isp);
 error:
 	isp_put_clocks(isp);
@@ -2234,3 +2241,4 @@ module_exit(isp_cleanup);
 MODULE_AUTHOR("Nokia Corporation");
 MODULE_DESCRIPTION("TI OMAP3 ISP driver");
 MODULE_LICENSE("GPL");
+MODULE_VERSION(ISP_VIDEO_DRIVER_VERSION);

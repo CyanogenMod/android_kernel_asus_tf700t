@@ -47,6 +47,7 @@ void suspend_set_ops(const struct platform_suspend_ops *ops)
 	suspend_ops = ops;
 	mutex_unlock(&pm_mutex);
 }
+EXPORT_SYMBOL_GPL(suspend_set_ops);
 
 bool valid_state(suspend_state_t state)
 {
@@ -68,6 +69,7 @@ int suspend_valid_only_mem(suspend_state_t state)
 {
 	return state == PM_SUSPEND_MEM;
 }
+EXPORT_SYMBOL_GPL(suspend_valid_only_mem);
 
 static int suspend_test(int level)
 {
@@ -104,18 +106,7 @@ static int suspend_prepare(void)
 	if (error)
 		goto Finish;
 
-	/* Add a workaround to reset the system (causing a reboot) after
-	 * timeout occurs. We met suspect system hang in try_to_freeze_tasks()
-	 * without return even in successful case (When this issue occurs, dmesg
-	 * looks like "Freezing user space processes ... (elapsed 0.02 seconds)"
-	 * without proper "done" in the tail, or "Freezing remaining freezable
-	 * tasks ... (elapsed 0.01 seconds) without proper "done" either.
-	 *
-	 * FIXME: Figure out the root cause of this system hang.
-	 */
-	freezer_expire_start();
 	error = suspend_freeze_processes();
-	freezer_expire_finish("freeze processes");
 	if (!error)
 		return 0;
 
@@ -140,12 +131,13 @@ void __attribute__ ((weak)) arch_suspend_enable_irqs(void)
 }
 
 /**
- *	suspend_enter - enter the desired system sleep state.
- *	@state:		state to enter
+ * suspend_enter - enter the desired system sleep state.
+ * @state: State to enter
+ * @wakeup: Returns information that suspend should not be entered again.
  *
- *	This function should be called after devices have been suspended.
+ * This function should be called after devices have been suspended.
  */
-static int suspend_enter(suspend_state_t state)
+static int suspend_enter(suspend_state_t state, bool *wakeup)
 {
 	int error;
 
@@ -177,38 +169,14 @@ static int suspend_enter(suspend_state_t state)
 	arch_suspend_disable_irqs();
 	BUG_ON(!irqs_disabled());
 
-	error = sysdev_suspend(PMSG_SUSPEND);
+	error = syscore_suspend();
 	if (!error) {
-		/*
-		 * enable HW watchdog with 5s timeout, and the checkpoint
-		 * must be disabled in tegra_suspend_dram() under
-		 * /kernel/arch/arm/mach-tegra/pm.c before entering suspend mode.
-		 */
-		dram_expire_start();
-		pr_info("Suspending is subject to 5 seconds\n");
-		error = syscore_suspend();
-		if (error) {
-			/*
-			 * disable HW watchdog due to failure of
-			 * the last suspending attempt.
-			 */
-			dram_expire_finish();
-			sysdev_resume();
-		}
-	}
-	if (!error) {
-		if (!(suspend_test(TEST_CORE) || pm_wakeup_pending())) {
+		*wakeup = pm_wakeup_pending();
+		if (!(suspend_test(TEST_CORE) || *wakeup)) {
 			error = suspend_ops->enter(state);
 			events_check_enabled = false;
 		}
 		syscore_resume();
-		/*
-		 * disable HW watchdog, and the checkpoint must be actived in
-		 * tegra_suspend_dram() under /kernel/arch/arm/mach-tegra/pm.c
-		 * after levaing suspend mode.
-		 */
-		dram_expire_finish();
-		sysdev_resume();
 	}
 
 	arch_suspend_enable_irqs();
@@ -238,6 +206,7 @@ static int suspend_enter(suspend_state_t state)
 int suspend_devices_and_enter(suspend_state_t state)
 {
 	int error;
+	bool wakeup = false;
 
 	if (!suspend_ops)
 		return -ENOSYS;
@@ -250,24 +219,23 @@ int suspend_devices_and_enter(suspend_state_t state)
 	}
 	suspend_console();
 	suspend_test_start();
-	suspend_expire_start();
 	error = dpm_suspend_start(PMSG_SUSPEND);
 	if (error) {
 		printk(KERN_ERR "PM: Some devices failed to suspend\n");
 		goto Recover_platform;
 	}
-	suspend_expire_finish("suspend devices");
 	suspend_test_finish("suspend devices");
 	if (suspend_test(TEST_DEVICES))
 		goto Recover_platform;
 
-	suspend_enter(state);
+	do {
+		error = suspend_enter(state, &wakeup);
+	} while (!error && !wakeup
+		&& suspend_ops->suspend_again && suspend_ops->suspend_again());
 
  Resume_devices:
 	suspend_test_start();
-	suspend_expire_start();
 	dpm_resume_end(PMSG_RESUME);
-	suspend_expire_finish("resume devices");
 	suspend_test_finish("resume devices");
 	resume_console();
  Close:
@@ -350,7 +318,7 @@ int enter_state(suspend_state_t state)
  */
 int pm_suspend(suspend_state_t state)
 {
-	if (state > PM_SUSPEND_ON && state <= PM_SUSPEND_MAX)
+	if (state > PM_SUSPEND_ON && state < PM_SUSPEND_MAX)
 		return enter_state(state);
 	return -EINVAL;
 }

@@ -111,6 +111,9 @@ static struct usb_descriptor_header *hs_adb_descs[] = {
 	NULL,
 };
 
+static void adb_ready_callback(void);
+static void adb_closed_callback(void);
+
 static struct usb_string adb_string_defs[] = {
 	[0].s = "ASUS Android Composite ADB Interface",
 	{  },	 /*end of list*/
@@ -427,6 +430,8 @@ static int adb_open(struct inode *ip, struct file *fp)
 	static unsigned long last_print;
 	static unsigned long count = 0;
 
+	pr_info("adb_open\n");
+
 	if (!_adb_dev)
 		return -ENODEV;
 
@@ -452,6 +457,8 @@ static int adb_open(struct inode *ip, struct file *fp)
 	/* clear the error latch */
 	_adb_dev->error = 0;
 
+	adb_ready_callback();
+
 	return 0;
 }
 
@@ -459,6 +466,8 @@ static int adb_release(struct inode *ip, struct file *fp)
 {
 	static unsigned long last_print;
 	static unsigned long count = 0;
+
+	pr_info("adb_release\n");
 
 	if (++count == 1)
 		last_print = jiffies;
@@ -470,6 +479,9 @@ static int adb_release(struct inode *ip, struct file *fp)
 
 	if (count < 5)
 		printk(KERN_INFO "adb_release\n");
+
+	adb_closed_callback();
+
 	adb_unlock(&_adb_dev->open_excl);
 	return 0;
 }
@@ -554,16 +566,12 @@ static int adb_function_set_alt(struct usb_function *f,
 	int ret;
 
 	DBG(cdev, "adb_function_set_alt intf: %d alt: %d\n", intf, alt);
-	ret = usb_ep_enable(dev->ep_in,
-			ep_choose(cdev->gadget,
-				&adb_highspeed_in_desc,
-				&adb_fullspeed_in_desc));
+	config_ep_by_speed(cdev->gadget, f, dev->ep_in);
+	ret = usb_ep_enable(dev->ep_in);
 	if (ret)
 		return ret;
-	ret = usb_ep_enable(dev->ep_out,
-			ep_choose(cdev->gadget,
-				&adb_highspeed_out_desc,
-				&adb_fullspeed_out_desc));
+	config_ep_by_speed(cdev->gadget, f, dev->ep_out);
+	ret = usb_ep_enable(dev->ep_out);
 	if (ret) {
 		usb_ep_disable(dev->ep_in);
 		return ret;

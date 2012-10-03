@@ -27,7 +27,14 @@
 #include "../tegra/dc/dc_priv.h"
 #include <linux/i2c.h>
 #include <mach/board-cardhu-misc.h>
+#include "../tegra/dc/edid.h"
 
+#define ENABLE_DEBUG_I2C_P1801 0        // define 1 to enable DEBUG statements
+#if ENABLE_DEBUG_I2C_P1801
+#define printk_DEBUG printk
+#else
+#define printk_DEBUG(format, args...) ((void)0)
+#endif
 
 /* For MIPI bridge IC */
 #define DISPLAY_TABLE_END        1 /* special number to indicate this is end of table */
@@ -39,15 +46,24 @@ static struct display_reg {
         u16 addr;
         u16 val;
 };
+struct tegra_edid {
+        struct i2c_client *client;
+        struct i2c_board_info info;
+        int bus;
+        struct tegra_edid_pvt *data;
+        struct mutex lock;
+};
 
 int I2C_command_flag = 1;
 
+static int client_count_p1801 = 0;
+static struct i2c_client        *client_panel_p1801;
 
 #define cardhu_bl_enb			TEGRA_GPIO_PH2
 
 static atomic_t sd_brightness = ATOMIC_INIT(255);
 extern struct tegra_dc *tegra_dcs[TEGRA_MAX_DC];
-
+struct tegra_edid *edid;
 struct pwm_bl_data {
 	struct pwm_device	*pwm;
 	struct device		*dev;
@@ -55,6 +71,8 @@ struct pwm_bl_data {
 	unsigned int		lth_brightness;
 	int			(*notify)(struct device *,
 					  int brightness);
+	void			(*notify_after)(struct device *,
+					int brightness);
 	int			(*check_fb)(struct device *, struct fb_info *);
 };
 
@@ -95,63 +113,62 @@ static int display_write_reg(struct i2c_client *client, u16 addr, u16 val)
 static int display_write_table(struct i2c_client *client,
                                                                   const struct display_reg table[])
 {
-               int err;
-               const struct display_reg *next;
-               u16 val;
-               int command_count=0;
+        int err;
+        const struct display_reg *next;
+        u16 val;
 
-               pr_info("DISPLAY_write_table %s\n",__func__);
-               for (next = table; next->addr != DISPLAY_TABLE_END; next++) {
-                               if (next->addr == DISPLAY_WAIT_MS) {
-                                               msleep(next->val);
-                                               continue;
-                               }
+        pr_info("DISPLAY_write_table %s\n",__func__);
+        for (next = table; next->addr != DISPLAY_TABLE_END; next++) {
+                if (next->addr == DISPLAY_WAIT_MS) {
+                        msleep(next->val);
+                        continue;
+                }
 
-                               val = next->val;
+                val = next->val;
 
-                               err = display_write_reg(client, next->addr, val);
-                               if (err)
-                                               return err;
-               }
-               return 0;
+                err = display_write_reg(client, next->addr, val);
+                if (err)
+                        return err;
+        }
+        return 0;
 }
 
 static int display_read_reg(struct i2c_client *client, u16 addr, u16 *val)
 {
-               int err;
-               struct i2c_msg msg[2];
-               unsigned char data[4];
+        int err;
+        struct i2c_msg msg[2];
+        unsigned char data[4];
 
-               if (!client->adapter)
-                               return -ENODEV;
+        if (!client->adapter)
+                return -ENODEV;
 
-               msg[0].addr = 0x07;
-               msg[0].flags = 0;
-               msg[0].len = 2;
-               msg[0].buf = data;
+        msg[0].addr = 0x07;
+        msg[0].flags = 0;
+        msg[0].len = 2;
+        msg[0].buf = data;
 
-               /* high byte goes out first */
-               data[0] = (u8) (addr >> 8);
-               data[1] = (u8) (addr & 0xff);
+        /* high byte goes out first */
+        data[0] = (u8) (addr >> 8);
+        data[1] = (u8) (addr & 0xff);
 
-               msg[1].addr = 0x07;
-               msg[1].flags = 1;
+        msg[1].addr = 0x07;
+        msg[1].flags = 1;
 
-               msg[1].len = 2;
-               msg[1].buf = data + 2;
+        msg[1].len = 2;
+        msg[1].buf = data + 2;
 
-               err = i2c_transfer(client->adapter, msg, 2);
+        err = i2c_transfer(client->adapter, msg, 2);
 
-               printk("Check register high=%x \n",data[2]);
-               printk("Check register low=%x \n",data[3]);
+        printk("Check register high=%x \n",data[2]);
+        printk("Check register low=%x \n",data[3]);
 
-               if (err != 2)
-                               return -EINVAL;
-                               /*
-                                               memcpy(val, data+2, 1);
-                                               *val=*val&0xff;
-                               */
-               return 0;
+        if (err != 2)
+                return -EINVAL;
+        /*
+                memcpy(val, data+2, 1);
+                *val=*val&0xff;
+        */
+        return 0;
 }
 
 static int display_read_table(struct i2c_client *client,
@@ -160,7 +177,6 @@ static int display_read_table(struct i2c_client *client,
         int err;
         const struct display_reg *next;
         u16 val;
-        int command_count=0;
 
         pr_info("DISPLAY_read_table %s\n",__func__);
         for (next = table; next->addr != DISPLAY_TABLE_END; next++) {
@@ -178,19 +194,137 @@ static int display_read_table(struct i2c_client *client,
         return 0;
 }
 
+static int P1801_write_backlight(struct i2c_client *client, u16 val)
+{
+        int err;
+        struct i2c_msg msg;
+        unsigned char data[7];
+        int retry = 0;
+
+        if (!client->adapter)
+                return -ENODEV;
+
+        data[0] = 0x51;        //Source address
+        data[1] = 0x84;        //length: 0x80 OR n: Last 4 bits indicates the number of following bytes (excluding checksum)
+        data[2] = 0x03;        //Set VCP command
+        data[3] = 0x10;        //VCP opcode, brightness=10
+        data[4] = (u8) (val >> 8);        //High Byte
+        data[5] = (u8) (val & 0xff);        //Low Byte
+        data[6] = 0x6e^data[0]^data[1]^data[2]^data[3]^data[4]^data[5];        //Check sum: Simple XOR of all preceding bytes (including the first)
+
+        msg.addr = client->addr;
+        msg.flags = 0;
+        msg.len = 7;
+        msg.buf = data;
+        printk_DEBUG("%s: msg.addr=%x, data{0,1,2,3,4,5,6}={%x,%x,%x,%x,%x,%x,%x}, val=%d\n", __func__, msg.addr, data[0], data[1], data[2], data[3], data[4], data[5], data[6], val);
+
+        do {
+                err = i2c_transfer(client->adapter, &msg, 1);
+                if (err == 1)
+                        return 0;
+                retry++;
+                pr_err("%s : i2c transfer failed, set backlight=%d(%x), retry time %d\n", __func__, val, val, retry);
+        } while (retry <= DISPLAY_MAX_RETRIES);
+
+        return err;
+}
+
+static int P1801_read_backlight(struct i2c_client *client, u16 *val)
+{
+        int err;
+        struct i2c_msg msg[2];
+        unsigned char data[16];
+
+        if (!client->adapter)
+                return -ENODEV;
+
+        msg[0].addr = client->addr;
+        msg[0].flags = 0;
+        msg[0].len = 5;
+        msg[0].buf = data;
+
+        data[0] = 0x51;        //Source address
+        data[1] = 0x82;        //length
+        data[2] = 0x01;        //Get VCP Feature command
+        data[3] = 0x10;        //VCP opcode, brightness=10
+        data[4] = 0x6e^data[0]^data[1]^data[2]^data[3];        //Check sum
+        printk_DEBUG("%s: msg.addr=%x, data{0,1,2,3,4}={%x,%x,%x,%x,%x}\n", __func__, msg[0].addr, data[0], data[1], data[2], data[3], data[4]);
+
+        msg[1].addr = client->addr;
+        msg[1].flags = I2C_M_RD;        //read data, from slave to master
+
+        msg[1].len = 11;        //include check sum byte
+        msg[1].buf = data + 5;
+
+        printk_DEBUG("%s: msg[0] transfer start\n", __func__);
+        err = i2c_transfer(client->adapter, msg, 1);
+        if (err != 1)
+                return -EINVAL;
+
+        //from ddc/ci spec, need to wait 40ms in order to enable the decoding and preparation of the reply message in Monitor
+        msleep(40);
+
+        printk_DEBUG("%s: msg[1] transfer start\n", __func__);
+        err = i2c_transfer(client->adapter, msg+1, 1);
+        if (err != 1)
+                return -EINVAL;
+
+
+        printk_DEBUG("%s, check Source address=%x, length=%x, VCP feature reply opcode=%x\n", __func__,data[5], data[6], data[7]);
+        printk_DEBUG("%s, check Result code=%x, VCP code=%x, VCP type code=%x\n", __func__,data[8], data[9], data[10]);
+        printk_DEBUG("%s, check brightness max high=%x, max low=%x\n", __func__,data[11], data[12]);
+        printk_DEBUG("%s, check brightness high=%x, low=%x\n", __func__,data[13], data[14]);
+        printk_DEBUG("%s, check check sum=%x\n", __func__,data[15]);
+
+        memcpy(val, data+14, 1);
+        printk_DEBUG("%s, check brightness value low=%x, brightness=%d\n", __func__,*val, *val);
+        *val=*val&0xff;
+        printk_DEBUG("%s, check brightness value low=%x, brightness=%d\n", __func__,*val, *val);
+
+        if(data[6]!=0x88)		//invalid length
+		return -EINVAL;
+
+        return 0;
+}
 
 static int pwm_backlight_update_status(struct backlight_device *bl)
 {
 	struct pwm_bl_data *pb = dev_get_drvdata(&bl->dev);
 	int brightness = bl->props.brightness;
 	int max = bl->props.max_brightness;
-	static int bl_enable_sleep_control = 0;	// sleep only when suspend or resume
+      static int bl_enable_sleep_control = 0; // sleep only when suspend or resume
+	int error = 0;
 
 	if (bl->props.power != FB_BLANK_UNBLANK)
 		brightness = 0;
 
 	if (bl->props.fb_blank != FB_BLANK_UNBLANK)
 		brightness = 0;
+
+	if (tegra3_get_project_id()==TEGRA3_PROJECT_P1801 && client_count_p1801==0){
+		int bus = 3;	// the same with hdmi edid bus
+		struct i2c_board_info	*info;
+		struct i2c_adapter		*adapter;
+
+		printk("%s: P1801 create a new adapter for backlight setting, bus=%d\n", __func__, bus);
+		info = kzalloc(sizeof(struct i2c_board_info), GFP_KERNEL);
+		info->addr = 0x37;	// DDC/CI packets are transmitted using the I2C address 0x37
+		adapter = i2c_get_adapter(bus);
+		if (!adapter) {
+			printk("can't get adpater for bus %d\n", bus);
+			kfree(info);
+		}
+
+		client_panel_p1801 = i2c_new_device(adapter, info);
+		i2c_put_adapter(adapter);
+
+		if (!client_panel_p1801) {
+			printk("can't create new device for P1801 scalar i2c\n");
+			kfree(info);
+		}
+
+		client_count_p1801++;
+	}
 
 	if (brightness == 0) {
 		if (pb->notify)
@@ -203,6 +337,11 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 		pwm_config(pb->pwm, 0, pb->period);
 		pwm_disable(pb->pwm);
 		I2C_command_flag=0;
+		if (tegra3_get_project_id()==TEGRA3_PROJECT_P1801 && client_count_p1801 !=0){
+			printk_DEBUG("%s: call P1801_write_backlight, brightness=%d, duty=%d\n", __func__, brightness, brightness * 100 / max);
+			error = P1801_write_backlight(client_panel_p1801, brightness);
+			printk_DEBUG("%s: write error? =%d\n", __func__, error);
+		}
 	} else {
 		if(tegra_dcs[0])
 			sd_brightness = *(tegra_dcs[0]->out->sd_settings->sd_brightness);
@@ -211,7 +350,6 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 
 		if (tegra3_get_project_id()==0x4 ){
 			int err;
-			int ret;
 			int bus = 0;
 			struct i2c_msg msg[2];
 			unsigned char data[4]={0,0,0,0};
@@ -349,6 +487,12 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 			}
 		}
 
+		if (tegra3_get_project_id()==TEGRA3_PROJECT_P1801 && client_count_p1801 !=0){
+			printk_DEBUG("%s: call P1801_write_backlight, brightness=%d, duty=%d\n", __func__, brightness, (brightness*100+(max>>1)) / max);
+			error = P1801_write_backlight(client_panel_p1801, (brightness*100+(max>>1)) /max );	//convert, the max value of p1801 hdmi display backlight is 100
+			printk_DEBUG("%s: write error? =%d\n", __func__, error);
+		}
+
 		brightness = pb->lth_brightness +
 			(brightness * (pb->period - pb->lth_brightness) / max);
 
@@ -361,14 +505,28 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 		}
 
 		gpio_set_value(cardhu_bl_enb, !!brightness);
+
 	}
+
+	if (pb->notify_after)
+		pb->notify_after(pb->dev, brightness);
 
 	return 0;
 }
 
 static int pwm_backlight_get_brightness(struct backlight_device *bl)
 {
-	return bl->props.brightness;
+	if (tegra3_get_project_id()==TEGRA3_PROJECT_P1801 && client_count_p1801 !=0) {
+		u16 tmp;
+		int brightness = 0;
+		int error = 0;
+		error = P1801_read_backlight(client_panel_p1801, &tmp);	//TODO: error handle
+		brightness = tmp & 0xff;
+		printk_DEBUG("%s: tmp=%d, brightness=%d, read error? = %d\n", __func__, tmp, brightness, error);
+		return brightness;
+	}
+	else
+		return bl->props.brightness;
 }
 
 static int pwm_backlight_check_fb(struct backlight_device *bl,
@@ -385,6 +543,39 @@ static const struct backlight_ops pwm_backlight_ops = {
 	.check_fb	= pwm_backlight_check_fb,
 };
 
+static int read_lcd_edid()
+{
+	struct fb_monspecs specs;
+	int err;
+
+	printk("%s \n", __func__);
+	edid = kzalloc(sizeof(*edid), GFP_KERNEL);
+	if (!edid)
+		return -ENOMEM;
+
+	edid = tegra_edid_create(0);
+	if (IS_ERR_OR_NULL(edid)) {
+		printk("can't create edid\n");
+		return -ENOMEM;
+	}
+
+	err = tegra_edid_get_monspecs(edid, &specs);
+	if (err < 0) {
+		printk("error reading edid\n");
+		return 0;
+	}
+	else{
+		if(strcmp(specs.manufacturer, "CMN") == 0){
+			printk("Edid: %s\n", specs.manufacturer);
+			return 0;
+		}
+		else{
+			printk("Edid: %s\n", specs.manufacturer);
+			return -ENOMEM;
+		}
+	}
+}
+
 static int pwm_backlight_probe(struct platform_device *pdev)
 {
 	struct backlight_properties props;
@@ -392,6 +583,8 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 	struct backlight_device *bl;
 	struct pwm_bl_data *pb;
 	int ret;
+
+	printk("%s+\n", __func__);
 
 	if (!data) {
 		dev_err(&pdev->dev, "failed to find platform data\n");
@@ -411,8 +604,20 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 		goto err_alloc;
 	}
 
+	if(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T){
+		if(!read_lcd_edid()){
+			printk("Change pwm to 1K\n");
+			data->pwm_period_ns = 1000000;
+		}
+		else{
+			printk("Change pwm to 25K\n");
+			data->pwm_period_ns = 40000;
+		}
+	}
+
 	pb->period = data->pwm_period_ns;
 	pb->notify = data->notify;
+	pb->notify_after = data->notify_after;
 	pb->check_fb = data->check_fb;
 	pb->lth_brightness = data->lth_brightness *
 		(data->pwm_period_ns / data->max_brightness);
@@ -441,6 +646,7 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 	backlight_update_status(bl);
 
 	platform_set_drvdata(pdev, bl);
+	printk("%s-\n", __func__);
 	return 0;
 
 err_bl:
@@ -480,6 +686,8 @@ static int pwm_backlight_suspend(struct platform_device *pdev,
 		pb->notify(pb->dev, 0);
 	pwm_config(pb->pwm, 0, pb->period);
 	pwm_disable(pb->pwm);
+	if (pb->notify_after)
+		pb->notify_after(pb->dev, 0);
 	return 0;
 }
 
@@ -515,6 +723,8 @@ module_init(pwm_backlight_init);
 static void __exit pwm_backlight_exit(void)
 {
 	platform_driver_unregister(&pwm_backlight_driver);
+	if(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)
+		tegra_edid_destroy(edid);
 }
 module_exit(pwm_backlight_exit);
 

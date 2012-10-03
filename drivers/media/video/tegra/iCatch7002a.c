@@ -51,13 +51,30 @@
 #define SPI_CMD_WRT_DIS 	0x04
 #define SPI_CMD_ERASE_ALL	0xC7
 
+#define	SPI_CMD_SECTOR_ERASE		0x20
+#define	SPI_CMD_32KB_BLOCK_ERASE	0x52
+#define	SPI_CMD_64KB_BLOCK_ERASE	0xD8
+
 #define SENSOR_ID_MI1040	0x2481
 #define SENSOR_ID_OV2720	0x2720
 #define SENSOR_ID_IMX175	0x175
 
-struct switch_dev   i7002a_sdev;
+extern unsigned int factory_mode;
+
+struct switch_dev i7002a_sdev;
 static unsigned int version_num_in_isp = 0xffffff;
+static unsigned int fw_front_type_in_isp = 0x0;
 static unsigned int front_chip_id = 0xABCD;
+
+static u16 coloreffect;
+static u16 g_Streaming_type = 0;
+
+/* force_capture_mode
+ * 0: Single
+ * 1: HDR
+ * 4: Burst Capture
+ */
+static unsigned int force_capture_mode = 0xabcdef;
 
 /* mi1040 format:
  * 0: YUV
@@ -65,9 +82,8 @@ static unsigned int front_chip_id = 0xABCD;
  * 2: Bayer
  */
 static unsigned int mi1040_output_format = 0xFF;
-static char g_i7002a_binfile_path[80];
 
-static int dbg_i7002a_page_index = 0;
+static int dbg_i7002a_page_index = 2047;
 
 /* iCatch Camera Firmware Header
  * It locates on the end of the bin file.
@@ -89,6 +105,7 @@ static int dbg_i7002a_page_index = 0;
 #define ICATCH7002A_DELAY_TEST
 #ifdef ICATCH7002A_DELAY_TEST
 static u32 iCatch7002a_init_delay= 5;
+static u32 iCatch7002a_preview_delay=100;
 static u32 touch_focus_enable=0;
 #endif
 #define _ENABLE_WRITE_TABLE_2_GROUP_LATCH_
@@ -96,7 +113,6 @@ static u32 touch_focus_enable=0;
 //#undef _AVOID_GROUP_LATCH_AFTER_SET_MODE_
 #ifdef _AVOID_GROUP_LATCH_AFTER_SET_MODE_
 #define _AVOID_GROUP_LATCH_TIME_MS_ 200
-static int g_last_set_mode_jiffies;
 #endif
 #define SENSOR_WIDTH_REG 0x2703
 #define SENSOR_640_WIDTH_VAL 0x0280
@@ -112,6 +128,8 @@ static bool first_open = true;
 /* Used for calculating the iCatch fw update progress */
 static int page_count = -1;
 static int total_page_count = -1;
+static u32 is_calibration=0;
+static u32 calibrating = 0;
 
 enum iCatch_fw_update_status{
 	ICATCH_FW_NO_CMD,
@@ -133,10 +151,10 @@ struct sensor_reg {
 };
 
 struct sensor_reg_2 {
-  u16 cmd;
+	u16 cmd;
 	u16 addr;
 	u16 val;
-  u16 val2;
+	u16 val2;
 };
 
 struct sensor_info {
@@ -272,10 +290,10 @@ static int sensor_write_reg(struct i2c_client *client, u16 addr, u16 val)
 		if (err == 1)
 			return 0;
 		retry++;
-		pr_err("yuv_sensor : i2c transfer failed, retrying %x %x\n",
-		       addr, val);
-		pr_err("yuv_sensor : i2c transfer failed, count %x, err= 0x%x\n",
-		       __FUNCTION__, __LINE__, msg.addr, err);
+		pr_err("yuv_sensor : i2c transfer failed, retrying 0x%x 0x%x\n",
+			addr, val);
+		pr_err("%s(%d) : i2c transfer failed, count 0x%x, err= 0x%x\n",
+			__FUNCTION__, __LINE__, msg.addr, err);
 //		msleep(3);
 	} while (retry <= SENSOR_MAX_RETRIES);
 
@@ -287,13 +305,70 @@ static int sensor_write_reg(struct i2c_client *client, u16 addr, u16 val)
 	return err;
 }
 
+static int I2C_SPIFlashPortWrite(u16 val)
+{
+	return sensor_write_reg(info->i2c_client, 0x40e3, val);
+}
+
+static int I2CDataWrite(u16 addr, u16 val)
+{
+	return sensor_write_reg(info->i2c_client, addr, val);
+}
+
+static int seqI2CDataWrite(struct i2c_client *client, u16 addr, u8 *buf, int bytenum)
+{
+	int i, err;
+	struct i2c_msg msg;
+	unsigned char *data;
+	int retry = 0;
+
+	if (!client->adapter)
+		return -ENODEV;
+
+	if (bytenum <= 0) {
+		printk("%s(%d): Invalid bytenum\n", __FUNCTION__, __LINE__);
+		return -ENODEV;
+	}
+
+	data = kmalloc(2 + bytenum, GFP_KERNEL);
+
+	data[0] = (u8) (addr >> 8);
+	data[1] = (u8) (addr & 0xff);
+
+	for (i = 0; i < bytenum; i++) {
+		data[i + 2] = (u8) ((*(buf + i)) & 0xff);
+	}
+
+	msg.addr = client->addr;
+	msg.flags = 0;
+	msg.len = 2 + bytenum;
+	msg.buf = data;
+
+	do {
+		err = i2c_transfer(client->adapter, &msg, 1);
+		if (err == 1) {
+			kfree(data);
+			return 0;
+		}
+		retry++;
+		pr_err("%s(%d): i2c transfer failed, slave 0x%x, reg 0x%x, data:\n",
+		       __FUNCTION__, __LINE__, msg.addr, addr);
+		for(i = 0; i < bytenum; i++)
+			pr_err(" 0x%x", data[2+i]);
+		pr_err("\n");
+	} while (retry <= SENSOR_MAX_RETRIES);
+
+	kfree(data);
+	return err;
+}
+
 static int sensor_sequential_write_reg(struct i2c_client *client, unsigned char *data, u16 datasize)
 {
 	int err;
 	struct i2c_msg msg;
 	int retry = 0;
 
-              return 0;
+	return 0;
 	if (datasize==0)
 		return 0;
 	if (!client->adapter)
@@ -309,9 +384,9 @@ static int sensor_sequential_write_reg(struct i2c_client *client, unsigned char 
 			return 0;
 		retry++;
 		//pr_err("yuv_sensor : i2c transfer failed, retrying %x %x\n",
-		      // addr, val);
+		// addr, val);
 		pr_err("yuv_sensor : i2c transfer failed, count %x \n",
-		       msg.addr);
+			msg.addr);
 //		msleep(3);
 	} while (retry <= SENSOR_MAX_RETRIES);
 
@@ -323,31 +398,30 @@ static int build_sequential_buffer(unsigned char *pBuf, u16 width, u16 value) {
 
 	switch (width)
 	{
-	  case 0:
-	  // possibly no address, some focusers use this
-	  break;
+		case 0:
+		// possibly no address, some focusers use this
+		break;
 
-	  // cascading switch
-	  case 32:
-	    pBuf[count++] = (u8)((value>>24) & 0xFF);
-	  case 24:
-	    pBuf[count++] = (u8)((value>>16) & 0xFF);
-	  case 16:
-	    pBuf[count++] = (u8)((value>>8) & 0xFF);
-	  case 8:
-	    pBuf[count++] = (u8)(value & 0xFF);
-	    break;
+		// cascading switch
+		case 32:
+			pBuf[count++] = (u8)((value>>24) & 0xFF);
+		case 24:
+			pBuf[count++] = (u8)((value>>16) & 0xFF);
+		case 16:
+			pBuf[count++] = (u8)((value>>8) & 0xFF);
+		case 8:
+			pBuf[count++] = (u8)(value & 0xFF);
+		break;
 
-	  default:
-	    printk("Unsupported Bit Width %d\n", width);
-	    break;
+		default:
+		printk("Unsupported Bit Width %d\n", width);
+		break;
 	}
 	return count;
-
 }
 
 static int sensor_write_table(struct i2c_client *client,
-			      const struct sensor_reg table[])
+	const struct sensor_reg table[])
 {
 	int err;
 	const struct sensor_reg *next;
@@ -394,122 +468,6 @@ static int sensor_write_table(struct i2c_client *client,
 	}
 	return 0;
 }
-/*
-static int sensor_write_table_2(struct i2c_client *client,
-			      const struct sensor_reg_2 table[])
-{
-	int err;
-	const struct sensor_reg_2 *next;
-	u16 val,mask;
-  int b_group_latch=1;
-  return 0;
-#ifdef _AVOID_GROUP_LATCH_AFTER_SET_MODE_
-  if ((jiffies - g_last_set_mode_jiffies) > (HZ * _AVOID_GROUP_LATCH_TIME_MS_ / 1000) )
-  {
-    printk("do group latch: jiffies=%d, last_set_mode_jiffies=%d, threshold=%d\n",
-     jiffies, g_last_set_mode_jiffies , (HZ * _AVOID_GROUP_LATCH_TIME_MS_ / 1000)
-     );
-    b_group_latch=1;
-  }
-  else
-  {
-    printk("skip group latch: jiffies=%d, last_set_mode_jiffies=%d, threshold=%d\n",
-     jiffies, g_last_set_mode_jiffies , (HZ * _AVOID_GROUP_LATCH_TIME_MS_ / 1000)
-     );
-    b_group_latch=0;
-  }
-#endif
-
-	pr_info("yuv %s\n",__func__);
-#ifdef _ENABLE_WRITE_TABLE_2_GROUP_LATCH_
-    if (b_group_latch) {
-	err = sensor_write_reg(client, 0x3004, 0xdf);//;Disable MCU clock
-	err = sensor_write_reg(client, 0x3212, 0x00);//;Enable group0
-	if (err)
-  		return err;
-	}
-#endif
-	for (next = table; next->cmd != SENSOR_TABLE_END; next++) {
-		if (next->cmd == SENSOR_WAIT_MS) {
-			msleep(next->val);
-			continue;
-		}
-    if (next->cmd == SENSOR_BYTE_WRITE)
-    {
-      val = next->val;
-      err = sensor_write_reg(client, next->addr, val);
-      if (err)
-      {
-        printk("write [0x%X] as 0x%X error, err=%d",next->addr, val, err);
-      }
-      else
-      {
-        printk("write [0x%X] as 0x%X\n",next->addr,val);
-      }
-
-    }
-		else if (next->cmd == SENSOR_MASK_BYTE_WRITE)
-    {
-      mask = next->val2;
-      err = sensor_read_reg(client, next->addr,&val);
-      if (err)
-      {
-        printk("read [0x%X] error, err=%d",next->addr,err);
-        //return err;
-      }
-      else
-      {
-        printk("read [0x%X] as 0x%X\n",next->addr,val);
-      }
-      val = (val & ~mask) | next->val;
-      err = sensor_write_reg(client, next->addr,val);
-      if (err)
-      {
-        printk("mask write [0x%X] as 0x%X error, err=%d",next->addr, val, err);
-        //return err;
-      }
-      else
-      {
-        printk("mask write [0x%X] as 0x%X\n",next->addr,val);
-      }
-
-    }
-	}
-#ifdef _ENABLE_WRITE_TABLE_2_GROUP_LATCH_
-    if (b_group_latch) {
-	err = sensor_write_reg(client, 0x3004, 0xff);//;Enable MCU clock
-	err = sensor_write_reg(client, 0x3212, 0x10);//;End group0
-	if (err)
-		return err;
-	err = sensor_write_reg(client, 0x3212, 0xa0);//;latch group0
-	if (err)
-		return err;
-	}
-	//group_latch = 1;
-#endif
-	//msleep(100);
-#ifdef _AVOID_GROUP_LATCH_AFTER_SET_MODE_
-  g_last_set_mode_jiffies = jiffies;
-#endif
-	return 0;
-}
-
-static int get_sensor_current_width(struct i2c_client *client, u16 *val)
-{
-        int err;
-
-        err = sensor_write_reg(client, 0x098c, 0x2703);
-        if (err)
-          return err;
-
-        err = sensor_read_reg(client, 0x0990, val);
-
-        if (err)
-          return err;
-
-        return 0;
-}
-*/
 
 struct sensor_reg query_mi1040_id_msb_seq[] = {
 	/*Start - Power on sensor & enable clock*/
@@ -531,32 +489,32 @@ struct sensor_reg query_mi1040_id_msb_seq[] = {
 	/*End - Power on sensor & enable clock */
 
 	/*Start - I2C Read ID*/
-	{0x9138, 0x30},  /* Sub address enable */
-	{0x9140, 0x90},  /* Slave address      */
-	{0x9100, 0x03},  /* Read mode          */
-	{0x9110, 0x00},  /* Register addr MSB  */
-	{0x9112, 0x00},  /* Register addr LSB  */
-	{0x9104, 0x01},  /* Trigger I2C read   */
+	{0x9138, 0x30}, /* Sub address enable */
+	{0x9140, 0x90}, /* Slave address      */
+	{0x9100, 0x03}, /* Read mode          */
+	{0x9110, 0x00}, /* Register addr MSB  */
+	{0x9112, 0x00}, /* Register addr LSB  */
+	{0x9104, 0x01}, /* Trigger I2C read   */
 	{SENSOR_WAIT_MS, 1},	/* 1ms */
 	{SENSOR_TABLE_END, 0x0000}
 };
 
 struct sensor_reg query_mi1040_id_lsb_seq[] = {
-	{0x9110, 0x00},  /* Register addr MSB  */
-	{0x9112, 0x01},  /* Register addr LSB  */
-	{0x9104, 0x01},  /* Trigger I2C read   */
+	{0x9110, 0x00}, /* Register addr MSB  */
+	{0x9112, 0x01}, /* Register addr LSB  */
+	{0x9104, 0x01}, /* Trigger I2C read   */
 	{SENSOR_WAIT_MS, 1},	/* 1ms */
 	{SENSOR_TABLE_END, 0x0000}
 };
 
 struct sensor_reg query_mi1040_output_format_seq[] = {
 	/*Start - I2C Read YUV/RGB mode*/
-	{0x9138, 0x30},  /* Sub address enable */
-	{0x9140, 0x90},  /* Slave address      */
-	{0x9100, 0x03},  /* Read mode          */
-	{0x9110, 0xC8},  /* Register addr MSB  */
-	{0x9112, 0x6C},  /* Register addr LSB  */
-	{0x9104, 0x01},  /* Trigger I2C read   */
+	{0x9138, 0x30}, /* Sub address enable */
+	{0x9140, 0x90}, /* Slave address      */
+	{0x9100, 0x03}, /* Read mode          */
+	{0x9110, 0xC8}, /* Register addr MSB  */
+	{0x9112, 0x6C}, /* Register addr LSB  */
+	{0x9104, 0x01}, /* Trigger I2C read   */
 	{SENSOR_WAIT_MS, 1},	/* 1ms */
 	{SENSOR_TABLE_END, 0x0000}
 };
@@ -608,7 +566,7 @@ static unsigned int i7002a_get_sensor_id(int facing)
 		msleep(10);
 		sensor_read_reg(info->i2c_client, 0x9211, &tmp);
 		// printk("0x%x\n", tmp);
-		chip_id = chip_id  | (tmp & 0xFF);
+		chip_id = chip_id | (tmp & 0xFF);
 	} else if (facing == 1){
 		/* Start - Power on sensor & enable clock - Front I2C (OV2720);
 		 * ov2720: chip_id= 0x2720;
@@ -657,7 +615,7 @@ static unsigned int i7002a_get_sensor_id(int facing)
 		msleep(10);
 		sensor_read_reg(info->i2c_client, 0x9111, &tmp);
 		//printk("0x%x\n", tmp);
-		chip_id = chip_id  | (tmp & 0xFF);
+		chip_id = chip_id | (tmp & 0xFF);
 
 		if (chip_id != SENSOR_ID_OV2720) {
 			/* Check if mi1040 is available. */
@@ -668,7 +626,7 @@ static unsigned int i7002a_get_sensor_id(int facing)
 
 			sensor_write_table(info->i2c_client, query_mi1040_id_lsb_seq);
 			sensor_read_reg(info->i2c_client, 0x9111, &tmp);
-			chip_id = chip_id  | (tmp & 0xFF);
+			chip_id = chip_id | (tmp & 0xFF);
 		}
 	} else {
 		/* Unknown */
@@ -681,10 +639,10 @@ static unsigned int i7002a_get_sensor_id(int facing)
 int I2C_SPIInit(void)
 {
 	int ret = 0;
-	//  I2CDataWrite(0x0026,0xc0);
-	//  I2CDataWrite(0x4051,0x01); /* spien */
-	//  I2CDataWrite(0x40e1,0x00); /* spi mode */
-	//  I2CDataWrite(0x40e0,0x11); /* spi freq */
+	// I2CDataWrite(0x0026,0xc0);
+	// I2CDataWrite(0x4051,0x01); /* spien */
+	// I2CDataWrite(0x40e1,0x00); /* spi mode */
+	// I2CDataWrite(0x40e0,0x11); /* spi freq */
 	struct sensor_reg SPI_init_seq[] = {
 		{0x0026, 0xc0},
 		{0x4051, 0x01},
@@ -705,17 +663,17 @@ u32 I2C_SPIFlashPortRead(void)
 	u16 ret;
 
 	// ret = hsI2CDataRead(0x40e4);
-      sensor_read_reg(info->i2c_client, 0x40e4, &ret);
+	sensor_read_reg(info->i2c_client, 0x40e4, &ret);
 	/* polling SPI state machine ready */
 #if 0
-    if (I2C_SPIFlashPortWait() != SUCCESS) {
-        return 0;
-    }
+	if (I2C_SPIFlashPortWait() != SUCCESS) {
+		return 0;
+	}
 #endif
 	//ret = hsI2CDataRead(0x40e5);
-      sensor_read_reg(info->i2c_client, 0x40e5, &ret);
+	sensor_read_reg(info->i2c_client, 0x40e5, &ret);
 
-    return (u32)ret;
+	return (u32)ret;
 }
 
 u32 I2C_SPIFlashRead(
@@ -731,16 +689,11 @@ u32 I2C_SPIFlashRead(
 	addr = addr * pageSize;
 	size = pages*pageSize;
 
-	// I2CDataWrite(0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e7, 0x00);
-	// I2C_SPIFlashPortWrite(SPI_CMD_BYTE_READ);               /* Write one byte command*/
-	sensor_write_reg(info->i2c_client, 0x40e3, SPI_CMD_BYTE_READ);
-	// I2C_SPIFlashPortWrite((u8)(addr >> 16));               /* Send 3 bytes address*/
-	// I2C_SPIFlashPortWrite((u8)(addr >> 8));
-	// I2C_SPIFlashPortWrite((u8)(addr));
-	sensor_write_reg(info->i2c_client, 0x40e3, (u8)(addr >> 16));
-	sensor_write_reg(info->i2c_client, 0x40e3, (u8)(addr >> 8));
-	sensor_write_reg(info->i2c_client, 0x40e3, (u8)(addr));
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_BYTE_READ);	/* Write one byte command*/
+	I2C_SPIFlashPortWrite((u8)(addr >> 16));	/* Send 3 bytes address*/
+	I2C_SPIFlashPortWrite((u8)(addr >> 8));
+	I2C_SPIFlashPortWrite((u8)(addr));
 
 	for (i = 0; i < size ; i++) {
 		*pbuf = I2C_SPIFlashPortRead();
@@ -749,7 +702,7 @@ u32 I2C_SPIFlashRead(
 		pbuf ++;
 	}
 
-	sensor_write_reg(info->i2c_client, 0x40e7, 0x01);
+	I2CDataWrite(0x40e7, 0x01);
 
 	return err;
 }
@@ -763,11 +716,9 @@ u32 I2C_SPIFlashReadId(void)
 	id[1] = 0;
 	id[2] = 0;
 
-	//hsI2CDataWrite(0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
+	I2CDataWrite(0x40e7, 0x00);
 
-	//err = I2C_SPIFlashPortWrite(SPI_CMD_RD_ID); /*read ID command*/
-	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_RD_ID);
+	I2C_SPIFlashPortWrite(SPI_CMD_RD_ID);	/*read ID command*/
 
 #if 0
 	if (err != SUCCESS) {
@@ -776,94 +727,71 @@ u32 I2C_SPIFlashReadId(void)
 	}
 #endif
 
-	id[0] = I2C_SPIFlashPortRead();    /* Manufacturer's  ID */
-	id[1] = I2C_SPIFlashPortRead();    /* Device ID          */
-	id[2] = I2C_SPIFlashPortRead();    /* Manufacturer's  ID */
+	id[0] = I2C_SPIFlashPortRead();	/* Manufacturer's ID */
+	id[1] = I2C_SPIFlashPortRead();	/* Device ID          */
+	id[2] = I2C_SPIFlashPortRead();	/* Manufacturer's ID */
 
-	//hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x01);
 
 	printk("ID %2x %2x %2x\n", id[0], id[1], id[2]);
 
 	ID = ((u32)id[0] << 16) | ((u32)id[1] << 8) | \
-    ((u32)id[2] << 0);
+		((u32)id[2] << 0);
 
 	return ID;
 }
 
-static const u32 stSpiIdInfo[29] =
+static const u32 stSpiIdInfo[7][3] =
 {
-	/*EON*/
-	0x001C3117,
-	0x001C2016,
-	0x001C3116,
-	0x001C3115,
-	0x001C3114,
-	0x001C3113,
-	/*Spansion*/
-	0x00012018,
-	0x00010216,
-	0x00010215,
-	0x00010214,
-	/*ST*/
-	0x00202018,
-	0x00202017,
-	0x00202016,
-	0x00202015,
-	0x00202014,
-	/*MXIC*/
-	0x00C22018,
-	0x00C22017,
-	0x00C22016,
-	0x00C25e16,
-	0x00C22015,
-	0x00C22014,
-	0x00C22013,
 	/*Winbond*/
-	0x00EF3017,
-	0x00EF3016,
-	0x00EF3015,
-	0x00EF3014,
-	0x00EF3013,
-	0x00EF5013,
+	{0x00EF3017,4096, 2048},
+	{0x00EF3016,4096, 1024},
+	{0x00EF3015,4096, 512},
+	{0x00EF3014,4096, 256},
+	{0x00EF5014,4096, 256},
+	{0x00EF3013,4096, 128},
+	{0x00EF5013,4096, 128},
 	/*Fail*/
-	0x00000000,
+	{0x00000000,0,0},
 };
 
-static const u32 sstSpiIdInfo[6] =
+static const u32 sstSpiIdInfo[6][3] =
 {
 	/*ESMT*/
-	0x008C4016,
+	{0x008C4016,4096,512},
 	/*SST*/
-	0x00BF254A,
-	0x00BF2541,
-	0x00BF258E,
-	0x00BF258D,
+	{0x00BF254A,4096,1024},
+	{0x00BF2541,4096,512},
+	{0x00BF258E,4096,256},
+	{0x00BF258D,4096,128},
 	/*Fail*/
-	0x00000000,
+	{0x00000000,0,0},
 };
 
 u32
 BB_SerialFlashTypeCheck(
-	u32 id
+	u32 id,
+	u32 *spiSize
 )
 {
 	u32 i=0;
 	u32 fullID = 1;
 	u32 shift = 0, tblId, type = 0;
-
+	/*printf("id:0x%x spiSize:0x%x\n",id,spiSize);*/
 	/* check whether SST type serial flash */
 	while( 1 ){
-		tblId = sstSpiIdInfo[i] >> shift;
+		tblId = sstSpiIdInfo[i][0] >> shift;
 		if( id == tblId ) {
-			printk("SST type serial flash\n");
+			printk("SST type serial flash:%x %x %x\n",i,id,sstSpiIdInfo[i][0]);
 			type = 2;
+			*spiSize = sstSpiIdInfo[i][1]*sstSpiIdInfo[i][2];
 			break;
 		}
 		if( id == 0x00FFFFFF || id == 0x00000000) {
 			return 0;
 		}
-		if( sstSpiIdInfo[i] == 0x00000000 ) {
+		if( sstSpiIdInfo[i][0] == 0x00000000 ) {
+			#if 0
 			if( fullID ){
 				fullID = 0;/* sarch partial ID */
 				i = 0;
@@ -871,6 +799,7 @@ BB_SerialFlashTypeCheck(
 				id = id >> shift;
 				continue;
 			}
+			#endif
 			type = 3;
 			break;
 		}
@@ -882,16 +811,18 @@ BB_SerialFlashTypeCheck(
 	i = 0;
 	/* check whether ST type serial flash */
 	while( 1 ){
-		tblId = stSpiIdInfo[i] >> shift;
+		tblId = stSpiIdInfo[i][0] >> shift;
 		if( id == tblId ) {
-			printk("ST Type serial flash\n");
+			printk("ST Type serial flash:%x %x %x\n",i,id,stSpiIdInfo[i][0]);
 			type = 1;
+			*spiSize = stSpiIdInfo[i][1]*stSpiIdInfo[i][2];
+			/*printf("spiSize:0x%x\n",*spiSize);*/
 			break;
 		}
 		if( id == 0x00FFFFFF || id == 0x00000000) {
 			return 0;
 		}
-		if( stSpiIdInfo[i] == 0x00000000 ) {
+		if( stSpiIdInfo[i][0] == 0x00000000 ) {
 			if( fullID ){
 				fullID = 0;/* sarch partial ID */
 				i = 0;
@@ -933,34 +864,32 @@ u32 I2C_SPIStsRegRead(void)
 {
 	u32 ret;
 
-	//hsI2CDataWrite(0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-	//I2C_SPIFlashPortWrite(SPI_CMD_RD_STS);
-	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_RD_STS);
+	I2CDataWrite(0x40e7, 0x00);
+
+	I2C_SPIFlashPortWrite(SPI_CMD_RD_STS);
 	ret = I2C_SPIFlashPortRead();
 
-	// hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x01);
 
 	return ret;
 }
 
 void I2C_SPITimeOutWait(u32 poll, u32 *ptimeOut)
 {
-    /* MAX_TIME for SECTOR/BLOCK ERASE is 25ms */
-    u32 sts;
-    u32 time = 0;
-    while (1) {
-        sts = I2C_SPIStsRegRead();
-        if (!(sts & poll))	/* sfStatusRead() > 4.8us */ {
-            break;
-        }
-        time ++;
-        if( *ptimeOut < time ) {
-            printk("iCatch: TimeOut %d, sts=0x%x, poll=0x%x\n",time,sts,poll);
-            break;
-        }
-    }
+	/* MAX_TIME for SECTOR/BLOCK ERASE is 25ms */
+	u32 sts;
+	u32 time = 0;
+	while (1) {
+		sts = I2C_SPIStsRegRead();
+		if (!(sts & poll))	/* sfStatusRead() > 4.8us */ {
+			break;
+		}
+		time ++;
+		if( *ptimeOut < time ) {
+			printk("iCatch: TimeOut %d, sts=0x%x, poll=0x%x\n",time,sts,poll);
+			break;
+		}
+	}
 }
 
 int I2C_SPIStChipErase(
@@ -971,14 +900,10 @@ int I2C_SPIStChipErase(
 	int ret = 0;
 	printk("iCatch: ST Chip Erasing...\n");
 
-	//hsI2CDataWrite(0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-	//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);
-	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS);
-	//I2C_SPIFlashPortWrite(0x02);
-	sensor_write_reg(info->i2c_client, 0x40e3,0x02);
-	//hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);
+	I2C_SPIFlashPortWrite(0x02);
+	I2CDataWrite(0x40e7, 0x01);
 
 	ret = I2C_SPIFlashWrEnable();
 	if (ret) {
@@ -986,25 +911,22 @@ int I2C_SPIStChipErase(
 		return ret;
 	}
 
-	//hsI2CDataWrite(0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-	//I2C_SPIFlashPortWrite(SPI_CMD_ERASE_ALL);
-	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_ERASE_ALL);
-	//hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_ERASE_ALL);
+	I2CDataWrite(0x40e7, 0x01);
 
 	timeout = 0xffffffff;
 	I2C_SPITimeOutWait(0x01, &timeout);
 #if 0
 	ros_thread_sleep(1);
 #endif
-	//hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x01);
+
 	printk("iCatch: ST Chip Erased\n");
 	return 0;
 }
 
-int I2C_SPISstChipErase()
+int I2C_SPISstChipErase(void)
 {
 	u32 timeout;
 	int ret = 0;
@@ -1016,34 +938,23 @@ int I2C_SPISstChipErase()
 		return ret;
 	}
 
-	//hsI2CDataWrite(0x40e7,0x00);
-	//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN); /*Write Status register command*/
-	//hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS_EN);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN);	/*Write Status register command*/
+	I2CDataWrite(0x40e7, 0x01);
 
-	//hsI2CDataWrite(0x40e7,0x00);
-	//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);
-	//I2C_SPIFlashPortWrite(0x02);
-	//hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS);
-	sensor_write_reg(info->i2c_client, 0x40e3,0x02);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);
+	I2C_SPIFlashPortWrite(0x02);
+	I2CDataWrite(0x40e7, 0x01);
 
 	I2C_SPIFlashWrEnable();
-
-	//hsI2CDataWrite(0x40e7,0x00);
-	//I2C_SPIFlashPortWrite(SPI_CMD_ERASE_ALL);
-	//hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_ERASE_ALL);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_ERASE_ALL);
+	I2CDataWrite(0x40e7, 0x01);
 
 	timeout = 0xffffffff;
 	I2C_SPITimeOutWait(0x01, &timeout);
-	//msleep(500);
+
 	printk("iCatch: SST Chip Erased\n");
 	return 0;
 }
@@ -1058,9 +969,9 @@ void writeUpdateProgresstoFile(int page_left, int total_page_num)
 
 	percentage = 100 * (total_page_num - page_left + 1)/total_page_num;
 
-	if(page_left % 32 == 1){
+	if(page_left % 64 == 1){
 		printk("%s: page:0x%x; percentage= %d;\n", __FUNCTION__, page_left, percentage);
-		fp_progress = filp_open("/data/isp_fw_update_progress", O_RDWR | O_CREAT, 0);
+		fp_progress = filp_open("/data/isp_fw_update_progress", O_RDWR | O_CREAT, S_IRUGO | S_IWUGO);
 		if ( IS_ERR_OR_NULL(fp_progress) ){
 			filp_close(fp_progress, NULL);
 			printk("%s: open %s fail\n", __FUNCTION__, "/data/isp_fw_update_progress");
@@ -1089,36 +1000,40 @@ u32 I2C_SPIFlashWrite(
 {
 	u32 i, err = 0;
 	u32 pageSize = 0x100;
+	u32 rsvSec1, rsvSec2;
 
+	rsvSec1 = pages*pageSize - 0x5000;
+	rsvSec2 = pages*pageSize - 0x1000;
 	addr = addr * pageSize;
 
 	printk("iCatch: ST type writing...\n");
 	total_page_count = (int)pages;
 
-	while( pages ) {
+	while(pages) {
 		page_count = (int)pages;
 		writeUpdateProgresstoFile(page_count, total_page_count);
-
+		/* reserve the last 2 ~ 5 sectors for calibration data */
+		if((addr >= rsvSec1) && (addr < rsvSec2))
+		{
+			addr += 0x1000;
+			pbuf += 0x1000;
+			pages -= 0x10;
+			continue;
+		}
 		I2C_SPIFlashWrEnable();
-		//hsI2CDataWrite(0x40e7,0x00);
-		sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-		//I2C_SPIFlashPortWrite(SPI_CMD_BYTE_PROG); /* Write one byte command*/
-		sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_BYTE_PROG);
-		// I2C_SPIFlashPortWrite((UINT8)(addr >> 16)); /* Send 3 bytes address*/
-		sensor_write_reg(info->i2c_client, 0x40e3,(u8)(addr >> 16));
-		// I2C_SPIFlashPortWrite((UINT8)(addr >> 8));
-		sensor_write_reg(info->i2c_client, 0x40e3,(u8)(addr >> 8));
-		// I2C_SPIFlashPortWrite((UINT8)(addr));
-		sensor_write_reg(info->i2c_client, 0x40e3,(u8)(addr));
+		I2CDataWrite(0x40e7, 0x00);
+		I2C_SPIFlashPortWrite(SPI_CMD_BYTE_PROG);	/* Write one byte command*/
+		I2C_SPIFlashPortWrite((u8)(addr >> 16));	/* Send 3 bytes address*/
+		I2C_SPIFlashPortWrite((u8)(addr >> 8));
+		I2C_SPIFlashPortWrite((u8)(addr));
 
 		for (i = 0; i < pageSize ; i++) {
 			// How about "Early return" here?
-			// I2C_SPIFlashPortWrite(*pbuf);
-			sensor_write_reg(info->i2c_client, 0x40e3,(u8)(*pbuf));
+			I2C_SPIFlashPortWrite(*pbuf);
 			pbuf++;
 		}
-		// hsI2CDataWrite(0x40e7,0x01);
-		sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+		I2CDataWrite(0x40e7, 0x01);
+
 		addr += pageSize;
 		pages --;
 		// tmrUsWait(2000);
@@ -1134,23 +1049,14 @@ void I2C_SPISstStatusWrite(u8 dat)
 
 	I2C_SPIFlashWrEnable();
 
-	//hsI2CDataWrite(0x40e7,0x00);
-	//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN);
-	//hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS_EN);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN);
+	I2CDataWrite(0x40e7, 0x01);
 
-	// hsI2CDataWrite(0x40e7,0x00);
-	//I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);
-	//I2C_SPIFlashPortWrite(dat);
-	//hsI2CDataWrite(0x40e7,0x01);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-	sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_STS);
-	printk("%s: dat=%d\n", __FUNCTION__, dat);
-	sensor_write_reg(info->i2c_client, 0x40e3,dat);
-	printk("%s: dat=%d; Done.\n", __FUNCTION__, dat);
-	sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);
+	I2C_SPIFlashPortWrite(dat);
+	I2CDataWrite(0x40e7,0x01);
 
 	poll = 0x01;
 #if 0
@@ -1160,10 +1066,156 @@ void I2C_SPISstStatusWrite(u8 dat)
 		poll = 0x01;
 	}
 #endif
-    timeout = 100000;
-    I2C_SPITimeOutWait(poll, &timeout);
-    //msleep(500);
-    return;
+	timeout = 100000;
+	I2C_SPITimeOutWait(poll, &timeout);
+	//msleep(500);
+	return;
+}
+
+u32 I2C_SPI64KBBlockErase(
+	u32 address,
+	u32 stFlag
+)
+{
+	u32 timeout;
+	printk("%s(%d): addr:0x%x\n", __FUNCTION__, __LINE__, address);
+	if(!stFlag) {
+		I2C_SPIFlashWrEnable();
+
+		I2CDataWrite(0x40e7, 0x00);
+		I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN);	/*Write Status register command*/
+		I2CDataWrite(0x40e7, 0x01);
+	}
+
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);	/*Write Status register command*/
+	I2C_SPIFlashPortWrite(0x02);
+	I2CDataWrite(0x40e7, 0x01);
+
+	I2C_SPIFlashWrEnable();
+
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_64KB_BLOCK_ERASE);
+	I2C_SPIFlashPortWrite(address >> 16);	/* A23~A16 */
+	I2C_SPIFlashPortWrite(address >> 8);	/* A15~A08 */
+	I2C_SPIFlashPortWrite(address);		/* A07~A00 */
+	I2CDataWrite(0x40e7, 0x01);
+
+	timeout = 5000000;
+	I2C_SPITimeOutWait(0x01, &timeout);
+
+	return 0;
+}
+
+u32 I2C_SPISectorErase(
+	u32 address,
+	u32 stFlag
+)
+{
+	u32 timeout;
+	printk("%s(%d): addr:0x%x\n", __FUNCTION__, __LINE__, address);
+	if(!stFlag)
+	{
+		I2C_SPIFlashWrEnable();
+
+		I2CDataWrite(0x40e7, 0x00);
+		I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN);	/*Write Status register command*/
+		I2CDataWrite(0x40e7, 0x01);
+	}
+
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);	/*Write Status register command*/
+	I2C_SPIFlashPortWrite(0x02);
+	I2CDataWrite(0x40e7, 0x01);
+
+	I2C_SPIFlashWrEnable();
+
+	I2CDataWrite(0x40e7, 0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_SECTOR_ERASE);
+	I2C_SPIFlashPortWrite(address >> 16);	/* A23~A16 */
+	I2C_SPIFlashPortWrite(address >> 8);	/* A15~A08 */
+	I2C_SPIFlashPortWrite(address);		/* A07~A00 */
+	I2CDataWrite(0x40e7, 0x01);
+
+	timeout = 5000000;
+	I2C_SPITimeOutWait(0x01, &timeout);
+
+	return 0;
+}
+
+u32 I2C_SPI32KBBlockErase(
+	u32 address,
+	u32 stFlag
+)
+{
+	u32 timeout;
+	printk("%s(%d): addr:0x%x\n", __FUNCTION__, __LINE__, address);
+	if(!stFlag)
+	{
+		I2C_SPIFlashWrEnable();
+
+		I2CDataWrite(0x40e7,0x00);
+		I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS_EN);	/*Write Status register command*/
+		I2CDataWrite(0x40e7,0x01);
+	}
+
+	I2CDataWrite(0x40e7,0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_WRT_STS);	/*Write Status register command*/
+	I2C_SPIFlashPortWrite(0x02);
+	I2CDataWrite(0x40e7,0x01);
+
+	I2C_SPIFlashWrEnable();
+
+	I2CDataWrite(0x40e7,0x00);
+	I2C_SPIFlashPortWrite(SPI_CMD_32KB_BLOCK_ERASE);
+	I2C_SPIFlashPortWrite(address >> 16);	/* A23~A16 */
+	I2C_SPIFlashPortWrite(address >> 8);	/* A15~A08 */
+	I2C_SPIFlashPortWrite(address);		/* A07~A00 */
+	I2CDataWrite(0x40e7,0x01);
+
+	timeout = 5000000;
+	I2C_SPITimeOutWait(0x01, &timeout);
+
+	return 0;
+}
+
+void
+BB_EraseSPIFlash(
+	u32 type,
+	u32 spiSize
+)
+{
+	u8 typeFlag;
+	u32 i, temp1;
+	if( type == 2 )/* SST */
+	{
+		typeFlag = 0;
+	}
+	else if( type == 1 || type == 3 )/* ST */
+	{
+		typeFlag = 1;
+	}
+	/*printf("spiSize:0x%x\n",spiSize);*/
+	if(spiSize == (512*1024)) {
+		/* skip 0x7B000 ~ 0x7EFF, to keep calibration data */
+		temp1 = (spiSize / 0x10000)-1;
+		for(i=0;i<temp1;i++) {
+			I2C_SPI64KBBlockErase(i*0x10000,typeFlag);
+		}
+		I2C_SPI32KBBlockErase(temp1*0x10000,typeFlag);
+		temp1 = temp1*0x10000 + 0x8000;
+		for(i=temp1;i<spiSize-0x5000;i+=0x1000) {
+			I2C_SPISectorErase(i,typeFlag);
+		}
+		I2C_SPISectorErase(spiSize-0x1000,typeFlag);
+	} else if(spiSize == (1024*1024)) {
+		/* only erase 256*3KB */
+		temp1 = ((spiSize*3/4) / 0x10000)-1;
+		for(i=0;i<temp1;i++) {
+			I2C_SPI64KBBlockErase(i*0x10000,typeFlag);
+		}
+		I2C_SPISectorErase(spiSize-0x1000,typeFlag);
+	}
 }
 
 u32 I2C_SPISstFlashWrite(
@@ -1186,64 +1238,159 @@ u32 I2C_SPISstFlashWrite(
 	while( pages ) {
 		page_count = (int)pages;
 		writeUpdateProgresstoFile(page_count, total_page_count);
-
+		if((addr>=0x7C000) && (addr <0x7F000))
+		{
+			addr += 0x1000;
+			pages -= 0x10;
+			continue;
+		}
 		I2C_SPIFlashWrEnable();
-		//hsI2CDataWrite(0x40e7,0x00);
-		sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-		//I2C_SPIFlashPortWrite(SPI_CMD_BYTE_PROG_AAI); /* Write one byte command*/
-		sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_BYTE_PROG_AAI);
-		//I2C_SPIFlashPortWrite((UINT8)(addr >> 16)); /* Send 3 bytes address*/
-		sensor_write_reg(info->i2c_client, 0x40e3,(u8)(addr >> 16));
-		//I2C_SPIFlashPortWrite((UINT8)(addr >> 8));
-		sensor_write_reg(info->i2c_client, 0x40e3,(u8)(addr >> 8));
-		//I2C_SPIFlashPortWrite((UINT8)(addr));
-		sensor_write_reg(info->i2c_client, 0x40e3,(u8)(addr));
-		//I2C_SPIFlashPortWrite(*pbuf);
-		sensor_write_reg(info->i2c_client, 0x40e3,(u8)(*pbuf));
+		I2CDataWrite(0x40e7, 0x00);
+		I2C_SPIFlashPortWrite(SPI_CMD_BYTE_PROG_AAI);	/* Write one byte command*/
+		I2C_SPIFlashPortWrite((u8)(addr >> 16));	/* Send 3 bytes address*/
+		I2C_SPIFlashPortWrite((u8)(addr >> 8));
+		I2C_SPIFlashPortWrite((u8)(addr));
+		I2C_SPIFlashPortWrite(*pbuf);
 		pbuf++;
-		//I2C_SPIFlashPortWrite(*pbuf);
-		sensor_write_reg(info->i2c_client, 0x40e3,(u8)(*pbuf));
+		I2C_SPIFlashPortWrite(*pbuf);
 		pbuf++;
-		//hsI2CDataWrite(0x40e7,0x01);
-		sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+		I2CDataWrite(0x40e7, 0x01);
 		timeout = 100000;
-		I2C_SPITimeOutWait(0x01,&timeout);
+		I2C_SPITimeOutWait(0x01, &timeout);
 
 		for (i = 2; i < pageSize ; i = i+2) {
-			//hsI2CDataWrite(0x40e7,0x00);
-			sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-			//I2C_SPIFlashPortWrite(SPI_CMD_BYTE_PROG_AAI);
-			sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_BYTE_PROG_AAI);
-			// I2C_SPIFlashPortWrite(*pbuf);
-			sensor_write_reg(info->i2c_client, 0x40e3,(u8)(*pbuf));
+			I2CDataWrite(0x40e7, 0x00);
+			I2C_SPIFlashPortWrite(SPI_CMD_BYTE_PROG_AAI);
+			I2C_SPIFlashPortWrite(*pbuf);
 			pbuf++;
-			// I2C_SPIFlashPortWrite(*pbuf);
-			sensor_write_reg(info->i2c_client, 0x40e3,(u8)(*pbuf));
+			I2C_SPIFlashPortWrite(*pbuf);
 			pbuf++;
-			// hsI2CDataWrite(0x40e7,0x01);
-			sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+			I2CDataWrite(0x40e7, 0x01);
 			timeout = 100000;
-			I2C_SPITimeOutWait(0x01,&timeout);
+			I2C_SPITimeOutWait(0x01, &timeout);
 		}
 
-		// hsI2CDataWrite(0x40e7,0x00);
-		sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-		//I2C_SPIFlashPortWrite(SPI_CMD_WRT_DIS);
-		sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_DIS);
-		//hsI2CDataWrite(0x40e7,0x01);
-		sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+		I2CDataWrite(0x40e7, 0x00);
+		I2C_SPIFlashPortWrite(SPI_CMD_WRT_DIS);
+		I2CDataWrite(0x40e7, 0x01);
 
 		addr += pageSize;
 		pages --;
 
-		//hsI2CDataWrite(0x40e7,0x00);
-		sensor_write_reg(info->i2c_client, 0x40e7,0x00);
-		//I2C_SPIFlashPortWrite(SPI_CMD_WRT_DIS);
-		sensor_write_reg(info->i2c_client, 0x40e3,SPI_CMD_WRT_DIS);
-		//hsI2CDataWrite(0x40e7,0x01);
-		sensor_write_reg(info->i2c_client, 0x40e7,0x01);
+		I2CDataWrite(0x40e7, 0x00);
+		I2C_SPIFlashPortWrite(SPI_CMD_WRT_DIS);
+		I2CDataWrite(0x40e7,0x01);
 	}
 	printk("iCatch: SST type writing Done.\n");
+	return err;
+}
+
+static int seqI2CDataRead(struct i2c_client *client, u16 addr, u8 *val)
+{
+	int err;
+	struct i2c_msg msg[2];
+	unsigned char data[6];
+	if (!client->adapter)
+		return -ENODEV;
+
+	msg[0].addr = client->addr;
+	msg[0].flags = 0;
+	msg[0].len = 2;
+	msg[0].buf = data;
+
+	/* high byte goes out first */
+	data[0] = (u8) (addr >> 8);;
+	data[1] = (u8) (addr & 0xff);
+
+	msg[1].addr = client->addr;
+	msg[1].flags = I2C_M_RD;
+
+	msg[1].len = 4;
+	msg[1].buf = data + 2;
+
+	err = i2c_transfer(client->adapter, msg, 2);
+
+	if (err != 2)
+		return -EINVAL;
+
+	memcpy(val, data+2, 4);
+
+	return 0;
+}
+
+u32 I2C_7002DmemRd(
+	u32 bankNum,
+	u32 byteNum,
+	u8* pbuf
+)
+{
+	u32 i, bank;
+
+	bank = 0x40+bankNum;
+	I2CDataWrite(0x10A6,bank);
+
+	for(i=0;i<byteNum;i+=4) {
+		seqI2CDataRead(info->i2c_client, (0x1800+i), (pbuf+i));
+	}
+
+	bank = 0x40 + ((bankNum+1)%2);
+	I2CDataWrite(0x10A6,bank);
+}
+
+u32 I2C_SPIFlashRead_DMA(
+	u32 addr,
+	u32 pages,
+	u8 *pbuf
+)
+{
+	u8* pbufR;
+	u32 ch, err = 0, dmemBank;
+	u32 i, ret, count=0, size=0, bytes, offset;
+	u32 pageSize = 0x100;
+
+	addr = addr * pageSize;
+	size = pages*pageSize;
+
+	/* Set DMA bytecnt as 256-1 */
+	I2CDataWrite(0x4170,0xff);
+	I2CDataWrite(0x4171,0x00);
+	I2CDataWrite(0x4172,0x00);
+
+	/* Set DMA bank & DMA start address */
+	I2CDataWrite(0x1084,0x01);
+	I2CDataWrite(0x1080,0x00);
+	I2CDataWrite(0x1081,0x00);
+	I2CDataWrite(0x1082,0x00);
+
+	/* enable DMA checksum and reset checksum */
+	I2CDataWrite(0x4280,0x01);
+	I2CDataWrite(0x4284,0x00);
+	I2CDataWrite(0x4285,0x00);
+	I2CDataWrite(0x4164,0x01);
+
+	while(pages) {
+		I2CDataWrite(0x40e7,0x00);
+		I2C_SPIFlashPortWrite(SPI_CMD_BYTE_READ);	/* Write one byte command*/
+		I2C_SPIFlashPortWrite((u8)(addr >> 16));	/* Send 3 bytes address*/
+		I2C_SPIFlashPortWrite((u8)(addr >> 8));
+		I2C_SPIFlashPortWrite((u8)(addr));
+
+		if((pages%0x40) == 0x00) {
+			printk("RE:0x%x\n",pages);
+		}
+		dmemBank = pages % 2;
+		I2CDataWrite(0x1081,dmemBank*0x20);
+		I2CDataWrite(0x1084,(1<<dmemBank));
+		I2CDataWrite(0x4160,0x01);
+		udelay(100);
+		I2CDataWrite(0x40e7,0x01);
+		I2C_7002DmemRd(dmemBank,pageSize,pbuf);
+
+		pbuf += pageSize;
+		pages--;
+		addr += pageSize;
+	}
+
 	return err;
 }
 
@@ -1268,14 +1415,14 @@ void get_one_page_from_i7002a(int which_page, u8* pagebuf)
 
 	I2C_SPIFlashReadId();
 
-	I2C_SPIFlashRead(which_page, 1, pagebuf);
+	I2C_SPIFlashRead_DMA(which_page, 1, pagebuf);
 
 #if 1 // dump to kmsg ?
 	printk("page#%d:\n", which_page);
 	for(i=0; i < 0x100; i++) {
 		if(i%16 == 0)
-			printk("[%04x]", i);
-		printk("%02X ",  pagebuf[i]);
+			printk("[%03x]", i);
+		printk("%02X ", pagebuf[i]);
 		if(i%16 == 15)
 			printk("\n");
 	}
@@ -1287,22 +1434,31 @@ unsigned int get_fw_version_in_isp(void)
 	u8 tmp_page[0x100];
 	unsigned int vn = 0xABCDEF;
 	int i = 0;
-	int retry = 10;
+	int retry = 3;
 	bool b_ok;
 
 	for (i = 0; i < retry; i++) {
 		int j =0;
 		b_ok = true;
 
-		/* The fw veriosn is in the page with the index, 2047.*/
-		get_one_page_from_i7002a(2047, tmp_page);
+		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+			/* The fw veriosn is in the page with the index, 4095.*/
+			get_one_page_from_i7002a(4095, tmp_page);
+		}
+		else {
+			/* The fw veriosn is in the page with the index, 2047.*/
+			get_one_page_from_i7002a(2047, tmp_page);
+		}
 
 		/* The header format looks like:
-		 * FF FF FF FF FF FF FF XX XX XX XX XX XX XX XX
+		 * FF FF FF FF FF FF FF FF XX XX XX XX XX XX XX
 		 * FF FF FF FF FF XX XX XX XX XX XX XX XX XX XX
 		 */
 		for (j = 0; j < 8; j++) {
-			if (tmp_page[0x100 - BIN_FILE_HEADER_SIZE +j] != 0xFF) {
+			if (tmp_page[0x100 - BIN_FILE_HEADER_SIZE + j] != 0xFF) {
+				printk("%s: tmp_page[0x%02X]= %02X\n", __FUNCTION__,
+					0x100 - BIN_FILE_HEADER_SIZE + j,
+					tmp_page[0x100 - BIN_FILE_HEADER_SIZE + j]);
 				b_ok = false;
 				break;
 			}
@@ -1315,17 +1471,150 @@ unsigned int get_fw_version_in_isp(void)
 		}
 	}
 
-	if (b_ok == true)
+	if (b_ok == true) {
 		vn = (tmp_page[0xFF - 1] <<16) | (tmp_page[0xFF - 2] << 8) | tmp_page[0xFF -3];
-	printk("%s: vn=0x%X\n", __FUNCTION__, vn);
+		printk("%s: vn=0x%X\n", __FUNCTION__, vn);
+
+		if ((tmp_page[0xFF - 4] == 0x27) && (tmp_page[0xFF - 5] == 0x20))
+			fw_front_type_in_isp = 1;
+		else if ((tmp_page[0xFF - 4] == 0x10) && (tmp_page[0xFF - 5] == 0x40))
+			fw_front_type_in_isp = 2;
+		else
+			fw_front_type_in_isp = 0;
+	} else
+		fw_front_type_in_isp = 0;
+
 	return vn;
+}
+
+void I2C_7002DmemWr(
+	u32 bankNum,
+	u32 byteNum,
+	u8* pbuf
+)
+{
+	u32 i, bank;
+	u32 seqWriteByteNum = 64;
+
+	bank = 0x40 + bankNum;
+	I2CDataWrite(0x10A6, bank);
+
+	for(i = 0; i < byteNum; i+=seqWriteByteNum) {
+		/* sequentially write DMEM */
+		seqI2CDataWrite(info->i2c_client, (0x1800+i), (pbuf+i), seqWriteByteNum);
+	}
+
+	bank = 0x40 + ((bankNum+1)%2);
+
+	I2CDataWrite(0x10A6, bank);
+}
+
+u32 I2C_SPIFlashWrite_DMA(
+	u32 addr,
+	u32 pages,
+	u8 *pbuf
+)
+{
+	u32 i, err = 0;
+	u32 pageSize = 0x100, size;
+	u32 rsvSec1, rsvSec2;
+	u32 dmemBank = 0;
+	u32 chk1=0;
+	u16 chk2, temp = 0;
+
+	rsvSec1 = pages*pageSize - 0x7000;
+	rsvSec2 = pages*pageSize - 0x1000;
+	addr = addr * pageSize;
+
+	/* Set DMA bytecnt as 256-1 */
+	I2CDataWrite(0x4170, 0xff);
+	I2CDataWrite(0x4171, 0x00);
+	I2CDataWrite(0x4172, 0x00);
+
+	/* Set DMA bank & DMA start address */
+	I2CDataWrite(0x1084, 0x01);
+	I2CDataWrite(0x1080, 0x00);
+	I2CDataWrite(0x1081, 0x00);
+	I2CDataWrite(0x1082, 0x00);
+
+	/* enable DMA checksum and reset checksum */
+	I2CDataWrite(0x4280, 0x01);
+	I2CDataWrite(0x4284, 0x00);
+	I2CDataWrite(0x4285, 0x00);
+	I2CDataWrite(0x4164, 0x00);
+
+	size = pages * pageSize;
+	for(i = 0; i < size; i++) {
+		if((i >= rsvSec2) || (i < rsvSec1)) {
+			chk1 += *(pbuf+i);
+		}
+		if(chk1 >= 0x10000) {
+			chk1 -= 0x10000;
+		}
+	}
+
+	total_page_count = (int)pages;
+
+	while(pages) {
+		page_count = (int)pages;
+		writeUpdateProgresstoFile(page_count, total_page_count);
+
+		if((addr>=rsvSec1) && (addr <rsvSec2)) {
+			addr += 0x1000;
+			pbuf += 0x1000;
+			pages -= 0x10;
+			continue;
+		}
+		if((pages == 1)) {
+			for (i = 0; i < pageSize ; i++) {
+				printk("%2x ",*(pbuf+i));
+				if((i % 0x10) == 0x0f)
+					printk("\n");
+			}
+		}
+
+		dmemBank = pages % 2;
+		I2CDataWrite(0x1081, dmemBank * 0x20);
+		I2CDataWrite(0x1084, (1 << dmemBank));
+
+		I2C_7002DmemWr(dmemBank, pageSize, pbuf);
+
+		I2C_SPIFlashWrEnable();
+		I2CDataWrite(0x40e7, 0x00);
+
+		I2C_SPIFlashPortWrite(SPI_CMD_BYTE_PROG);	/* Write one byte command*/
+		I2C_SPIFlashPortWrite((u8)(addr >> 16));	/* Send 3 bytes address*/
+		I2C_SPIFlashPortWrite((u8)(addr >> 8));
+		I2C_SPIFlashPortWrite((u8)(addr));
+
+		I2CDataWrite(0x4160, 0x01);
+		//tmrUsWait(100);/* wait for DMA done */
+		udelay(100);
+		I2CDataWrite(0x40e7, 0x01);
+
+		pbuf += pageSize;
+		addr += pageSize;
+		pages --;
+	}
+
+	//tmrUsWait(500);	/* wait for DMA done */
+	udelay(500);
+
+	//temp = hsI2CDataRead(0x4285);
+	//chk2 = hsI2CDataRead(0x4284);
+	sensor_read_reg(info->i2c_client, 0x4285, &temp);
+	sensor_read_reg(info->i2c_client, 0x4284, &chk2);
+	chk2 = chk2 | (temp<<8);
+	printk("checksum: 0x%x 0x%x\n",chk1,chk2);
+
+	return err;
 }
 
 void
 BB_WrSPIFlash(char* binfile_path)
 {
 	u32 id, type;
-	u32 pages;
+	u32 pages, spiSize;
 
 	u8 *pbootBuf;
 	u8 bin_file_header[BIN_FILE_HEADER_SIZE];
@@ -1387,10 +1676,13 @@ BB_WrSPIFlash(char* binfile_path)
 		return;
 	}
 
+	printk("%s: bin_file_header=\n", __FUNCTION__);
 	for (i=0; i < BIN_FILE_HEADER_SIZE; i++)
 	{
 		bin_file_header[i] = pbootBuf[bootbin_size - BIN_FILE_HEADER_SIZE + i];
-		printk("%s: bin_file_header[%d]= 0x%x\n", __FUNCTION__, i,bin_file_header[i]);
+		printk(" %02X", bin_file_header[i]);
+		if ((i % 16) == 15)
+			printk("\n");
 	}
 	version_num_in_bin = (bin_file_header[30] << 16) | (bin_file_header[29] << 8) | bin_file_header[28];
 
@@ -1410,6 +1702,12 @@ BB_WrSPIFlash(char* binfile_path)
 	printk("%s: checksum in bin:%02X %02X; %02X %02X\n", __FUNCTION__,
 		checksum1_in_bin[0],checksum1_in_bin[1],checksum2_in_bin[0], checksum2_in_bin[1]);
 
+	/* 20120828 updated */
+	I2CDataWrite(0x1011,0x01); /* CPU SW RESET */
+	I2CDataWrite(0x001C,0x08); /* reset FM register */
+	I2CDataWrite(0x001C,0x00);
+	I2CDataWrite(0x108C,0x00); /* DMA select*/
+
 	ret = I2C_SPIInit();
 	if (ret) {
 		printk("%s: SPI init fail. ret= 0x%x", __FUNCTION__, ret);
@@ -1427,7 +1725,7 @@ BB_WrSPIFlash(char* binfile_path)
 		return;
 	}
 
-	type = BB_SerialFlashTypeCheck(id);
+	type = BB_SerialFlashTypeCheck(id, &spiSize);
 	if(type == 0) {
 		printk("BB_SerialFlashTypeCheck(%d) failed\n", id);
 		kfree(pbootBuf);
@@ -1439,11 +1737,13 @@ BB_WrSPIFlash(char* binfile_path)
 
 	printk("%s: pages:0x%x\n", __FUNCTION__, pages);
 
+	BB_EraseSPIFlash(type,spiSize);//for 8Mb spi flash test
+
 	/* Writing Flash here */
 	if( type == 2 ) {
 		flash_type = ICATCH_FLASH_TYPE_SST;
 		printk("SST operation\n");
-		ret = I2C_SPISstChipErase();
+		//ret = I2C_SPISstChipErase();
 		if(ret) {
 			printk("%s: SST erase fail.\n", __FUNCTION__);
 			kfree(pbootBuf);
@@ -1453,15 +1753,15 @@ BB_WrSPIFlash(char* binfile_path)
 		I2C_SPISstFlashWrite(0, pages, pbootBuf);
 	} else if( type == 1 || type == 3 ) {
 		flash_type = ICATCH_FLASH_TYPE_ST;
-		printk("ST operation\n");
-		ret = I2C_SPIStChipErase();
+		printk("ST operation: DMA\n");
+		//ret = I2C_SPIStChipErase();
 		if(ret) {
 			printk("%s: ST erase fail.\n", __FUNCTION__);
 			kfree(pbootBuf);
 			fw_update_status = ICATCH_FW_UPDATE_FAILED;
 			return;
 		}
-		I2C_SPIFlashWrite(0, pages, pbootBuf);
+		I2C_SPIFlashWrite_DMA(0, pages, pbootBuf);
 	} else {
 		printk("type unknown: %d; Won't update iCatch FW.\n", type);
 		fw_update_status = ICATCH_FW_UPDATE_FAILED;
@@ -1496,6 +1796,7 @@ BB_WrSPIFlash(char* binfile_path)
 				fw_update_status = ICATCH_FW_UPDATE_FAILED;
 				printk("%s: check version FAIL: ISP(0x%06X) != BIN(0x%06X)\n", __FUNCTION__, version_num_in_isp, version_num_in_bin);
 				version_num_in_isp = 0xABCDEF;
+				fw_front_type_in_isp = 0;
 			}
 		} else {
 			/* checksum2 FAIL */
@@ -1504,6 +1805,7 @@ BB_WrSPIFlash(char* binfile_path)
 				__FUNCTION__, checksum2_in_isp[0], checksum2_in_isp[1],
 				checksum2_in_bin[0], checksum2_in_bin[1]);
 			version_num_in_isp = 0xABCDEF;
+			fw_front_type_in_isp = 0;
 		}
 	} else {
 		/* checksum1 FAIL */
@@ -1512,6 +1814,7 @@ BB_WrSPIFlash(char* binfile_path)
 			__FUNCTION__, checksum1_in_isp[0], checksum1_in_isp[1],
 			checksum1_in_bin[0], checksum1_in_bin[1]);
 		version_num_in_isp = 0xABCDEF;
+		fw_front_type_in_isp = 0;
 	}
 }
 
@@ -1519,481 +1822,568 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_mode *mode)
 {
 
 	int sensor_table;
-	int err;
-	u16 val;
 	u16 testval, i;
 
 	pr_info("%s: xres %u yres %u\n",__func__, mode->xres, mode->yres);
 
-              if (mode->xres == 3264 && mode->yres == 2448) {
+	if (mode->xres == 3264 && mode->yres == 2448) {
 		sensor_table = SENSOR_MODE_3264x2448;
-		//sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
-		//sensor_write_reg(info->i2c_client, 0x7106, 0x01);
-		//sensor_write_reg(info->i2c_client, 0x7106, 0x01);//preview mode
-		//sensor_write_reg(info->i2c_client, 0x7120, 0x00);
-		//sensor_write_reg(info->i2c_client, 0x7161, 0x00);//bypass ISP
-		//sensor_write_reg(info->i2c_client, 0x7161, 0x01);
-		sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//AE/AWB lock
-		sensor_write_reg(info->i2c_client, 0x710f, 0x00);//capture mode
-		sensor_write_reg(info->i2c_client, 0x7120, 0x01);
+
+		if(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+			if((force_capture_mode==0) ||
+				(force_capture_mode==1) ||
+				(force_capture_mode==4)) {
+				printk("%s: Force capture mode: %s.\n", __func__,
+					(force_capture_mode==0)?("Single"):((force_capture_mode==1)?("HDR"):("BurstCapture")));
+				sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//AE/AWB lock
+				sensor_write_reg(info->i2c_client, 0x710f, force_capture_mode);
+				sensor_write_reg(info->i2c_client, 0x7120, 0x01);//capture mode
+			} else if(g_Streaming_type == STREAMING_TYPE_HDR_STREAMING){
+				printk("%s: 8M HDR Capture.\n", __func__);
+				sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//AE/AWB lock
+				sensor_write_reg(info->i2c_client, 0x710f, 0x01);//HDR capture
+				sensor_write_reg(info->i2c_client, 0x7120, 0x01);//capture mode
+			} else {
+				printk("%s: 8M Preview Mode.\n", __func__);
+				sensor_write_reg(info->i2c_client, 0x7106, 0x01);//3264x2448
+				sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
+			}
+		} else {
+			if (factory_mode==2) {
+				sensor_write_reg(info->i2c_client, 0x7106, 0x01);//3264x2448
+				sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
+			}else{
+				sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//AE/AWB lock
+				sensor_write_reg(info->i2c_client, 0x710f, 0x00);//single
+				sensor_write_reg(info->i2c_client, 0x7120, 0x01);//capture mode
+			}
+		}
 		printk("%s: resolution supplied to set mode %d %d\n",
-		       __func__, mode->xres, mode->yres);
+			__func__, mode->xres, mode->yres);
 		for (i=0;i<200;i++)
 		{
-		  sensor_read_reg(info->i2c_client, 0x72f8, &testval);
-		  printk("testval=0x%X, i=%d",testval,i);
-                              if (testval & 0x04) {
-		    sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
-		    sensor_read_reg(info->i2c_client, 0x72f8, &testval);
-		    printk("Clear testval=0x%X, i=%d\n",testval,i);
-                                break;
-                              }
-                              printk("testval=0x%X, i=%d",testval,i);
-                              msleep(iCatch7002a_init_delay);
-                            }
+			sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+			printk("testval=0x%X, i=%d",testval,i);
+			if (testval & 0x04) {
+				sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
+				sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+				printk("Clear testval=0x%X, i=%d\n",testval,i);
+				break;
+			}
+			printk("testval=0x%X, i=%d",testval,i);
+			msleep(iCatch7002a_init_delay);
+		}
 	}
 	else if (mode->xres == 2592 && mode->yres == 1944) {
 		sensor_table = SENSOR_MODE_2592x1944;
 		printk("%s: resolution supplied to set mode %d %d\n",
-		       __func__, mode->xres, mode->yres);
+			 __func__, mode->xres, mode->yres);
 	}
 	else if (mode->xres == 1920 && mode->yres == 1080) {
 		sensor_table = SENSOR_MODE_1920x1080;
-		sensor_write_reg(info->i2c_client, 0x7106, 0x02);//preview mode
-		sensor_write_reg(info->i2c_client, 0x7120, 0x00);//1920x1080
+		sensor_write_reg(info->i2c_client, 0x7106, 0x02);//1920x1080
+		sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
 		printk("%s: resolution supplied to set mode %d %d\n",
-		       __func__, mode->xres, mode->yres);
-		if (!first_open) {
- 		  for (i=0;i<200;i++) {
- 		  sensor_read_reg(info->i2c_client, 0x72f8, &testval);
- 		  printk("testval=0x%X, i=%d",testval,i);
- 		    if (testval & 0x04) {
- 		      sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
- 		      sensor_read_reg(info->i2c_client, 0x72f8, &testval);
- 		      printk("Clear testval=0x%X, i=%d\n",testval,i);
- 		      break;
- 		    }
- 		      printk("testval=0x%X, i=%d",testval,i);
- 		      msleep(iCatch7002a_init_delay);
- 		  }
+			__func__, mode->xres, mode->yres);
+		for (i=0;i<200;i++) {
+			sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+			printk("testval=0x%X, i=%d",testval,i);
+			if (testval & 0x04) {
+				sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
+				sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+				printk("Clear testval=0x%X, i=%d\n",testval,i);
+				break;
+			}
+			printk("testval=0x%X, i=%d",testval,i);
+			msleep(iCatch7002a_init_delay);
 		}
-		else
-		  first_open=false;
+		if (first_open)
+			first_open=false;
+		msleep(iCatch7002a_preview_delay);
 	}
 	else if (mode->xres == 1280 && mode->yres == 960) {
 		sensor_table = SENSOR_MODE_1280x960;
+		printk("%s: 1.2M Preview Mode\n", __func__);
 		//sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
 		//sensor_write_reg(info->i2c_client, 0x7106, 0x00);
-		sensor_write_reg(info->i2c_client, 0x7106, 0x00);//preview mode
-		sensor_write_reg(info->i2c_client, 0x7120, 0x00);
+		sensor_write_reg(info->i2c_client, 0x7106, 0x00);//1280x960
+		sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
 		//sensor_write_reg(info->i2c_client, 0x7106, 0x00);//workaround for ov2720 output size, not affect IMX175
 		printk("%s: resolution supplied to set mode %d %d\n",
-		       __func__, mode->xres, mode->yres);
+		__func__, mode->xres, mode->yres);
 		if (!first_open) {
-		for (i=0;i<200;i++)
-		{
-		  sensor_read_reg(info->i2c_client, 0x72f8, &testval);
-		  printk("testval=0x%X, i=%d",testval,i);
-                              if (testval & 0x04) {
-		    sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
-		    sensor_read_reg(info->i2c_client, 0x72f8, &testval);
-		    printk("Clear testval=0x%X, i=%d\n",testval,i);
-                                break;
-                              }
-                              printk("testval=0x%X, i=%d",testval,i);
-                              msleep(iCatch7002a_init_delay);
-                            }
+			for (i=0;i<200;i++) {
+				sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+				printk("testval=0x%X, i=%d",testval,i);
+				if (testval & 0x04) {
+					sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
+					sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+					printk("Clear testval=0x%X, i=%d\n",testval,i);
+					break;
+				}
+				printk("testval=0x%X, i=%d",testval,i);
+				msleep(iCatch7002a_init_delay);
+			}
 		}
 		else
-		  first_open=false;
+			first_open=false;
+		msleep(iCatch7002a_preview_delay);
 	}
 	else if (mode->xres == 1280 && mode->yres == 720) {
 		sensor_table = SENSOR_MODE_1280x720;
 		sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
-		sensor_write_reg(info->i2c_client, 0x7106, 0x02);//1280x720
+		sensor_write_reg(info->i2c_client, 0x7106, 0x04);//1280x720
 		printk("%s: resolution supplied to set mode %d %d\n",
-		       __func__, mode->xres, mode->yres);
+			__func__, mode->xres, mode->yres);
 	}
 	else {
 		pr_err("%s: invalid resolution supplied to set mode %d %d\n",
-		       __func__, mode->xres, mode->yres);
+			__func__, mode->xres, mode->yres);
 		return -EINVAL;
 	}
-  	info->mode = sensor_table;
+	info->mode = sensor_table;
 	return 0;
 }
 
 static long sensor_ioctl(struct file *file,
 			 unsigned int cmd, unsigned long arg)
 {
-    struct sensor_info *info = file->private_data;
-    int err=0;
+	struct sensor_info *info = file->private_data;
+	int err=0;
 
-    pr_info("yuv %s\n",__func__);
-    switch (cmd)
-    {
-    case SENSOR_IOCTL_SET_MODE:
-    {
-      struct sensor_mode mode;
-      if (copy_from_user(&mode,(const void __user *)arg,
-        sizeof(struct sensor_mode))) {
-        return -EFAULT;
-      }
-        return sensor_set_mode(info, &mode);
-    }
-    case SENSOR_IOCTL_GET_STATUS:
-    {
-      return 0;
-    }
-    case SENSOR_IOCTL_SET_CAMERA:
-    {
-      u8 is_front_camera = 0;
-      //u16 testval;
-      if (copy_from_user(&is_front_camera,(const void __user *)arg,
-        sizeof(is_front_camera))) {
-          return -EFAULT;
-      }
-      printk("SET_CAMERA as 0x%X\n", is_front_camera);
-      msleep(100);
-      //sensor_read_reg(info->i2c_client, 0x002c, &testval);
-      //printk("%s: test val is %d\n", __func__, testval);
-      if (is_front_camera) {
-        sensor_write_reg(info->i2c_client, 0x1011, 0x01);//cpu reset
-        sensor_write_reg(info->i2c_client, 0x941C, 0x04);
-        sensor_write_reg(info->i2c_client, 0x9010, 0x01);
-        sensor_write_reg(info->i2c_client, 0x9010, 0x00);
-        sensor_write_reg(info->i2c_client, 0x1306, 0x01);//front camera
-        sensor_write_reg(info->i2c_client, 0x1011, 0x00);
-      }
-      else {
-        sensor_write_reg(info->i2c_client, 0x1011, 0x01);//cpu reset
-        sensor_write_reg(info->i2c_client, 0x941C, 0x04);
-        sensor_write_reg(info->i2c_client, 0x9010, 0x01);
-        sensor_write_reg(info->i2c_client, 0x9010, 0x00);
-        sensor_write_reg(info->i2c_client, 0x1306, 0x00);//rear camera
-        sensor_write_reg(info->i2c_client, 0x1011, 0x00);
-      }
-      msleep(100);
-      sensor_write_reg(info->i2c_client, 0x7188, 0x01);//let AF windows work
-      break;
-    }
-    case SENSOR_IOCTL_SET_COLOR_EFFECT:
-    {
-      u8 coloreffect;
-      if (copy_from_user(&coloreffect,(const void __user *)arg,
-        sizeof(coloreffect))) {
-        return -EFAULT;
-      }
-            printk("SET_COLOR_EFFECT as %d\n", coloreffect);
-            switch(coloreffect)
-            {
-                u16 val;
-                case YUV_ColorEffect_None:
-                    err = sensor_write_reg(info->i2c_client, 0x7102, 0x00);//auto
-                    break;
-                case YUV_ColorEffect_Sepia:
-                    err = sensor_write_reg(info->i2c_client, 0x7102, 0x03);//sepia
-                    break;
-                case YUV_ColorEffect_Mono:
-                    err = sensor_write_reg(info->i2c_client, 0x7102, 0x04);//grayscale
-                    break;
-                case YUV_ColorEffect_Negative:
-                    err = sensor_write_reg(info->i2c_client, 0x7102, 0x02);//negative
-                    break;
-                case YUV_ColorEffect_Vivid:
-                    err = sensor_write_reg(info->i2c_client, 0x7102, 0x05);//vivid
-                    break;
-                case YUV_ColorEffect_WaterColor:
-                    err = sensor_write_reg(info->i2c_client, 0x7102, 0x01);//aqua
-                    break;
-                default:
-                    break;
-            }
+	pr_info("yuv %s\n",__func__);
+	switch (cmd) {
+	case SENSOR_IOCTL_SET_MODE:
+	{
+		struct sensor_mode mode;
+		if (copy_from_user(&mode,(const void __user *)arg,
+			sizeof(struct sensor_mode))) {
+			return -EFAULT;
+		}
+		return sensor_set_mode(info, &mode);
+	}
+	case SENSOR_IOCTL_GET_STATUS:
+	{
+		return 0;
+	}
+	case SENSOR_IOCTL_SET_CAMERA:
+	{
+		u8 is_front_camera = 0;
+		//u16 testval;
+		if (copy_from_user(&is_front_camera,(const void __user *)arg,
+			sizeof(is_front_camera))) {
+			return -EFAULT;
+		}
+		printk("SET_CAMERA as 0x%X\n", is_front_camera);
+		msleep(100);
+		//sensor_read_reg(info->i2c_client, 0x002c, &testval);
+		//printk("%s: test val is %d\n", __func__, testval);
+		if (is_calibration) {
+			sensor_write_reg(info->i2c_client, 0x1011, 0x01);//cpu reset
+			sensor_write_reg(info->i2c_client, 0x941C, 0x04);
+			sensor_write_reg(info->i2c_client, 0x9010, 0x01);
+			sensor_write_reg(info->i2c_client, 0x9010, 0x00);
+			sensor_write_reg(info->i2c_client, 0x1306, 0x02);//calibration
+			sensor_write_reg(info->i2c_client, 0x1011, 0x00);
+			msleep(100);
+			//sensor_write_reg(info->i2c_client, 0x7188, 0x01);//let AF windows work
+			break;
+		}
+		if (is_front_camera) {
+			sensor_write_reg(info->i2c_client, 0x1011, 0x01);//cpu reset
+			sensor_write_reg(info->i2c_client, 0x941C, 0x04);
+			sensor_write_reg(info->i2c_client, 0x9010, 0x01);
+			sensor_write_reg(info->i2c_client, 0x9010, 0x00);
+			sensor_write_reg(info->i2c_client, 0x1306, 0x01);//front camera
+			sensor_write_reg(info->i2c_client, 0x1011, 0x00);
+		} else {
+			sensor_write_reg(info->i2c_client, 0x1011, 0x01);//cpu reset
+			sensor_write_reg(info->i2c_client, 0x941C, 0x04);
+			sensor_write_reg(info->i2c_client, 0x9010, 0x01);
+			sensor_write_reg(info->i2c_client, 0x9010, 0x00);
+			sensor_write_reg(info->i2c_client, 0x1306, 0x00);//rear camera
+			sensor_write_reg(info->i2c_client, 0x1011, 0x00);
+		}
+		msleep(100);
+		sensor_write_reg(info->i2c_client, 0x7188, 0x01);//let AF windows work
+		break;
+	}
+	case SENSOR_IOCTL_SET_COLOR_EFFECT:
+	{
+		if(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+			if (copy_from_user(&coloreffect,(const void __user *)arg,
+				sizeof(coloreffect))) {
+				return -EFAULT;
+			}
+			printk("SET_COLOR_EFFECT as 0x%X\n", coloreffect);
+			switch(coloreffect) {
+			case YUV_ColorEffect_None:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x00);//none
+				break;
+			case YUV_ColorEffect_Aqua:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x01);//aqua
+				break;
+			case YUV_ColorEffect_Negative:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x02);//negative
+				break;
+			case YUV_ColorEffect_Sepia:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x03);//sepia
+				break;
+			case YUV_ColorEffect_Mono:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x04);//grayscale
+				break;
+			case YUV_ColorEffect_Vivid:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x05);//vivid
+				break;
+			case YUV_ColorEffect_Aura:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x06);//aura
+				break;
+			case YUV_ColorEffect_Vintage:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x07);//vintage
+				break;
+			case YUV_ColorEffect_Vintage2:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x08);//vintage2
+				break;
+			case YUV_ColorEffect_Lomo:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x09);//lomo
+				break;
+			case YUV_ColorEffect_Red:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x0a);//red
+				break;
+			case YUV_ColorEffect_Blue:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x0b);//blue
+				break;
+			case YUV_ColorEffect_Yellow:
+				err = sensor_write_reg(info->i2c_client, 0x7102, 0x0c);//yellow
+				break;
+			default:
+				printk("Unknown color effect: 0x%X\n", coloreffect);
+				break;
+			}
 
-            if (err)
-                return err;
-      return 0;
-    }
-    case SENSOR_IOCTL_SET_WHITE_BALANCE:
-    {
-      u8 whitebalance;
+			if (err) {
+				printk("SET_COLOR_EFFECT error: 0x%x\n", err);
+				return err;
+			}
+		} else
+			printk("COLOR EFFECT is unsupported.\n");
 
-      if (copy_from_user(&whitebalance,(const void __user *)arg,
-        sizeof(whitebalance))) {
-        return -EFAULT;
-      }
-      printk("SET_WHITE_BALANCE as %d\n", whitebalance);
-            switch(whitebalance)
-            {
-                case YUV_Whitebalance_Auto:
-                    err = sensor_write_reg(info->i2c_client, 0x710A, 0x00);//auto
-                    break;
-                case YUV_Whitebalance_Incandescent:
-                    err = sensor_write_reg(info->i2c_client, 0x710A, 0x06);//Incandescent
-                    break;
-                case YUV_Whitebalance_Daylight:
-                    err = sensor_write_reg(info->i2c_client, 0x710A, 0x01);//Daylight
-                    break;
-                case YUV_Whitebalance_Fluorescent:
-                    err = sensor_write_reg(info->i2c_client, 0x710A, 0x05);//Fluorescent_H
-                    break;
-                case YUV_Whitebalance_CloudyDaylight:
-                    err = sensor_write_reg(info->i2c_client, 0x710A, 0x02);//Cloudy
-                    break;
-                case YUV_Whitebalance_WarmFluorescent:
-                    err = sensor_write_reg(info->i2c_client, 0x710A, 0x04);//Fluorescent_L
-                    break;
-                case YUV_Whitebalance_Shade:
-                    err = sensor_write_reg(info->i2c_client, 0x710A, 0x03);//Shade
-                    break;
-                default:
-                    break;
-            }
-            if (err)
-                return err;
-      return 0;
-    }
-    case SENSOR_CUSTOM_IOCTL_SET_SCENEMODE:
-    {
-            u8 scene_mode;
-            if (copy_from_user(&scene_mode,(const void __user *)arg,
-                    sizeof(scene_mode))) {
-                return -EFAULT;
-            }
-            printk("SET_SCENEMODE as %d\n", scene_mode);
-            switch(scene_mode)
-            {
-                u16 val;
-                case YUV_SceneMode_Invalid:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x00);//need to confirm
-                    break;
-                case YUV_SceneMode_Auto:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x00);
-                    break;
-                case YUV_SceneMode_Portrait:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x0A);
-                    break;
-                case YUV_SceneMode_Landscape:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x06);//The same with vivid
-                    break;
-                case YUV_SceneMode_Sports:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x0C);
-                    break;
-                case YUV_SceneMode_Night:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x07);
-                    break;
-                case YUV_SceneMode_Sunset:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x0E);
-                    break;
-                case YUV_SceneMode_Snow:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x18);
-                    break;
-                case YUV_SceneMode_Party:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x09);
-                    break;
-                case YUV_SceneMode_BackLight:
-                    err = sensor_write_reg(info->i2c_client, 0x7109, 0x16);
-                    break;
-                default:
-                    break;
-            }
-            break;
-    }
+		return 0;
+	}
+	case SENSOR_IOCTL_SET_WHITE_BALANCE:
+	{
+		u8 whitebalance;
 
-    case SENSOR_CUSTOM_IOCTL_SET_AF_MODE:
-    {
-      custom_af_cmd_package AF_cmd;
-      //return 0;//Bill: disable AF temprarily
-      if (copy_from_user(&AF_cmd,(const void __user *)arg,
-        sizeof(AF_cmd)))
-      {
-        return -EFAULT;
-      }
-      switch(AF_cmd.cmd)
-      {
-        case AF_CMD_START:
-        {
-          u16 FW_Status = 1;
-          u16 i = 0;
-          pr_info("AF cmd start!\n");
-          /*
-          err = sensor_read_reg(info->i2c_client, 0x3029, &FW_Status);
-          if (err)
-            return err;
-          while (FW_Status != 0 && FW_Status != 0x10 && FW_Status !=0x70) {
-            if (i < 5)
-              i++;
-            else
-              break;
-            msleep(10);
-            err = sensor_read_reg(info->i2c_client, 0x3029, &FW_Status);
-            if (err)
-              return err;
-            pr_info("FW_Status is %x\n", FW_Status);
-          }
-          pr_info("FW_Status is %x\n", FW_Status);
-          */
-          //err = sensor_write_table(info->i2c_client, Autofocus_Trigger);
-          if (touch_mode==TOUCH_STATUS_OFF) {
-            err = sensor_write_reg(info->i2c_client, 0x7188, 0x01);//ROI on
-            err = sensor_write_reg(info->i2c_client, 0x7140, 0x00);
-            err = sensor_write_reg(info->i2c_client, 0x7141, 0xC0);//0x50
-            err = sensor_write_reg(info->i2c_client, 0x7142, 0x01);
-            err = sensor_write_reg(info->i2c_client, 0x7143, 0xA0);//0xD8
-            err = sensor_write_reg(info->i2c_client, 0x7144, 0x01);
-            err = sensor_write_reg(info->i2c_client, 0x7145, 0xA0);//0xD8
-            err = sensor_write_reg(info->i2c_client, 0x7146, 0x01);
-          }
-          else
-            err = sensor_write_reg(info->i2c_client, 0x7146, 0x01);
-          if (err)
-              return err;
-          break;
-        }
-        case AF_CMD_ABORT:
-        {
-/*
-          u16 FW_Status = 1;
-          u16 MAIN_ACK = 1;
-          u16 i = 0;
+		if (copy_from_user(&whitebalance,(const void __user *)arg,
+			sizeof(whitebalance))) {
+			return -EFAULT;
+		}
+		printk("SET_WHITE_BALANCE as %d\n", whitebalance);
+		switch(whitebalance) {
+		case YUV_Whitebalance_Auto:
+			err = sensor_write_reg(info->i2c_client, 0x710A, 0x00);//auto
+			break;
+		case YUV_Whitebalance_Incandescent:
+			err = sensor_write_reg(info->i2c_client, 0x710A, 0x06);//Incandescent
+			break;
+		case YUV_Whitebalance_Daylight:
+			err = sensor_write_reg(info->i2c_client, 0x710A, 0x01);//Daylight
+			break;
+		case YUV_Whitebalance_Fluorescent:
+			err = sensor_write_reg(info->i2c_client, 0x710A, 0x05);//Fluorescent_H
+			break;
+		case YUV_Whitebalance_CloudyDaylight:
+			err = sensor_write_reg(info->i2c_client, 0x710A, 0x02);//Cloudy
+			break;
+		case YUV_Whitebalance_WarmFluorescent:
+			err = sensor_write_reg(info->i2c_client, 0x710A, 0x04);//Fluorescent_L
+			break;
+		case YUV_Whitebalance_Shade:
+			err = sensor_write_reg(info->i2c_client, 0x710A, 0x03);//Shade
+			break;
+		default:
+			break;
+		}
+		if (err)
+			return err;
+		return 0;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_FLASH_STATUS:
+	{
+		u8 flash_led_type;
+		if (copy_from_user(&flash_led_type,(const void __user *)arg,
+			sizeof(flash_led_type))) {
+			return -EFAULT;
+		}
+		printk("SET_FLASH_LED as %d\n", flash_led_type);
+		switch(flash_led_type) {
+		case YUV_FlashControlOn:
+			err = sensor_write_reg(info->i2c_client, 0x7104, 0x02);//on
+			break;
+		case YUV_FlashControlOff:
+			err = sensor_write_reg(info->i2c_client, 0x7104, 0x01);//off
+			break;
+		case YUV_FlashControlAuto:
+			err = sensor_write_reg(info->i2c_client, 0x7104, 0x00);//auto
+			break;
+		case YUV_FlashControlTorch:
+			err = sensor_write_reg(info->i2c_client, 0x7104, 0x04);//torch
+			break;
+		default:
+			break;
+		}
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_GET_FLASH_STATUS:
+	{
+		int flash_status;
+		u16 reg_status=0;
 
-          err = sensor_write_table(info->i2c_client, Autofocus_Release);
-          if (err)
-            return err;
-          //pr_info("fail to write i2c seq!");        //return NV_FALSE;
-          for (i=0; i<10; i++) { //wait for ACK = 0
-            sensor_read_reg(info->i2c_client, 0x3023, &MAIN_ACK);
-            if (!MAIN_ACK) {
-              //NvOdmImagerI2cRead(&pContext->I2c, 0x3022, &MAIN);
-              //NvOsDebugPrintf("MAIN is %d\n", MAIN);
-              //pr_info("ACK is %d\n", MAIN_ACK);
-              sensor_read_reg(info->i2c_client, 0x3029, &FW_Status);
-              pr_info("FW_Status is %x\n", FW_Status);
-              break;
-            }
-            msleep(10);
-          }
-*/
-          err = sensor_write_reg(info->i2c_client, 0x714F, 0x00);//release focus
-          err = sensor_write_reg(info->i2c_client, 0x710E, 0x00);//Seems default AE window size
-          touch_mode = TOUCH_STATUS_OFF;
-          if (err)
-            return err;
-          break;
-        }
-        case AF_CMD_SET_POSITION:
-        case AF_CMD_SET_WINDOW_POSITION:
-        case AF_CMD_SET_WINDOW_SIZE:
-        case AF_CMD_SET_AFMODE:
-        case AF_CMD_SET_CAF:
-        default:
-          pr_info("AF cmd %d not implemented yet\n",AF_cmd.cmd);
-          return -1;
-      }
-	return 0; //Bill
-    }
-    case SENSOR_CUSTOM_IOCTL_GET_AF_MODE:
-    {
-      custom_af_cmd_package AF_cmd;
-      if (copy_from_user(&AF_cmd,(const void __user *)arg,
-        sizeof(AF_cmd)))
-      {
-        return -EFAULT;
-      }
-      #if 0 //disable AF temporarily.
-      AF_cmd.data = 1; //Locked
-      copy_to_user((const void __user *)arg, &AF_cmd, sizeof(AF_cmd));
-      return 0;
-      #endif
-      switch(AF_cmd.cmd)
-      {
-        case AF_CMD_GET_AF_STATUS:
-        {
-          u16 AF_status;
-          u16 AF_result;
-          sensor_read_reg(info->i2c_client, 0x72A0, &AF_status);
-          if (AF_status) {
-            pr_info("AF searching... %d\n", AF_status);
-            AF_cmd.data = 0; //busy
-            copy_to_user((const void __user *)arg, &AF_cmd, sizeof(AF_cmd));
-            break;
-          }
-          sensor_read_reg(info->i2c_client, 0x72A1, &AF_result);
-          pr_info("AF result... %d\n", AF_result);
-          if (AF_result==0)
-            AF_cmd.data = 1; //Locked
-          else
-            AF_cmd.data = 2; //failed to find
-          //err = sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//release AWB/AE lock
-          copy_to_user((const void __user *)arg, &AF_cmd, sizeof(AF_cmd));
-          pr_info("AF done and release AWB/AE lock... %d\n", AF_result);
-            break;
-        }
-        default:
-          pr_info("AF cmd %d not implemented yet\n",AF_cmd.cmd);
-          return -1;
-      }
-      return 0;
-    }
-    case SENSOR_CUSTOM_IOCTL_SET_EV:
-    {
-      short ev;
+		if (copy_from_user(&flash_status,(const void __user *)arg,
+			sizeof(flash_status))) {
+			return -EFAULT;
+		}
+		sensor_read_reg(info->i2c_client, 0x72B9, &reg_status);
+		if (reg_status == 0x00) //off
+			flash_status = 0;
+		else if (reg_status == 0x01) //on
+			flash_status = 2;
+		printk("GET_FLASH_STATUS as value:%d\n", flash_status);
+		if (copy_to_user((const void __user *)arg, &flash_status, sizeof(flash_status)))
+			return -EFAULT;
 
-      if (copy_from_user(&ev,(const void __user *)arg, sizeof(short)))
-      {
-        return -EFAULT;
-      }
+		return 0;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_SCENEMODE:
+	{
+		u8 scene_mode;
+		if (copy_from_user(&scene_mode,(const void __user *)arg,
+			sizeof(scene_mode))) {
+			return -EFAULT;
+		}
+		printk("SET_SCENEMODE as %d\n", scene_mode);
+		switch(scene_mode) {
+		case YUV_SceneMode_Invalid:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x00);//need to confirm
+			break;
+		case YUV_SceneMode_Auto:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x00);
+			break;
+		case YUV_SceneMode_Portrait:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x0A);
+			break;
+		case YUV_SceneMode_Landscape:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x06);//The same with vivid
+			break;
+		case YUV_SceneMode_Sports:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x0C);
+			break;
+		case YUV_SceneMode_Night:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x07);
+			break;
+		case YUV_SceneMode_Sunset:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x0E);
+			break;
+		case YUV_SceneMode_Snow:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x0B);
+			break;
+		case YUV_SceneMode_Party:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x09);
+			break;
+		case YUV_SceneMode_BackLight:
+			err = sensor_write_reg(info->i2c_client, 0x7109, 0x16);
+			break;
+		default:
+			break;
+		}
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_AF_MODE:
+	{
+		custom_af_cmd_package AF_cmd;
+		//return 0;// disable AF temprarily
+		if (copy_from_user(&AF_cmd,(const void __user *)arg,
+			sizeof(AF_cmd))) {
+			return -EFAULT;
+		}
+		switch(AF_cmd.cmd) {
+			case AF_CMD_START:
+			{
+				u16 FW_Status = 1;
 
-      printk("SET_EV as %d\n",ev);
-      switch(ev)
-            {
-                case -6:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x0C);
-                    break;
-                case -5:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x0B);
-                    break;
-                case -4:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x0A);
-                    break;
-                case -3:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x09);
-                    break;
-                case -2:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x08);
-                    break;
-                case -1:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x07);
-                    break;
-                case 0:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x06);
-                    break;
-                case 1:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x05);
-                    break;
-                case 2:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x04);
-                    break;
-                case 3:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x03);
-                    break;
-                case 4:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x02);
-                    break;
-                case 5:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x01);
-                    break;
-                case 6:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x00);
-                    break;
-                default:
-                    err = sensor_write_reg(info->i2c_client, 0x7103, 0x06);
-                    break;
-            }
-            if (err)
-                return err;
-      return 0;
-    }
+				pr_info("AF cmd start!\n");
+				/*
+				err = sensor_read_reg(info->i2c_client, 0x3029, &FW_Status);
+				if (err)
+					return err;
+				while (FW_Status != 0 && FW_Status != 0x10 && FW_Status !=0x70) {
+					if (i < 5)
+						i++;
+					else
+						break;
+					msleep(10);
+					err = sensor_read_reg(info->i2c_client, 0x3029, &FW_Status);
+					if (err)
+						return err;
+					pr_info("FW_Status is %x\n", FW_Status);
+				}
+				pr_info("FW_Status is %x\n", FW_Status);
+				*/
+				//err = sensor_write_table(info->i2c_client, Autofocus_Trigger);
+				if (touch_mode==TOUCH_STATUS_OFF) {
+					err = sensor_write_reg(info->i2c_client, 0x7188, 0x01);//ROI on
+					err = sensor_write_reg(info->i2c_client, 0x7140, 0x00);
+					err = sensor_write_reg(info->i2c_client, 0x7141, 0xC0);//0x50
+					err = sensor_write_reg(info->i2c_client, 0x7142, 0x01);
+					err = sensor_write_reg(info->i2c_client, 0x7143, 0xA0);//0xD8
+					err = sensor_write_reg(info->i2c_client, 0x7144, 0x01);
+					err = sensor_write_reg(info->i2c_client, 0x7145, 0xA0);//0xD8
+					err = sensor_write_reg(info->i2c_client, 0x7146, 0x01);
+				} else
+					err = sensor_write_reg(info->i2c_client, 0x7146, 0x01);
+				if (err)
+					return err;
+				break;
+			}
+			case AF_CMD_ABORT:
+			{
+				/*
+				u16 FW_Status = 1;
+				u16 MAIN_ACK = 1;
+				u16 i = 0;
+
+				err = sensor_write_table(info->i2c_client, Autofocus_Release);
+				if (err)
+					return err;
+				//pr_info("fail to write i2c seq!");        //return NV_FALSE;
+				for (i=0; i<10; i++) { //wait for ACK = 0
+					sensor_read_reg(info->i2c_client, 0x3023, &MAIN_ACK);
+					if (!MAIN_ACK) {
+						//NvOdmImagerI2cRead(&pContext->I2c, 0x3022, &MAIN);
+						//NvOsDebugPrintf("MAIN is %d\n", MAIN);
+						//pr_info("ACK is %d\n", MAIN_ACK);
+						sensor_read_reg(info->i2c_client, 0x3029, &FW_Status);
+						pr_info("FW_Status is %x\n", FW_Status);
+						break;
+					}
+					msleep(10);
+				}
+				*/
+				err = sensor_write_reg(info->i2c_client, 0x714F, 0x00);//release focus
+				//err = sensor_write_reg(info->i2c_client, 0x710E, 0x00);//Seems default AE window size
+				touch_mode = TOUCH_STATUS_OFF;
+				if (err)
+					return err;
+				break;
+			}
+			case AF_CMD_SET_POSITION:
+			case AF_CMD_SET_WINDOW_POSITION:
+			case AF_CMD_SET_WINDOW_SIZE:
+			case AF_CMD_SET_AFMODE:
+			case AF_CMD_SET_CAF:
+			default:
+				pr_info("AF cmd %d not implemented yet\n",AF_cmd.cmd);
+			return -1;
+		}
+		return 0;
+	}
+	case SENSOR_CUSTOM_IOCTL_GET_AF_MODE:
+	{
+		custom_af_cmd_package AF_cmd;
+		if (copy_from_user(&AF_cmd,(const void __user *)arg,
+			sizeof(AF_cmd))) {
+			return -EFAULT;
+		}
+#if 0 //disable AF temporarily.
+		AF_cmd.data = 1; //Locked
+		copy_to_user((const void __user *)arg, &AF_cmd, sizeof(AF_cmd));
+		return 0;
+#endif
+		switch(AF_cmd.cmd) {
+			case AF_CMD_GET_AF_STATUS:
+			{
+				u16 AF_status;
+				u16 AF_result;
+				sensor_read_reg(info->i2c_client, 0x72A0, &AF_status);
+				if (AF_status) {
+					pr_info("AF searching... %d\n", AF_status);
+					AF_cmd.data = 0; //busy
+					copy_to_user((const void __user *)arg, &AF_cmd, sizeof(AF_cmd));
+					break;
+				}
+				sensor_read_reg(info->i2c_client, 0x72A1, &AF_result);
+				pr_info("AF result... %d\n", AF_result);
+				if (AF_result==0)
+					AF_cmd.data = 1; //Locked
+				else
+					AF_cmd.data = 2; //failed to find
+				//err = sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//release AWB/AE lock
+				copy_to_user((const void __user *)arg, &AF_cmd, sizeof(AF_cmd));
+				pr_info("AF done and release AWB/AE lock... %d\n", AF_result);
+				break;
+			}
+			default:
+				pr_info("AF cmd %d not implemented yet\n",AF_cmd.cmd);
+				return -1;
+		}
+		return 0;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_EV:
+	{
+		short ev;
+
+		if (copy_from_user(&ev,(const void __user *)arg, sizeof(short)))
+			return -EFAULT;
+
+		printk("SET_EV as %d\n",ev);
+		switch(ev) {
+		case -6:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x0C);
+			break;
+		case -5:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x0B);
+			break;
+		case -4:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x0A);
+			break;
+		case -3:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x09);
+			break;
+		case -2:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x08);
+			break;
+		case -1:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x07);
+			break;
+		case 0:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x06);
+			break;
+		case 1:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x05);
+			break;
+		case 2:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x04);
+			break;
+		case 3:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x03);
+			break;
+		case 4:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x02);
+			break;
+		case 5:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x01);
+			break;
+		case 6:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x00);
+			break;
+		default:
+			err = sensor_write_reg(info->i2c_client, 0x7103, 0x06);
+			break;
+		}
+		if (err)
+			return err;
+		return 0;
+	}
 
 	case SENSOR_CUSTOM_IOCTL_GET_EV:
 	{
@@ -2010,9 +2400,7 @@ static long sensor_ioctl(struct file *file,
 		printk("GET_EV: [0x72b4]:0x%X;\n", EV);
 
 		if (copy_to_user((const void __user *)arg, &EV, sizeof(EV)))
-		{
 			return -EFAULT;
-		}
 
 		return 0;
 	}
@@ -2042,6 +2430,8 @@ static long sensor_ioctl(struct file *file,
 		u16 et_denominator_byte2 = 0;
 		u16 et_denominator_byte3 = 0;
 
+		sensor_write_reg(info->i2c_client, 0x71EB, 0x01); // Get EXIF
+
 		sensor_read_reg(info->i2c_client, 0x72b0, &et_numerator);
 		sensor_read_reg(info->i2c_client, 0x72b1, &et_denominator_byte1);
 		sensor_read_reg(info->i2c_client, 0x72b2, &et_denominator_byte2);
@@ -2051,7 +2441,7 @@ static long sensor_ioctl(struct file *file,
 		printk("GET_ET: [0x72b2]:0x%X; [0x72b3]:0x%X\n", et_denominator_byte2, et_denominator_byte3);
 
 		ET.exposure = et_numerator;
-		ET.vts =  (et_denominator_byte3 << 16)|(et_denominator_byte2 << 8)|et_denominator_byte1;
+		ET.vts = (et_denominator_byte3 << 16)|(et_denominator_byte2 << 8)|et_denominator_byte1;
 
 		if (err) {
 			printk("GET_ET: err= %d\n", err);
@@ -2067,212 +2457,274 @@ static long sensor_ioctl(struct file *file,
 
 		return 0;
 	}
-    case SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF:
-    {
-        custom_touch_af_cmd_package touch_af;
-        u32 af_w, af_h, af_x, af_y;
-        if (copy_from_user(&touch_af,(const void __user *)arg, sizeof(custom_touch_af_cmd_package))){
-            return -EFAULT;
-        }
+	case SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF:
+	{
+		custom_touch_af_cmd_package touch_af;
+		u32 af_w, af_h, af_x, af_y;
+		if (copy_from_user(&touch_af,(const void __user *)arg, sizeof(custom_touch_af_cmd_package)))
+			return -EFAULT;
 /*
-        if (!touch_focus_enable) {
-		printk("%s: SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF blocked\n", __func__);
-		break;
-        }
+		if (!touch_focus_enable) {
+			printk("%s: SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF blocked\n", __func__);
+			break;
+		}
 */
-        if(touch_af.zoom){
-            touch_mode = TOUCH_STATUS_ON;
-            af_w = touch_af.win_w;
-            af_h = touch_af.win_h;
-            //printk("SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF: af_w:0x%x af_h:0x%x af_x:0x%x af_y:0x%x\n", touch_af.win_w, touch_af.win_h, touch_af.win_x, touch_af.win_y);
-            af_x = touch_af.win_x;
-            af_y = touch_af.win_y;
-            printk("SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF: af_w:0x%x af_h:0x%x af_x:0x%x af_y:0x%x\n", af_w, af_h, af_x, af_y);
-            //AE window
-            //err = sensor_write_reg(info->i2c_client, 0x7188, 0x01);//ROI on
-            //err = sensor_write_reg(info->i2c_client, 0x7148, af_w>>8);
-            //err = sensor_write_reg(info->i2c_client, 0x7149, af_w&0xff);
-            //err = sensor_write_reg(info->i2c_client, 0x714A, af_x>>8);
-            //err = sensor_write_reg(info->i2c_client, 0x714B, af_x&0xff);
-            //err = sensor_write_reg(info->i2c_client, 0x714C, af_y>>8);
-            //err = sensor_write_reg(info->i2c_client, 0x714D, af_y&0xff);
-            //AF window
-            err = sensor_write_reg(info->i2c_client, 0x7188, 0x01);//ROI on
-            err = sensor_write_reg(info->i2c_client, 0x7140, af_w>>8);
-            err = sensor_write_reg(info->i2c_client, 0x7141, af_w&0xff);
-            err = sensor_write_reg(info->i2c_client, 0x7142, af_x>>8);
-            err = sensor_write_reg(info->i2c_client, 0x7143, af_x&0xff);
-            err = sensor_write_reg(info->i2c_client, 0x7144, af_y>>8);
-            err = sensor_write_reg(info->i2c_client, 0x7145, af_y&0xff);
-            //touch_focus_enable=0;
-        }
-        else{
-            if(touch_mode != TOUCH_STATUS_OFF){
-                touch_mode = TOUCH_STATUS_OFF;
-                printk("SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF: Cancel touch af\n");
-                err = sensor_write_reg(info->i2c_client, 0x710E, 0x00);//Seems default AE window size
-                err = sensor_write_reg(info->i2c_client, 0x714F, 0x00);//release focus
-                /*
-                if(!caf_mode){
-                    fjm6mo_read_register(info->i2c_client, 0x0A, 0x03, 0x01, &buffer);
-                    if(buffer == 0){
-                        //Stop auto focus
-                        fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x0);
-                        err = isp_interrupt(INT_STATUS_AF);
-                        if(err)
-                            pr_err("Touch af stop interrupt error");
-                    }
-                    fjm6mo_write_register(info->i2c_client, 1, 0x0A, 0x02, 0x3);
-                }
-                */
-            }
-        }
-        break;
-    }
-    case SENSOR_CUSTOM_IOCTL_SET_ISO:
-        {
-            u8 iso;
-            if (copy_from_user(&iso,(const void __user *)arg,
-                    sizeof(iso))) {
-                return -EFAULT;
-            }
-            printk("SET_ISO as %d\n", iso);
-            switch(iso)
-            {
-                u16 val;
-                case YUV_ISO_AUTO:
-                    err = sensor_write_reg(info->i2c_client, 0x7110, 0x00);
-                    break;
-                case YUV_ISO_50:
-                    err = sensor_write_reg(info->i2c_client, 0x7110, 0x01);
-                    break;
-                case YUV_ISO_100:
-                    err = sensor_write_reg(info->i2c_client, 0x7110, 0x02);
-                    break;
-                case YUV_ISO_200:
-                    err = sensor_write_reg(info->i2c_client, 0x7110, 0x03);
-                    break;
-                case YUV_ISO_400:
-                    err = sensor_write_reg(info->i2c_client, 0x7110, 0x04);
-                    break;
-                case YUV_ISO_800:
-                    err = sensor_write_reg(info->i2c_client, 0x7110, 0x05);
-                    break;
-                case YUV_ISO_1600:
-                    err = sensor_write_reg(info->i2c_client, 0x7110, 0x06);
-                    break;
-                default:
-                    break;
-            }
-            break;
-        }
-    case SENSOR_CUSTOM_IOCTL_SET_FLICKERING:
-        {
-            u8 flickering;
-            if (copy_from_user(&flickering,(const void __user *)arg,
-                    sizeof(flickering))) {
-                return -EFAULT;
-            }
-            printk("SET_FLICKERING as %d\n", flickering);
-            switch(flickering)
-            {
-                u16 val;
-                //case YUV_ANTIBANGING_OFF:
-                    //err = sensor_write_reg(info->i2c_client, 0x7101, );
-                    //break;
-                //case YUV_ANTIBANGING_AUTO:
-                    //err = fjm6mo_write_register(info->i2c_client, 1, 0x03, 0x06, 0x0);
-                    //break;
-                case YUV_ANTIBANGING_50HZ:
-                    err = sensor_write_reg(info->i2c_client, 0x7101, 0x01);
-                    break;
-                case YUV_ANTIBANGING_60HZ:
-                    err = sensor_write_reg(info->i2c_client, 0x7101, 0x02);
-                    break;
-                default:
-                    break;
-            }
-            break;
-        }
-    case SENSOR_CUSTOM_IOCTL_SET_CONTINUOUS_AF:
-    {
-        u8 continuous_af;
-        if (copy_from_user(&continuous_af,(const void __user *)arg,
-                sizeof(continuous_af))) {
-            return -EFAULT;
-        }
-        printk("SET_CONTINUOUS_AF as %d\n", continuous_af);
-        if(continuous_af==1){
-            caf_mode = true;
-            err = sensor_write_reg(info->i2c_client, 0x7105, 0x03);//CAF
-        }
-        else if (continuous_af==0 && focus_control==2){
-            caf_mode = false;
-            err = sensor_write_reg(info->i2c_client, 0x7105, 0x00);//auto
-            if(err)
-              pr_err("CAF stop error\n");
-        }
-        else if (continuous_af==0 && focus_control==0) {
-            caf_mode = false;
-            err = sensor_write_reg(info->i2c_client, 0x7105, 0x02);//infinity
-            if(err)
-              pr_err("Infinity focus error\n");
-        }
-        if (err)
-          return err;
-        return 0;
-    }
-    case SENSOR_CUSTOM_IOCTL_SET_AE_LOCK:
-    {
-            u32 ae_lock;
-            if (copy_from_user(&ae_lock,(const void __user *)arg,
-                    sizeof(ae_lock))) {
-                return -EFAULT;
-            }
-            //ae_mode = ae_lock;
-            printk("SET_AE_LOCK as 0x%x\n", ae_lock);
-            if (ae_lock==1) {
-              sensor_write_reg(info->i2c_client, 0x71E4, 0x04);//AE command
-              sensor_write_reg(info->i2c_client, 0x71E5, 0x01);//AE lock
-              sensor_write_reg(info->i2c_client, 0x71E8, 0x01);
-            }
-            else if (ae_lock==0) {
-              sensor_write_reg(info->i2c_client, 0x71E4, 0x04);//AE command
-              sensor_write_reg(info->i2c_client, 0x71E5, 0x02);//AE unlock
-              sensor_write_reg(info->i2c_client, 0x71E8, 0x01);
-            }
-            break;
-    }
-    case SENSOR_CUSTOM_IOCTL_SET_AWB_LOCK:
-    {
-            u32 awb_lock;
-            if (copy_from_user(&awb_lock,(const void __user *)arg,
-                    sizeof(awb_lock))) {
-                return -EFAULT;
-            }
-            //awb_mode = awb_lock;
-            printk("SET_AWB_LOCK as 0x%x\n", awb_lock);
-            if (awb_lock==1) {
-              sensor_write_reg(info->i2c_client, 0x71E4, 0x05);//AWB command
-              sensor_write_reg(info->i2c_client, 0x71E5, 0x01);//AWB lock
-              sensor_write_reg(info->i2c_client, 0x71E8, 0x01);
-            }
-            else if (awb_lock==0) {
-              sensor_write_reg(info->i2c_client, 0x71E4, 0x05);//AWB command
-              sensor_write_reg(info->i2c_client, 0x71E5, 0x02);//AWB unlock
-              sensor_write_reg(info->i2c_client, 0x71E8, 0x01);
-            }
-            break;
-    }
-    case SENSOR_CUSTOM_IOCTL_SET_AF_CONTROL:
-    {
-              //int focus_mode;
-       if (copy_from_user(&focus_control,(const void __user *)arg,
-               sizeof(focus_control))) {
-           return -EFAULT;
-       }
-       return 0;
-    }
+		if(touch_af.zoom){
+			touch_mode = TOUCH_STATUS_ON;
+			af_w = touch_af.win_w;
+			af_h = touch_af.win_h;
+			//printk("SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF: af_w:0x%x af_h:0x%x af_x:0x%x af_y:0x%x\n",
+			//	touch_af.win_w, touch_af.win_h, touch_af.win_x, touch_af.win_y);
+			af_x = touch_af.win_x;
+			af_y = touch_af.win_y;
+			printk("SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF: af_w:0x%x af_h:0x%x af_x:0x%x af_y:0x%x\n", af_w, af_h, af_x, af_y);
+			//AE window
+			//err = sensor_write_reg(info->i2c_client, 0x7188, 0x01);//ROI on
+			//err = sensor_write_reg(info->i2c_client, 0x7148, af_w>>8);
+			//err = sensor_write_reg(info->i2c_client, 0x7149, af_w&0xff);
+			//err = sensor_write_reg(info->i2c_client, 0x714A, af_x>>8);
+			//err = sensor_write_reg(info->i2c_client, 0x714B, af_x&0xff);
+			//err = sensor_write_reg(info->i2c_client, 0x714C, af_y>>8);
+			//err = sensor_write_reg(info->i2c_client, 0x714D, af_y&0xff);
+			//AF window
+			err = sensor_write_reg(info->i2c_client, 0x7188, 0x01);//ROI on
+			err = sensor_write_reg(info->i2c_client, 0x7140, af_w>>8);
+			err = sensor_write_reg(info->i2c_client, 0x7141, af_w&0xff);
+			err = sensor_write_reg(info->i2c_client, 0x7142, af_x>>8);
+			err = sensor_write_reg(info->i2c_client, 0x7143, af_x&0xff);
+			err = sensor_write_reg(info->i2c_client, 0x7144, af_y>>8);
+			err = sensor_write_reg(info->i2c_client, 0x7145, af_y&0xff);
+			//touch_focus_enable=0;
+		} else {
+			if(touch_mode != TOUCH_STATUS_OFF){
+				touch_mode = TOUCH_STATUS_OFF;
+				printk("SENSOR_CUSTOM_IOCTL_SET_TOUCH_AF: Cancel touch af\n");
+				//err = sensor_write_reg(info->i2c_client, 0x710E, 0x00);//Seems default AE window size
+				err = sensor_write_reg(info->i2c_client, 0x714F, 0x00);//release focus
+			}
+		}
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_ISO:
+	{
+		u8 iso;
+		if (copy_from_user(&iso,(const void __user *)arg,
+			sizeof(iso))) {
+			return -EFAULT;
+		}
+		printk("SET_ISO as %d\n", iso);
+		switch(iso) {
+		case YUV_ISO_AUTO:
+			err = sensor_write_reg(info->i2c_client, 0x7110, 0x00);
+			break;
+		case YUV_ISO_50:
+			err = sensor_write_reg(info->i2c_client, 0x7110, 0x01);
+			break;
+		case YUV_ISO_100:
+			err = sensor_write_reg(info->i2c_client, 0x7110, 0x02);
+			break;
+		case YUV_ISO_200:
+			err = sensor_write_reg(info->i2c_client, 0x7110, 0x03);
+			break;
+		case YUV_ISO_400:
+			err = sensor_write_reg(info->i2c_client, 0x7110, 0x04);
+			break;
+		case YUV_ISO_800:
+			err = sensor_write_reg(info->i2c_client, 0x7110, 0x05);
+			break;
+		case YUV_ISO_1600:
+			err = sensor_write_reg(info->i2c_client, 0x7110, 0x06);
+			break;
+		default:
+			break;
+		}
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_FLICKERING:
+	{
+		u8 flickering;
+		if (copy_from_user(&flickering,(const void __user *)arg,
+			sizeof(flickering))) {
+			return -EFAULT;
+		}
+		printk("SET_FLICKERING as %d\n", flickering);
+		switch(flickering) {
+		case YUV_ANTIBANGING_50HZ:
+			err = sensor_write_reg(info->i2c_client, 0x7101, 0x01);
+			break;
+		case YUV_ANTIBANGING_60HZ:
+			err = sensor_write_reg(info->i2c_client, 0x7101, 0x02);
+			break;
+		default:
+			break;
+		}
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_CONTINUOUS_AF:
+	{
+		u8 continuous_af;
+		if (copy_from_user(&continuous_af,(const void __user *)arg,
+			sizeof(continuous_af))) {
+			return -EFAULT;
+		}
+		printk("SET_CONTINUOUS_AF as %d\n", continuous_af);
+		if(continuous_af==1){
+			caf_mode = true;
+			err = sensor_write_reg(info->i2c_client, 0x7105, 0x03);//CAF
+		} else if (continuous_af==0 && focus_control==2) {
+			caf_mode = false;
+			err = sensor_write_reg(info->i2c_client, 0x7105, 0x00);//auto
+			if(err)
+				pr_err("CAF stop error\n");
+		} else if (continuous_af==0 && focus_control==0) {
+			caf_mode = false;
+			err = sensor_write_reg(info->i2c_client, 0x7105, 0x02);//infinity
+			if(err)
+				pr_err("Infinity focus error\n");
+		}
+		if (err)
+			return err;
+		return 0;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_ICATCH_AE_WINDOW:
+	{
+		custom_ae_win_cmd_package ae_win;
+		if (copy_from_user(&ae_win,(const void __user *)arg,
+			sizeof(custom_ae_win_cmd_package))) {
+			return -EFAULT;
+		}
+		printk("SET_AE_WINDOW as start at 0x%X, width is 0x%X\n", ae_win.win_x, ae_win.win_w);
+		if (ae_win.zoom==0) //default AE window
+			err = sensor_write_reg(info->i2c_client, 0x7188, 0x00);//ROI off
+		else {
+			//AE window
+			err = sensor_write_reg(info->i2c_client, 0x7188, 0x01);//ROI on
+			err = sensor_write_reg(info->i2c_client, 0x7148, (ae_win.win_w)>>8);
+			err = sensor_write_reg(info->i2c_client, 0x7149, (ae_win.win_w)&0xff);
+			err = sensor_write_reg(info->i2c_client, 0x714A, (ae_win.win_x)>>8);
+			err = sensor_write_reg(info->i2c_client, 0x714B, (ae_win.win_x)&0xff);
+			err = sensor_write_reg(info->i2c_client, 0x714C, (ae_win.win_y)>>8);
+			err = sensor_write_reg(info->i2c_client, 0x714D, (ae_win.win_y)&0xff);
+
+			// TAE on (Use TAE ROI)
+			err = sensor_write_reg(info->i2c_client, 0x714E, 0x01);
+		}
+		if (err)
+			return err;
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_WDR:
+	{
+		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+			u16 wdr_on;
+			u16 dwdr_control;
+			if (copy_from_user(&wdr_on,(const void __user *)arg,
+				sizeof(wdr_on))) {
+				return -EFAULT;
+			}
+			wdr_on = wdr_on & 0x1;
+			printk("SET_WDR as 0x%X\n", wdr_on);
+			sensor_read_reg(info->i2c_client, 0x729B, &dwdr_control); //DWDR read
+
+			if (wdr_on) {
+				printk("SET 0x%x to [0x711B]\n", dwdr_control | 0x0001);
+				err = sensor_write_reg(info->i2c_client, 0x711B, dwdr_control | 0x0001);
+			} else {
+				printk("SET 0x%x to [0x711B]\n", dwdr_control & 0xFFFE);
+				err = sensor_write_reg(info->i2c_client, 0x711B, dwdr_control & 0xFFFE);
+			}
+		} else
+			printk("WDR is unsupported.\n");
+
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_AURA:
+	{
+		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+			if (coloreffect == YUV_ColorEffect_Aura) {
+				u16 aura;
+				if (copy_from_user(&aura, (const void __user *)arg,
+					sizeof(aura))) {
+					return -EFAULT;
+				}
+
+				printk("SET_AURA as 0x%X\n", aura);
+					err = sensor_write_reg(info->i2c_client, 0x7119, aura);
+			} else
+				printk("SET_AURA: Coloereffect is not aura. No action.\n");
+		} else
+			printk("AURA is unsupported.\n");
+
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_STREAMING_TYPE:
+	{
+		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+			if (copy_from_user(&g_Streaming_type,(const void __user *)arg,
+				sizeof(g_Streaming_type))) {
+				return -EFAULT;
+			}
+			g_Streaming_type = g_Streaming_type & 0xff;
+			printk("set STREAMING_TYPE as 0x%x\n", g_Streaming_type);
+
+		} else
+			printk("SET_STREAMING_TYPE is unsupported.\n");
+
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_AE_LOCK:
+	{
+		u32 ae_lock;
+		if (copy_from_user(&ae_lock,(const void __user *)arg,
+			sizeof(ae_lock))) {
+			return -EFAULT;
+		}
+		//ae_mode = ae_lock;
+		printk("SET_AE_LOCK as 0x%x\n", ae_lock);
+		if (ae_lock==1) {
+			//sensor_write_reg(info->i2c_client, 0x71E4, 0x04);//AE command
+			//sensor_write_reg(info->i2c_client, 0x71E5, 0x01);//AE lock
+			//sensor_write_reg(info->i2c_client, 0x71E8, 0x01);
+			sensor_write_reg(info->i2c_client, 0x71EB, 0x03);
+		} else if (ae_lock==0) {
+			//sensor_write_reg(info->i2c_client, 0x71E4, 0x04);//AE command
+			//sensor_write_reg(info->i2c_client, 0x71E5, 0x02);//AE unlock
+			//sensor_write_reg(info->i2c_client, 0x71E8, 0x01);
+			sensor_write_reg(info->i2c_client, 0x71EB, 0x05);
+		}
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_AWB_LOCK:
+	{
+		u32 awb_lock;
+		if (copy_from_user(&awb_lock,(const void __user *)arg,
+			sizeof(awb_lock))) {
+			return -EFAULT;
+		}
+		//awb_mode = awb_lock;
+		printk("SET_AWB_LOCK as 0x%x\n", awb_lock);
+		if (awb_lock==1) {
+			//sensor_write_reg(info->i2c_client, 0x71E4, 0x05);//AWB command
+			//sensor_write_reg(info->i2c_client, 0x71E5, 0x01);//AWB lock
+			//sensor_write_reg(info->i2c_client, 0x71E8, 0x01);
+			sensor_write_reg(info->i2c_client, 0x71EB, 0x04);
+		} else if (awb_lock==0) {
+			//sensor_write_reg(info->i2c_client, 0x71E4, 0x05);//AWB command
+			//sensor_write_reg(info->i2c_client, 0x71E5, 0x02);//AWB unlock
+			//sensor_write_reg(info->i2c_client, 0x71E8, 0x01);
+			sensor_write_reg(info->i2c_client, 0x71EB, 0x06);
+		}
+		break;
+	}
+	case SENSOR_CUSTOM_IOCTL_SET_AF_CONTROL:
+	{
+		//int focus_mode;
+		if (copy_from_user(&focus_control,(const void __user *)arg,
+			sizeof(focus_control))) {
+			return -EFAULT;
+		}
+		return 0;
+	}
 	case SENSOR_CUSTOM_IOCTL_FW_UPDATE_PROGRAM:
 	{
 		custom_fw_update_rom_package rom_cmd;
@@ -2299,178 +2751,54 @@ static long sensor_ioctl(struct file *file,
 
 		return 0;
 	}
+	case SENSOR_CUSTOM_IOCTL_REG_SET:
+	{
+		register_setting reg;
+		if (copy_from_user(&reg, (const void __user *)arg, sizeof(register_setting)))
+			return -EFAULT;
+		printk("SENSOR_CUSTOM_IOCTL_REG_SET");
+		err = sensor_write_reg(info->i2c_client, reg.addr, reg.val);
+		if (err)
+			return err;
+		return 0;
+	}
+	case SENSOR_CUSTOM_IOCTL_REG_GET:
+	{
+		register_setting reg;
+		u16 val;
+		if (copy_from_user(&reg, (const void __user *)arg, sizeof(register_setting)))
+			return -EFAULT;
+		printk("SENSOR_CUSTOM_IOCTL_REG_GET");
+		err = sensor_read_reg(info->i2c_client, reg.addr, &val);
+		if (err)
+			return err;
+		reg.val = val;
+		if (copy_to_user((const void __user *)arg, &reg, sizeof(register_setting)))
+			return -EFAULT;
+		return 0;
+	}
 
-/*
-    case SENSOR_CUSTOM_IOCTL_SET_AE_METER_WINDOW:
-    {
-
-      custom_window_package  win;
-
-      struct sensor_reg_2 AE_meter_window[10] =
-      {
-        {SENSOR_BYTE_WRITE, 0x5680, 0x00}, //  [3:0] = XStart [11:8]
-        {SENSOR_BYTE_WRITE, 0x5681, 0x00}, //  [7:0] = XStart [7:0]
-        {SENSOR_BYTE_WRITE, 0x5682, 0x00}, //  [2:0] = YStart [10:8]
-        {SENSOR_BYTE_WRITE, 0x5683, 0x00}, //  [7:0] = YStart [7:0]
-        {SENSOR_BYTE_WRITE, 0x5684, 0x10}, //  [3:0] = XEnd [11:8]
-        {SENSOR_BYTE_WRITE, 0x5685, 0xA0}, //  [7:0] = XEnd [7:0]
-        {SENSOR_BYTE_WRITE, 0x5686, 0x0C}, //  [2:0] = YEnd [10:8]
-        {SENSOR_BYTE_WRITE, 0x5687, 0x78}, //  [7:0] = YEnd [7:0]
-        {SENSOR_MASK_BYTE_WRITE, 0x501D, 0x00, 0x10}, //  [4] = Enable Manual
-        {SENSOR_TABLE_END, 0x0000}
-      };
-
-      printk("SENSOR_CUSTOM_IOCTL_SET_AE_METER_WINDOW\n");
-      if (copy_from_user(&win,(const void __user *)arg, sizeof(custom_window_package)))
-      {
-        return -EFAULT;
-      }
-
-      printk("SET_AE_METER_WINDOW as (%d,%d)-(%d,%d)\n",win.XStart,win.YStart,win.XEnd,win.YEnd);
-
-      if (win.XStart == 0 && win.YStart == 0 && win.XEnd==0 && win.YEnd==0)
-      {
-      }
-      else
-      {
-        AE_meter_window[0].val= (win.XStart & 0xF00) >> 8;
-        AE_meter_window[1].val= (win.XStart & 0xFF);
-        AE_meter_window[2].val= (win.YStart & 0x700) >> 8;
-        AE_meter_window[3].val= (win.YStart & 0xFF);
-        AE_meter_window[4].val= (win.XEnd & 0xF00) >> 8;
-        AE_meter_window[5].val= (win.XEnd & 0xFF);
-        AE_meter_window[6].val= (win.YEnd & 0x700) >> 8;
-        AE_meter_window[7].val= (win.YEnd & 0xFF);
-        AE_meter_window[8].val= 0x10;
-      }
-      err=sensor_write_table_2(info->i2c_client, AE_meter_window);
-
-      if (err)
-        return err;
-
-      return 0;
-    }
-//0715Bill
-    case SENSOR_CUSTOM_IOCTL_SET_AF_WINDOW_POS:
-    {
-
-      custom_af_pos_package  af_pos;
-
-      u16 CMD_ACK = 1;
-      u16 CMD_MAIN = 1;
-      u16 i = 1;
-      struct sensor_reg AF_window_pos[11] =
-      {
-        {0x3024, 0x28}, //  X 0~80 (0x00~0x50)
-        {SENSOR_WAIT_MS, 0x0A},
-        {0x3025, 0x1e}, //  Y 0~60 (0x00~0x3c)
-        {SENSOR_WAIT_MS, 0x0A},
-        {0x3026, 0x08}, //  W
-        {SENSOR_WAIT_MS, 0x0A},
-        {0x3027, 0x08}, //  H
-        {SENSOR_WAIT_MS, 0x0A},
-        {0x3023, 0x01}, //  CMD_ACK
-        {0x3022, 0x90}, //  CMD_MAIN
-        {SENSOR_TABLE_END, 0x0000}
-      };
-      struct sensor_reg Launch_Custom_AF[3] =
-      {
-        {0x3023, 0x01}, //  CMD_ACK
-        {0x3022, 0x9f}, //  CMD_MAIN
-        {SENSOR_TABLE_END, 0x0000},
-      };
-
-      printk("SENSOR_CUSTOM_IOCTL_SET_AF_WINDOW_POS\n");
-      if (copy_from_user(&af_pos,(const void __user *)arg, sizeof(custom_af_pos_package)))
-      {
-        return -EFAULT;
-      }
-
-      printk("SET_AF_WINDOW_POS as x:(%d), y:(%d)\n", af_pos.focusX, af_pos.focusY);
-      if (af_pos.focusX == -1 && af_pos.focusY == -1)
-      {
-      }
-      else
-      {
-        af_pos.focusX = af_pos.focusX*2/25;//1000:80
-        af_pos.focusY = af_pos.focusY*3/50;// 1000:60
-        if (af_pos.focusX < 0x08)
-		af_pos.focusX = 0x08;
-        if (af_pos.focusX > 0x48)
-		af_pos.focusX = 0x48;
-        if (af_pos.focusY < 0x08)
-		af_pos.focusY = 0x08;
-        if (af_pos.focusY > 0x34)
-		af_pos.focusY = 0x34;
-        AF_window_pos[0].val= (af_pos.focusX & 0xff);
-        AF_window_pos[2].val= (af_pos.focusY & 0xff);
-        //AF_window_pos[2].val= (win.YStart & 0x700) >> 8;
-        //AF_window_pos[3].val= (win.YStart & 0xFF);
-        //AF_window_pos[4].val= (win.XEnd & 0xF00) >> 8;
-        //AF_window_pos[5].val= (win.XEnd & 0xFF);
-        //AF_window_pos[6].val= (win.YEnd & 0x700) >> 8;
-        printk("Transform: SET_AF_WINDOW_POS as x:(%d:%d), y:(%d:%d)\n ", af_pos.focusX, AF_window_pos[0].val, af_pos.focusY, AF_window_pos[2].val);
-      }
-      err=sensor_write_table(info->i2c_client, AF_window_pos);
-      for (i=0; i<20; i++) { //wait for ACK = 0
-            sensor_read_reg(info->i2c_client, 0x3023, &CMD_ACK);
-            sensor_read_reg(info->i2c_client, 0x3022, &CMD_MAIN);
-            if (!CMD_ACK) {
-              //NvOdmImagerI2cRead(&pContext->I2c, 0x3022, &MAIN);
-              //NvOsDebugPrintf("MAIN is %d\n", MAIN);
-              //pr_info("ACK is %d\n", MAIN_ACK);
-              //sensor_read_reg(info->i2c_client, 0x3029, &FW_Status);
-              printk("CMD_ACK is %x\n", CMD_ACK);
-	printk("CMD_MAIN is %x\n", CMD_MAIN);
-              break;
-            }
-            msleep(10);
-            printk("CMD_ACK is 0x%x CMD_MAIN is 0x%x\n", CMD_ACK, CMD_MAIN);
-      }
-      err=sensor_write_table(info->i2c_client, Launch_Custom_AF);
-      for (i=0; i<20; i++) { //wait for ACK = 0
-            sensor_read_reg(info->i2c_client, 0x3023, &CMD_ACK);
-            sensor_read_reg(info->i2c_client, 0x3022, &CMD_MAIN);
-            if (!CMD_ACK) {
-              //NvOdmImagerI2cRead(&pContext->I2c, 0x3022, &MAIN);
-              //NvOsDebugPrintf("MAIN is %d\n", MAIN);
-              //pr_info("ACK is %d\n", MAIN_ACK);
-              //sensor_read_reg(info->i2c_client, 0x3029, &FW_Status);
-              printk("CMD_ACK is %x\n", CMD_ACK);
-	printk("CMD_MAIN is %x\n", CMD_MAIN);
-              break;
-            }
-            msleep(10);
-            printk("CMD_ACK is 0x%x CMD_MAIN is 0x%x\n", CMD_ACK, CMD_MAIN);
-      }
-
-      if (err)
-        return err;
-
-      return 0;
-    }
-*/
-    default:
-      return -EINVAL;
-    }
-    return 0;
+	default:
+		return -EINVAL;
+	}
+	return 0;
 }
 
 static int sensor_open(struct inode *inode, struct file *file)
 {
 	int ret;
 
-	pr_info("yuv %s\n",__func__);
+	pr_info("yuv %s and sensor_opened is %d, calibrating=%d\n",__func__, sensor_opened, calibrating);
 	file->private_data = info;
-	if (info->pdata && info->pdata->power_on)
+	if (info->pdata && info->pdata->power_on && !sensor_opened) {
 		ret = info->pdata->power_on();
-	if (ret == 0) {
-		sensor_opened = true;
-		first_open = true;
+		if (ret == 0) {
+			sensor_opened = true;
+			first_open = true;
+		} else
+			sensor_opened = false;
+		msleep(20);
 	}
-	else
-		sensor_opened = false;
-	msleep(20);
 	return 0;
 }
 
@@ -2478,17 +2806,19 @@ int iCatch7002a_sensor_release(struct inode *inode, struct file *file)
 {
 	printk("%s()++\n", __FUNCTION__);
 	if (sensor_opened == true) {
-		if (info->pdata && info->pdata->power_off) {
+		if (info->pdata && info->pdata->power_off && calibrating==0) {
 			info->pdata->power_off();
 			sensor_opened = false;
 		}
 	} else
 		printk("%s No action. Power is already off.\n", __FUNCTION__);
+	printk("%s and calibrating is %d\n", __FUNCTION__, calibrating);
 	file->private_data = NULL;
 #ifdef CAM_TWO_MODE
-  g_initialized_1280_960=0;
-  g_initialized_1080p=0;
+	g_initialized_1280_960=0;
+	g_initialized_1080p=0;
 #endif
+	msleep(300);
 	printk("%s()--\n", __FUNCTION__);
 	return 0;
 }
@@ -2517,13 +2847,15 @@ static ssize_t i7002a_switch_name(struct switch_dev *sdev, char *buf)
 		return sprintf(buf, "TF300TG-%06X\n", version_num_in_isp);
 	else if (tegra3_get_project_id() == TEGRA3_PROJECT_TF300TL)
 		return sprintf(buf, "TF300TL-%06X\n", version_num_in_isp);
+	else if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)
+		return sprintf(buf, "TF500T-%06X\n", version_num_in_isp);
 	else
 		return sprintf(buf, "Unknown-%06X\n", version_num_in_isp);
 }
 
 static ssize_t i7002a_switch_state(struct switch_dev *sdev, char *buf)
 {
-    return sprintf(buf, "%d\n", fw_update_status);
+	return sprintf(buf, "%d\n", fw_update_status);
 }
 
 static int sensor_probe(struct i2c_client *client,
@@ -2541,7 +2873,7 @@ static int sensor_probe(struct i2c_client *client,
 	}
 
 #ifndef _CAM_SENSOR_DETECT_
-  err = misc_register(&sensor_device);
+	err = misc_register(&sensor_device);
 	if (err) {
 		pr_err("yuv_sensor : Unable to register misc device!\n");
 		kfree(info);
@@ -2566,8 +2898,8 @@ static int sensor_probe(struct i2c_client *client,
 		mi1040_output_format = tmp;
 		printk("mi1040 output format= %d\n", mi1040_output_format);
 	}
-	version_num_in_isp = get_fw_version_in_isp();
 
+	version_num_in_isp = get_fw_version_in_isp();
 
 	i7002a_sdev.name = I7002A_SDEV_NAME;
 	i7002a_sdev.print_name = i7002a_switch_name;
@@ -2577,8 +2909,9 @@ static int sensor_probe(struct i2c_client *client,
 	}
 	switch_set_state(&i7002a_sdev, 0);
 
-	pr_info("i7002a check version number: 0x%x\n", version_num_in_isp);
 	pr_info("i7002a front_chip_id: 0x%X\n", front_chip_id);
+	pr_info("i7002a check version number: 0x%06X\n", version_num_in_isp);
+	pr_info("i7002a fw_front_type_in_isp: 0x%02X\n", fw_front_type_in_isp);
 
 	i7002a_isp_on(0);
 
@@ -2658,18 +2991,15 @@ int __init iCatch7002a_late_init(void)
 
 	ret = sensor_read_reg(info->i2c_client, 0x300A, &temp);
 	if (ret)
-  {
-	ret = sensor_read_reg(info->i2c_client, 0x300A, &temp);
-  }
+		ret = sensor_read_reg(info->i2c_client, 0x300A, &temp);
 
-  if (ret)
-    printk("failed to detect iCatch7002a ISP!\n");
-  else
-  {
-    printk("read ID as 0x%x",temp);
-    misc_register(&sensor_device);
-    tegra_camera_set_caminfo(0,1);
-  }
+	if (ret)
+		printk("failed to detect iCatch7002a ISP!\n");
+	else {
+		printk("read ID as 0x%x",temp);
+		misc_register(&sensor_device);
+		tegra_camera_set_caminfo(0,1);
+	}
 	clk_disable(csi_clk);
 	clk_disable(csus_clk);
 	clk_disable(sensor_clk);
@@ -2696,7 +3026,8 @@ static int __init sensor_init(void)
 {
 	if ((tegra3_get_project_id() == TEGRA3_PROJECT_TF300T) ||
 			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG) ||
-			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TL)) {
+			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TL) ||
+			(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)) {
 		pr_info("i7002a %s\n",__func__);
 		return i2c_add_driver(&sensor_i2c_driver);
 	}
@@ -2707,7 +3038,8 @@ static void __exit sensor_exit(void)
 {
 	if ((tegra3_get_project_id() == TEGRA3_PROJECT_TF300T) ||
 			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG) ||
-			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TL)) {
+			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TL) ||
+			(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)) {
 		pr_info("i7002a %s\n",__func__);
 		i2c_del_driver(&sensor_i2c_driver);
 	}
@@ -2769,14 +3101,14 @@ static ssize_t dbg_i7002a_fw_in_isp_read(struct file *file, char __user *buf, si
 
 	/* [Project id]-[FrontSensor]-[FW Version]*/
 	if (front_chip_id == SENSOR_ID_OV2720) {
-		len = snprintf(bp, dlen, "%02X-%02X-%06X\n", tegra3_get_project_id(), 1, version_num_in_isp);
+		len = snprintf(bp, dlen, "%02X-%02X-%06X-%02X\n", tegra3_get_project_id(), 1, version_num_in_isp, fw_front_type_in_isp);
 		tot += len; bp += len; dlen -= len;
 	} else if (front_chip_id == SENSOR_ID_MI1040){
 		/* mi1040 chip_id= 0x2481 */
-		len = snprintf(bp, dlen, "%02X-%02X-%06X\n", tegra3_get_project_id(), 2, version_num_in_isp);
+		len = snprintf(bp, dlen, "%02X-%02X-%06X-%02X\n", tegra3_get_project_id(), 2, version_num_in_isp, fw_front_type_in_isp);
 		tot += len; bp += len; dlen -= len;
 	} else {
-		len = snprintf(bp, dlen, "%02X-%02X-%06X\n", tegra3_get_project_id(), 0, version_num_in_isp);
+		len = snprintf(bp, dlen, "%02X-%02X-%06X-%02X\n", tegra3_get_project_id(), 0, version_num_in_isp, fw_front_type_in_isp);
 		tot += len; bp += len; dlen -= len;
 	}
 
@@ -2830,6 +3162,178 @@ static ssize_t dbg_i7002a_page_dump_read(struct file *file, char __user *buf, si
 			tot += len; bp += len; dlen -= len;
 		}
 	}
+
+	i7002a_isp_on(0);
+
+	if (copy_to_user(buf, debug_buf, tot))
+		return -EFAULT;
+	if (tot < 0)
+		return 0;
+	*ppos += tot;	/* increase offset */
+	return tot;
+}
+
+static ssize_t dbg_i7002a_bin_dump_open(struct inode *inode, struct file *file)
+{
+	file->private_data = inode->i_private;
+	return 0;
+}
+
+static ssize_t dbg_i7002a_bin_dump_read(struct file *file, char __user *buf, size_t count,
+				loff_t *ppos)
+{
+	int len, tot = 0;
+	char debug_buf[1024];
+	int dlen = sizeof(debug_buf);
+	char *bp = debug_buf;
+	int ret = 0;
+	char* mybin;
+	struct file *fp_bin_dump = NULL;
+	mm_segment_t old_fs;
+	loff_t offset = 0;
+
+	printk("%s: buf=%p, count=%d, ppos=%p; *ppos= %d\n", __FUNCTION__, buf, count, ppos, *ppos);
+
+	if (*ppos)
+		return 0;	/* the end */
+
+	i7002a_isp_on(1);
+
+	//I2CDataWrite(0x70c4,0x00);
+	//I2CDataWrite(0x70c5,0x00);
+	sensor_write_reg(info->i2c_client, 0x70c4,0x00);
+	sensor_write_reg(info->i2c_client, 0x70c5,0x00);
+
+	ret = I2C_SPIInit();
+	if (ret) {
+		printk("%s: get nothing. ret= %d", __FUNCTION__, ret);
+		return -EFAULT;;
+	}
+
+	I2C_SPIFlashReadId();
+
+	if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+		mybin = kmalloc(1024*1024, GFP_KERNEL);
+		I2C_SPIFlashRead_DMA(0, 4096, mybin);
+	}
+	else {
+		mybin = kmalloc(512*1024, GFP_KERNEL);
+		I2C_SPIFlashRead_DMA(0, 2048, mybin);
+	}
+
+	i7002a_isp_on(0);
+
+	/* Dump to /data/bin_dump.bin */
+	fp_bin_dump = filp_open("/data/bin_dump.bin", O_RDWR | O_CREAT, S_IRUGO | S_IWUGO);
+	if ( IS_ERR_OR_NULL(fp_bin_dump) ){
+		filp_close(fp_bin_dump, NULL);
+		len = snprintf(bp, dlen, "%s: open %s fail\n", __FUNCTION__, "/data/bin_dump.bin");
+		tot += len; bp += len; dlen -= len;
+	}
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	offset = 0;
+
+	if (fp_bin_dump->f_op != NULL && fp_bin_dump->f_op->write != NULL){
+		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)
+			fp_bin_dump->f_op->write(fp_bin_dump, mybin, 1024*1024, &offset);
+		else
+			fp_bin_dump->f_op->write(fp_bin_dump, mybin, 512*1024, &offset);
+
+	}
+	else {
+		len = snprintf(bp, dlen, "%s: f_op might be null\n", __FUNCTION__);
+		tot += len; bp += len; dlen -= len;
+	}
+	set_fs(old_fs);
+	filp_close(fp_bin_dump, NULL);
+	kfree(mybin);
+
+	len = snprintf(bp, dlen, "%s: Dump Complete.\n", __FUNCTION__);
+	tot += len; bp += len; dlen -= len;
+
+	if (copy_to_user(buf, debug_buf, tot))
+		return -EFAULT;
+	if (tot < 0)
+		return 0;
+	*ppos += tot;	/* increase offset */
+	return tot;
+}
+
+static ssize_t dbg_i7002a_fw_header_dump_open(struct inode *inode, struct file *file)
+{
+	file->private_data = inode->i_private;
+	return 0;
+}
+
+#define DUMP_HEADER(mypage) do {	\
+		for(i = 0; i < 0x100; i++) {	\
+			if(i%16 == 0) {	\
+				len = snprintf(bp, dlen, "[%02X] ", i);	\
+				tot += len; bp += len; dlen -= len;	\
+			}	\
+			len = snprintf(bp, dlen, "%02X ", mypage[i]);	\
+			tot += len; bp += len; dlen -= len;	\
+			if(i%16 == 15) {	\
+				len = snprintf(bp, dlen, "\n");	\
+				tot += len; bp += len; dlen -= len;	\
+			}	\
+		}	\
+	} while (0)
+
+
+static ssize_t dbg_i7002a_fw_header_dump_read(struct file *file, char __user *buf, size_t count,
+				loff_t *ppos)
+{
+	int len = 0;
+	int tot = 0;
+	char debug_buf[3072];
+	int dlen = sizeof(debug_buf);
+	char *bp = debug_buf;
+	int i =0;
+	u8 fw1page[0x100];
+	u8 fw2page[0x100];
+	u8 overallpage[0x100];
+	int fw2_header_page_index, fw2_offset = 0;
+
+	printk("%s: buf=%p, count=%d, ppos=%p; *ppos= %d\n", __FUNCTION__, buf, count, ppos, *ppos);
+
+	if (*ppos)
+		return 0;	/* the end */
+
+	i7002a_isp_on(1);
+
+	/* dump fw1 header */
+	get_one_page_from_i7002a(0, fw1page);
+	len = snprintf(bp, dlen, "fw1: page[%d]:\n", 0);
+	tot += len; bp += len; dlen -= len;
+	DUMP_HEADER(fw1page);
+
+	msleep(40);
+
+	/* dump fw2 header */
+	fw2_offset = 16 +
+		((fw1page[3] << 24) | (fw1page[2] << 16) | (fw1page[1] << 8) | fw1page[0]) +
+		((fw1page[7] << 24) | (fw1page[6] << 16) | (fw1page[5] << 8) | fw1page[4]);
+	fw2_header_page_index = fw2_offset >> 8;
+	get_one_page_from_i7002a(fw2_header_page_index, fw2page);
+	len = snprintf(bp, dlen, "fw2: page[%d]:\n", fw2_header_page_index);
+	tot += len; bp += len; dlen -= len;
+	DUMP_HEADER(fw2page);
+
+	msleep(40);
+
+	/* dump overall header */
+	if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+		get_one_page_from_i7002a(4095, overallpage);
+		len = snprintf(bp, dlen, "Overall: page[%d]:\n", 4095);
+	}
+	else {
+		get_one_page_from_i7002a(2047, overallpage);
+		len = snprintf(bp, dlen, "Overall: page[%d]:\n", 2047);
+	}
+	tot += len; bp += len; dlen -= len;
+	DUMP_HEADER(overallpage);
 
 	i7002a_isp_on(0);
 
@@ -2939,70 +3443,58 @@ static int dbg_fw_update_write(struct file *file, char __user *buf, size_t count
 static int i2c_set_write(struct file *file, char __user *buf, size_t count,
 				loff_t *ppos)
 {
-  int len;
-  int arg[2];
-  //int gpio, set;
+	int len;
+	int arg[2];
+	//int gpio, set;
 
-  //char gpioname[8];
+	//char gpioname[8];
 
-//  printk("%s: buf=%p, count=%d, ppos=%p\n", __FUNCTION__, buf, count, ppos);
-  arg[0]=0;
+	// printk("%s: buf=%p, count=%d, ppos=%p\n", __FUNCTION__, buf, count, ppos);
+	arg[0]=0;
 
 	if (*ppos)
 		return 0;	/* the end */
 
-//+ parsing......
-  len=(count > DBG_TXT_BUF_SIZE-1)?(DBG_TXT_BUF_SIZE-1):(count);
-  if (copy_from_user(debugTxtBuf,buf,len))
+	//+ parsing......
+	len=(count > DBG_TXT_BUF_SIZE-1)?(DBG_TXT_BUF_SIZE-1):(count);
+	if (copy_from_user(debugTxtBuf,buf,len))
 		return -EFAULT;
 
-  debugTxtBuf[len]=0; //add string end
+	debugTxtBuf[len]=0; //add string end
 
-  sscanf(debugTxtBuf, "%x %x", &arg[0], &arg[1]);
-  printk("argument is arg1=0x%x arg2=0x%x\n",arg[0], arg[1]);
+	sscanf(debugTxtBuf, "%x %x", &arg[0], &arg[1]);
+	printk("argument is arg1=0x%x arg2=0x%x\n",arg[0], arg[1]);
 
 
-  *ppos=len;
-  sensor_write_reg(info->i2c_client, arg[0], arg[1]);
+	*ppos=len;
+	sensor_write_reg(info->i2c_client, arg[0], arg[1]);
 
 	return len;	/* the end */
 }
-/*
-static ssize_t i2c_config_read(struct file *file, char __user *buf, size_t count,
-				loff_t *ppos)
-{
-
-}
-*/
 
 static int i2c_get_write(struct file *file, char __user *buf, size_t count,
 				loff_t *ppos)
 {
-  int len;
-  int arg = 0;
-  //int gpio, set;
-
-  //char gpioname[8];
-
-//  printk("%s: buf=%p, count=%d, ppos=%p\n", __FUNCTION__, buf, count, ppos);
-
+	int len;
+	int arg = 0;
+	//int gpio, set;
+	//char gpioname[8];
+	// printk("%s: buf=%p, count=%d, ppos=%p\n", __FUNCTION__, buf, count, ppos);
 
 	if (*ppos)
 		return 0;	/* the end */
 
-//+ parsing......
-  len=(count > DBG_TXT_BUF_SIZE-1)?(DBG_TXT_BUF_SIZE-1):(count);
-  if (copy_from_user(debugTxtBuf,buf,len))
+	//+ parsing......
+	len=(count > DBG_TXT_BUF_SIZE-1)?(DBG_TXT_BUF_SIZE-1):(count);
+	if (copy_from_user(debugTxtBuf,buf,len))
 		return -EFAULT;
 
-  debugTxtBuf[len]=0; //add string end
+	debugTxtBuf[len]=0; //add string end
+	sscanf(debugTxtBuf, "%x", &arg);
+	printk("argument is arg=0x%x\n",arg);
 
-  sscanf(debugTxtBuf, "%x", &arg);
-  printk("argument is arg=0x%x\n",arg);
-
-
-  *ppos=len;
-  sensor_read_reg(info->i2c_client, arg, &i2c_get_value);
+	*ppos=len;
+	sensor_read_reg(info->i2c_client, arg, &i2c_get_value);
 
 	return len;	/* the end */
 }
@@ -3013,15 +3505,14 @@ static ssize_t i2c_get_read(struct file *file, char __user *buf, size_t count,
 	int len = 0;
 	char *bp = debugTxtBuf;
 
-       if (*ppos)
+	if (*ppos)
 		return 0;	/* the end */
 	len = snprintf(bp, DBG_TXT_BUF_SIZE, "the value is 0x%x\n", i2c_get_value);
 
 	if (copy_to_user(buf, debugTxtBuf, len))
 		return -EFAULT;
-       *ppos += len;
+	*ppos += len;
 	return len;
-
 }
 
 static ssize_t dbg_iCatch7002a_vga_status_open(struct inode *inode, struct file *file)
@@ -3102,7 +3593,7 @@ static ssize_t dbg_iCatch7002a_vga_status_read(struct file *file, char __user *b
 	msleep(10);
 	sensor_read_reg(info->i2c_client, 0x9111, &tmp);
 	//printk("0x%x\n", tmp);
-	chip_id = chip_id  | (tmp & 0xFF);
+	chip_id = chip_id | (tmp & 0xFF);
 
 	if (chip_id == SENSOR_ID_OV2720) {
 		len = snprintf(bp, dlen, "1\n");
@@ -3120,7 +3611,7 @@ static ssize_t dbg_iCatch7002a_vga_status_read(struct file *file, char __user *b
 
 		sensor_write_table(info->i2c_client, query_mi1040_id_lsb_seq);
 		sensor_read_reg(info->i2c_client, 0x9111, &tmp);
-		chip_id = chip_id  | (tmp & 0xFF);
+		chip_id = chip_id | (tmp & 0xFF);
 
 		printk("0x%x\n", chip_id);
 
@@ -3151,7 +3642,6 @@ static ssize_t dbg_iCatch7002a_vga_status_read(struct file *file, char __user *b
 	*ppos += tot;	/* increase offset */
 	return tot;
 }
-
 
 static ssize_t dbg_iCatch7002a_camera_status_open(struct inode *inode, struct file *file)
 {
@@ -3224,7 +3714,7 @@ static ssize_t dbg_iCatch7002a_camera_status_read(struct file *file, char __user
 	msleep(10);
 	sensor_read_reg(info->i2c_client, 0x9211, &tmp);
 	// printk("0x%x\n", tmp);
-	chip_id = chip_id  | (tmp & 0xFF);
+	chip_id = chip_id | (tmp & 0xFF);
 
 	if (chip_id == SENSOR_ID_IMX175) {
 		len = snprintf(bp, dlen, "1\n");
@@ -3259,53 +3749,52 @@ static ssize_t dbg_iCatch7002a_camera_status_read(struct file *file, char __user
 static int dbg_iCatch7002a_chip_power_write(struct file *file, char __user *buf, size_t count,
 				loff_t *ppos)
 {
-  int len;
-  int arg;
-  //int gpio, set;
-
-  //char gpioname[8];
-
-//  printk("%s: buf=%p, count=%d, ppos=%p\n", __FUNCTION__, buf, count, ppos);
-  arg=0;
+	int len;
+	int arg;
+	//int gpio, set;
+	//char gpioname[8];
+	// printk("%s: buf=%p, count=%d, ppos=%p\n", __FUNCTION__, buf, count, ppos);
+	arg=0;
 
 	if (*ppos)
 		return 0;	/* the end */
 
-//+ parsing......
-  len=(count > DBG_TXT_BUF_SIZE-1)?(DBG_TXT_BUF_SIZE-1):(count);
-  if (copy_from_user(debugTxtBuf,buf,len))
+	//+ parsing......
+	len=(count > DBG_TXT_BUF_SIZE-1)?(DBG_TXT_BUF_SIZE-1):(count);
+	if (copy_from_user(debugTxtBuf,buf,len))
 		return -EFAULT;
 
-  debugTxtBuf[len]=0; //add string end
+	debugTxtBuf[len]=0; //add string end
+	sscanf(debugTxtBuf, "%x", &arg);
+	printk("argument is arg=0x%x\n",arg);
 
-  sscanf(debugTxtBuf, "%x", &arg);
-  printk("argument is arg=0x%x\n",arg);
-
-
-  *ppos=len;
-  //sensor_write_reg(info->i2c_client, arg[0], arg[1]);
-  if (arg==0)  //power off
-  {
-	if (info->pdata && info->pdata->power_off) {
-			info->pdata->power_off();
-	} else {
-		//len = snprintf(bp, dlen, "iCatch7002a info isn't enough for power_off.\n");
-		//tot += len; bp += len; dlen -= len;
+	*ppos=len;
+	//sensor_write_reg(info->i2c_client, arg[0], arg[1]);
+	if (arg==0) {
+		//power off
+		if (sensor_opened==true) {
+			if (info->pdata && info->pdata->power_off) {
+				tegra_camera_mclk_on_off(0);
+				info->pdata->power_off();
+				sensor_opened=false;
+				printk("%s:power off\n", __func__);
+			}
+		}
 	}
-  }
-  if (arg==1) //power on
-  {
-	tegra_camera_mclk_on_off(1);
-	msleep(10);
-  	if (info->pdata && info->pdata->power_on)
-			info->pdata->power_on();
-	else {
-		//len = snprintf(bp, dlen, "iCatch7002a info isn't enough for power_on.\n");
-		//tot += len; bp += len; dlen -= len;
+	if (arg==1) {
+		//power on
+		if (sensor_opened==false) {
+			if (info->pdata && info->pdata->power_on) {
+				tegra_camera_mclk_on_off(1);
+				info->pdata->power_on();
+				sensor_opened=true;
+				msleep(100);
+				printk("%s:power on\n", __func__);
+			}
 		}
 		//msleep(10);
 		//tegra_camera_mclk_on_off(1);
-  }
+	}
 
 	return len;	/* the end */
 }
@@ -3318,6 +3807,11 @@ static const struct file_operations dbg_i7002a_fw_in_isp_fops = {
 static const struct file_operations dbg_i7002a_page_dump_fops = {
 	.open		= dbg_i7002a_page_dump_open,
 	.read		= dbg_i7002a_page_dump_read,
+};
+
+static const struct file_operations dbg_i7002a_bin_dump_fops = {
+	.open		= dbg_i7002a_bin_dump_open,
+	.read		= dbg_i7002a_bin_dump_read,
 };
 
 static const struct file_operations dbg_fw_update_fops = {
@@ -3352,6 +3846,11 @@ static const struct file_operations dbg_iCatch7002a_camera_status_fops = {
 	.read		= dbg_iCatch7002a_camera_status_read,
 };
 
+static const struct file_operations dbg_i7002a_fw_header_dump_fops = {
+	.open		= dbg_i7002a_fw_header_dump_open,
+	.read		= dbg_i7002a_fw_header_dump_read,
+};
+
 static const struct file_operations iCatch7002a_power_fops = {
 	.open		= dbg_iCatch7002a_chip_power_open,
 	//.read		= i2c_get_read,
@@ -3360,7 +3859,7 @@ static const struct file_operations iCatch7002a_power_fops = {
 	.write = dbg_iCatch7002a_chip_power_write,
 };static int __init tegra_i2c_debuginit(void)
 {
-       struct dentry *dent = debugfs_create_dir("i7002a", NULL);
+	struct dentry *dent = debugfs_create_dir("i7002a", NULL);
 
 	(void) debugfs_create_file("fw_in_isp", S_IRUGO | S_IWUSR,
 					dent, NULL, &dbg_i7002a_fw_in_isp_fops);
@@ -3368,33 +3867,63 @@ static const struct file_operations iCatch7002a_power_fops = {
 	(void) debugfs_create_file("page_dump", S_IRUGO | S_IWUSR,
 					dent, NULL, &dbg_i7002a_page_dump_fops);
 
+	(void) debugfs_create_file("bin_dump", S_IRUGO | S_IWUSR,
+					dent, NULL, &dbg_i7002a_bin_dump_fops);
+
+	(void) debugfs_create_file("fw_header_dump", S_IRUGO | S_IWUSR,
+					dent, NULL, &dbg_i7002a_fw_header_dump_fops);
+
 	(void) debugfs_create_file("fw_update", S_IRUGO | S_IWUSR,
 					dent, NULL, &dbg_fw_update_fops);
 
 	(void) debugfs_create_file("i2c_set", S_IRUGO | S_IWUSR,
 					dent, NULL, &i2c_set_fops);
+
 	(void) debugfs_create_file("i2c_get", S_IRUGO | S_IWUSR,
 					dent, NULL, &i2c_get_fops);
 	(void) debugfs_create_file("camera_status", S_IRUGO, dent, NULL, &dbg_iCatch7002a_camera_status_fops);
 	(void) debugfs_create_file("vga_status", S_IRUGO, dent, NULL, &dbg_iCatch7002a_vga_status_fops);
 	(void) debugfs_create_file("iCatch_chip_power", S_IRUGO | S_IWUSR, dent, NULL, &iCatch7002a_power_fops);
+
+	debugfs_create_u32("capture_mode",S_IRUGO | S_IWUSR, dent, &force_capture_mode);
+
 #ifdef ICATCH7002A_DELAY_TEST
-              if (debugfs_create_u32("iCatch7002a_delay", S_IRUGO | S_IWUSR, dent, &iCatch7002a_init_delay)
+	if (debugfs_create_u32("iCatch7002a_delay", S_IRUGO | S_IWUSR, dent, &iCatch7002a_init_delay)
 		== NULL) {
-                printk(KERN_ERR "%s(%d): debugfs_create_u32: debug fail\n",
-		__FILE__, __LINE__);
-                return -1;
-              }
-              if (debugfs_create_u32("touch_focus_enable", S_IRUGO | S_IWUSR, dent, &touch_focus_enable)
+		printk(KERN_ERR "%s(%d): debugfs_create_u32: debug fail\n",
+			__FILE__, __LINE__);
+		return -1;
+	}
+	if (debugfs_create_u32("iCatch7002a_preview_delay", S_IRUGO | S_IWUSR, dent, &iCatch7002a_preview_delay)
 		== NULL) {
-                printk(KERN_ERR "%s(%d): debugfs_create_u32: debug fail\n",
-		__FILE__, __LINE__);
-                return -1;
-              }
+		printk(KERN_ERR "%s(%d): debugfs_create_u32: debug fail\n",
+			__FILE__, __LINE__);
+		return -1;
+	}
+	if (debugfs_create_u32("touch_focus_enable", S_IRUGO | S_IWUSR, dent, &touch_focus_enable)
+		== NULL) {
+		printk(KERN_ERR "%s(%d): debugfs_create_u32: debug fail\n",
+			__FILE__, __LINE__);
+		return -1;
+	}
+	if (factory_mode==2) {
+		if (debugfs_create_u32("is_calibration", 0777, dent, &is_calibration)
+			== NULL) {
+			printk(KERN_ERR "%s(%d): debugfs_create_u32: debug fail\n",
+				__FILE__, __LINE__);
+			return -1;
+		}
+		if (debugfs_create_u32("calibrating", 0777, dent, &calibrating)
+			== NULL) {
+			printk(KERN_ERR "%s(%d): debugfs_create_u32: debug fail\n",
+				__FILE__, __LINE__);
+			return -1;
+		}
+	}
 #endif
-             debugfs_create_u32("page_index",S_IRUGO | S_IWUSR, dent, &dbg_i7002a_page_index);
+	debugfs_create_u32("page_index",S_IRUGO | S_IWUSR, dent, &dbg_i7002a_page_index);
 #ifdef CAM_TWO_MODE
-             debugfs_create_u32("div",S_IRUGO | S_IWUSR, dent, &g_div);
+	debugfs_create_u32("div",S_IRUGO | S_IWUSR, dent, &g_div);
 	return 0;
 #endif
 }

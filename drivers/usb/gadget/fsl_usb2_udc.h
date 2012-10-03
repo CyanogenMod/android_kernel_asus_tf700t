@@ -405,7 +405,9 @@ struct usb_sys_interface {
 #define  USB_MODE_CTRL_MODE_IDLE              0x00000000
 #define  USB_MODE_CTRL_MODE_DEVICE            0x00000002
 #define  USB_MODE_CTRL_MODE_HOST              0x00000003
+#define  USB_MODE_CTRL_MODE_MASK              0x00000003
 #define  USB_MODE_CTRL_MODE_RSV               0x00000001
+#define  USB_MODE_ES                          0x00000004 /* Endian Select */
 #define  USB_MODE_SETUP_LOCK_OFF              0x00000008
 #define  USB_MODE_STREAM_DISABLE              0x00000010
 /* Endpoint Flush Register */
@@ -604,6 +606,7 @@ struct fsl_ep {
 struct fsl_udc {
 	struct usb_gadget gadget;
 	struct usb_gadget_driver *driver;
+	struct fsl_usb2_platform_data *pdata;
 	struct completion *done;	/* to make sure release() is done */
 	struct fsl_ep *eps;
 	unsigned int max_ep;
@@ -616,6 +619,8 @@ struct fsl_udc {
 	unsigned vbus_active:1;
 	unsigned stopped:1;
 	unsigned remote_wakeup:1;
+	unsigned big_endian_desc:1;
+	unsigned selfpowered:1;
 
 	struct ep_queue_head *ep_qh;	/* Endpoints Queue-Head */
 	struct fsl_req *status_req;	/* ep0 status request */
@@ -635,7 +640,9 @@ struct fsl_udc {
 	struct delayed_work work;	/* delayed work for charger detection */
 	struct regulator *vbus_regulator;	/* regulator for drawing VBUS */
 	u32 current_limit;
-	struct work_struct charger_work; /* work for settting regulator current limit */
+	struct work_struct charger_work; /* work for setting regulator current limit */
+	struct work_struct boost_cpufreq_work; /* work for boosting cpu frequency */
+	struct work_struct irq_work; /* irq work for controlling the usb power*/
 };
 
 /*-------------------------------------------------------------------------*/
@@ -720,6 +727,8 @@ void fsl_udc_clk_resume(bool is_dpd);
 void fsl_udc_clk_enable(void);
 void fsl_udc_clk_disable(void);
 bool fsl_udc_charger_detect(void);
+void fsl_udc_dtd_prepare(void);
+void fsl_udc_ep_barrier(void);
 #else
 static inline int fsl_udc_clk_init(struct platform_device *pdev)
 {
@@ -746,6 +755,12 @@ void fsl_udc_clk_disable(void)
 static inline bool fsl_udc_charger_detect(void)
 {
 	return false;
+}
+void fsl_udc_dtd_prepare(void)
+{
+}
+void fsl_udc_ep_barrier(void)
+{
 }
 #endif
 

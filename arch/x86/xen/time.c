@@ -168,9 +168,10 @@ cycle_t xen_clocksource_read(void)
         struct pvclock_vcpu_time_info *src;
 	cycle_t ret;
 
-	src = &get_cpu_var(xen_vcpu)->time;
+	preempt_disable_notrace();
+	src = &__get_cpu_var(xen_vcpu)->time;
 	ret = pvclock_clocksource_read(src);
-	put_cpu_var(xen_vcpu);
+	preempt_enable_notrace();
 	return ret;
 }
 
@@ -435,11 +436,11 @@ void xen_timer_resume(void)
 	}
 }
 
-static const struct pv_time_ops xen_time_ops __initdata = {
+static const struct pv_time_ops xen_time_ops __initconst = {
 	.sched_clock = xen_clocksource_read,
 };
 
-static __init void xen_time_init(void)
+static void __init xen_time_init(void)
 {
 	int cpu = smp_processor_id();
 	struct timespec tp;
@@ -464,7 +465,7 @@ static __init void xen_time_init(void)
 	xen_setup_cpu_clockevents();
 }
 
-__init void xen_init_time_ops(void)
+void __init xen_init_time_ops(void)
 {
 	pv_time_ops = xen_time_ops;
 
@@ -486,7 +487,7 @@ static void xen_hvm_setup_cpu_clockevents(void)
 	xen_setup_cpu_clockevents();
 }
 
-__init void xen_hvm_init_time_ops(void)
+void __init xen_hvm_init_time_ops(void)
 {
 	/* vector callback is needed otherwise we cannot receive interrupts
 	 * on cpu > 0 and at this point we don't know how many cpus are

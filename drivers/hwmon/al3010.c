@@ -47,8 +47,8 @@
 #define AL3010_IOCTL_START_NORMAL 1
 #define AL3010_IOCTL_END 0
 
-#define START_NORMAL	(HZ)
-#define START_HEAVY	(HZ)
+#define START_NORMAL    (HZ)
+#define START_HEAVY     (HZ)
 
 #define CAL_ALS_PATH "/data/lightsensor/AL3010_Config.ini"
 
@@ -66,9 +66,9 @@ static struct workqueue_struct *sensor_work_queue;
 struct i2c_client *al3010_client;
 
 static struct timeval t_first_poll_time;
-static bool light_sensor_ready = true;
+static bool light_sensor_ready = false;
 static bool catch_first_poll_time = false;
-static int time_for_sensor_ready = 3000; //milisecond
+static int time_for_sensor_ready = 100; //milisecond
 
 static u8 al3010_reg[AL3010_NUM_CACHABLE_REGS] = 
 	{0x00,0x01,0x0c,0x0d,0x10,0x1a,0x1b,0x1c,0x1d};
@@ -388,8 +388,8 @@ static ssize_t al3010_show_revise_lux(struct device *dev,
 
 	//+++ wait al3010 wake up
 	if(light_sensor_ready == false){
-		int tmp_lux = al3010_get_adc_value(client)*2;
-		if( tmp_lux > 30){
+		int tmp_lux = al3010_get_adc_value(client);
+		if( tmp_lux > 0){
 			light_sensor_ready = true;
 			catch_first_poll_time = true;
 		}else if(catch_first_poll_time == false){
@@ -477,7 +477,7 @@ static ssize_t al3010_show_default_lux(struct device *dev,
 {
 	struct i2c_client *client = to_i2c_client(dev);
 
-	al3010_later_init(client);
+        al3010_later_init(client);
     int show_lux_value = al3010_get_adc_value(client);
     int show_default_lux_value = (show_lux_value*calibration_regs)/default_calibration_regs;
 	return sprintf(buf, "%d\n", show_default_lux_value);

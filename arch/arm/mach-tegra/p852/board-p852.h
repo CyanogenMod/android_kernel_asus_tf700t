@@ -55,7 +55,6 @@
 #include "../pm.h"
 #include "../devices.h"
 #include "../gpio-names.h"
-#include "../wakeups-t2.h"
 
 
 #define P852_SKU3      0x030000UL
@@ -83,7 +82,6 @@ void p852_i2c_init(void);
 void p852_i2c_set_default_clock(int adapter, unsigned long clock);
 void p852_pinmux_init(void);
 void p852_gpio_init(void);
-void p852_power_off_init(void);
 
 void p852_sku1_init(void);
 void p852_sku1_b00_init(void);

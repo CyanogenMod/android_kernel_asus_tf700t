@@ -273,6 +273,8 @@
 #include <net/xfrm.h>
 #include <net/ip.h>
 #include <net/ip6_route.h>
+#include <net/ipv6.h>
+#include <net/transp_v6.h>
 #include <net/netdma.h>
 #include <net/sock.h>
 
@@ -1001,7 +1003,8 @@ new_segment:
 				/* We have some space in skb head. Superb! */
 				if (copy > skb_tailroom(skb))
 					copy = skb_tailroom(skb);
-				if ((err = skb_add_data(skb, from, copy)) != 0)
+				err = skb_add_data_nocache(sk, skb, from, copy);
+				if (err)
 					goto do_fault;
 			} else {
 				int merge = 0;
@@ -1044,8 +1047,8 @@ new_segment:
 
 				/* Time to copy data. We are close to
 				 * the end! */
-				err = skb_copy_to_page(sk, from, skb, page,
-						       off, copy);
+				err = skb_copy_to_page_nocache(sk, from, skb,
+							       page, off, copy);
 				if (err) {
 					/* If this page was new, give it to the
 					 * socket so it does not get leaked.
@@ -3232,7 +3235,7 @@ __setup("thash_entries=", set_thash_entries);
 void __init tcp_init(void)
 {
 	struct sk_buff *skb = NULL;
-	unsigned long nr_pages, limit;
+	unsigned long limit;
 	int i, max_share, cnt;
 	unsigned long jiffy = jiffies;
 
@@ -3289,13 +3292,7 @@ void __init tcp_init(void)
 	sysctl_tcp_max_orphans = cnt / 2;
 	sysctl_max_syn_backlog = max(128, cnt / 256);
 
-	/* Set the pressure threshold to be a fraction of global memory that
-	 * is up to 1/2 at 256 MB, decreasing toward zero with the amount of
-	 * memory, with a floor of 128 pages.
-	 */
-	nr_pages = totalram_pages - totalhigh_pages;
-	limit = min(nr_pages, 1UL<<(28-PAGE_SHIFT)) >> (20-PAGE_SHIFT);
-	limit = (limit * (nr_pages >> (20-PAGE_SHIFT))) >> (PAGE_SHIFT-11);
+	limit = nr_free_buffer_pages() / 8;
 	limit = max(limit, 128UL);
 	sysctl_tcp_mem[0] = limit / 4 * 3;
 	sysctl_tcp_mem[1] = limit;
@@ -3379,8 +3376,16 @@ restart:
 		sk_nulls_for_each(sk, node, &tcp_hashinfo.ehash[bucket].chain) {
 			struct inet_sock *inet = inet_sk(sk);
 
+			if (sysctl_ip_dynaddr && sk->sk_state == TCP_SYN_SENT)
+				continue;
+			if (sock_flag(sk, SOCK_DEAD))
+				continue;
+
 			if (family == AF_INET) {
 				__be32 s4 = inet->inet_rcv_saddr;
+				if (s4 == LOOPBACK4_IPV6)
+					continue;
+
 				if (in->s_addr != s4 &&
 				    !(in->s_addr == INADDR_ANY &&
 				      !tcp_is_local(net, s4)))
@@ -3392,18 +3397,17 @@ restart:
 				struct in6_addr *s6;
 				if (!inet->pinet6)
 					continue;
+
 				s6 = &inet->pinet6->rcv_saddr;
+				if (ipv6_addr_type(s6) == IPV6_ADDR_MAPPED)
+					continue;
+
 				if (!ipv6_addr_equal(in6, s6) &&
 				    !(ipv6_addr_equal(in6, &in6addr_any) &&
 				      !tcp_is_local6(net, s6)))
 				continue;
 			}
 #endif
-
-			if (sysctl_ip_dynaddr && sk->sk_state == TCP_SYN_SENT)
-				continue;
-			if (sock_flag(sk, SOCK_DEAD))
-				continue;
 
 			sock_hold(sk);
 			spin_unlock_bh(lock);

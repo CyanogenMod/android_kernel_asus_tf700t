@@ -70,9 +70,7 @@
 /* TODO: pull in the register defs (fields, masks, etc) from Nvidia files
  * so we don't have to redefine them */
 
-#ifdef CONFIG_MTD_PARTITIONS
 static const char *part_probes[] = { "cmdlinepart", NULL, };
-#endif
 
 struct tegra_nand_chip {
 	spinlock_t lock;
@@ -134,6 +132,7 @@ struct tegra_nand_info {
 	uint32_t is_data_bus_width_16;
 	uint32_t device_id;
 	uint32_t vendor_id;
+	uint32_t dev_parms;
 	uint32_t num_bad_blocks;
 };
 #define MTD_TO_INFO(mtd)	container_of((mtd), struct tegra_nand_info, mtd)
@@ -1290,38 +1289,6 @@ static int tegra_nand_suspend(struct mtd_info *mtd)
 	return 0;
 }
 
-static void tegra_nand_resume(struct mtd_info *mtd)
-{
-}
-
-static int scan_bad_blocks(struct tegra_nand_info *info)
-{
-	struct mtd_info *mtd = &info->mtd;
-	int num_blocks = mtd->size >> info->chip.block_shift;
-	uint32_t block;
-	int is_bad = 0;
-	info->num_bad_blocks = 0;
-
-	for (block = 0; block < num_blocks; ++block) {
-		/* make sure the bit is cleared, meaning it's bad/unknown before
-		 * we check. */
-		clear_bit(block, info->bb_bitmap);
-		is_bad = mtd->block_isbad(mtd, block << info->chip.block_shift);
-
-		if (is_bad == 0)
-			set_bit(block, info->bb_bitmap);
-		else if (is_bad > 0) {
-			info->num_bad_blocks++;
-			pr_debug("block 0x%08x is bad.\n", block);
-		} else {
-			pr_err("Fatal error (%d) while scanning for "
-			       "bad blocks\n", is_bad);
-			return is_bad;
-		}
-	}
-	return 0;
-}
-
 static void
 set_chip_timing(struct tegra_nand_info *info, uint32_t vendor_id,
 		uint32_t dev_id, uint32_t fourth_id_field)
@@ -1357,6 +1324,60 @@ set_chip_timing(struct tegra_nand_info *info, uint32_t vendor_id,
 	writel(tmp, TIMING_REG);
 	writel(TIMING2_TADL(CNT(chip_parms->timing.tadl)), TIMING2_REG);
 #undef CNT
+}
+
+static void tegra_nand_resume(struct mtd_info *mtd)
+{
+	struct tegra_nand_info *info = MTD_TO_INFO(mtd);
+
+	cfg_hwstatus_mon(info);
+
+	/* clear all pending interrupts */
+	writel(readl(ISR_REG), ISR_REG);
+
+	/* clear dma interrupt */
+	writel(DMA_CTRL_IS_DMA_DONE, DMA_MST_CTRL_REG);
+
+	/* enable interrupts */
+	disable_ints(info, 0xffffffff);
+	enable_ints(info,
+		    IER_ERR_TRIG_VAL(4) | IER_UND | IER_OVR | IER_CMD_DONE |
+		    IER_ECC_ERR | IER_GIE);
+
+	writel(0, CONFIG_REG);
+
+	set_chip_timing(info, info->vendor_id,
+				info->device_id, info->dev_parms);
+
+	return;
+}
+
+static int scan_bad_blocks(struct tegra_nand_info *info)
+{
+	struct mtd_info *mtd = &info->mtd;
+	int num_blocks = mtd->size >> info->chip.block_shift;
+	uint32_t block;
+	int is_bad = 0;
+	info->num_bad_blocks = 0;
+
+	for (block = 0; block < num_blocks; ++block) {
+		/* make sure the bit is cleared, meaning it's bad/unknown before
+		 * we check. */
+		clear_bit(block, info->bb_bitmap);
+		is_bad = mtd->block_isbad(mtd, block << info->chip.block_shift);
+
+		if (is_bad == 0)
+			set_bit(block, info->bb_bitmap);
+		else if (is_bad > 0) {
+			info->num_bad_blocks++;
+			pr_debug("block 0x%08x is bad.\n", block);
+		} else {
+			pr_err("Fatal error (%d) while scanning for "
+			       "bad blocks\n", is_bad);
+			return is_bad;
+		}
+	}
+	return 0;
 }
 
 /* Scans for nand flash devices, identifies them, and fills in the
@@ -1421,6 +1442,7 @@ static int tegra_nand_scan(struct mtd_info *mtd, int maxchips)
 		dev_info->name);
 	info->vendor_id = vendor_id;
 	info->device_id = dev_id;
+	info->dev_parms = dev_parms;
 	info->chip.num_chips = cnt;
 	info->chip.chipsize = dev_info->chipsize << 20;
 	mtd->size = info->chip.num_chips * info->chip.chipsize;
@@ -1645,15 +1667,13 @@ static int __devinit tegra_nand_probe(struct platform_device *pdev)
 	dump_nand_regs();
 #endif
 
-#ifdef CONFIG_MTD_PARTITIONS
 	err = parse_mtd_partitions(mtd, part_probes, &info->parts, 0);
 	if (err > 0) {
-		err = add_mtd_partitions(mtd, info->parts, err);
+		err = mtd_device_register(mtd, info->parts, err);
 	} else if (err <= 0 && plat->parts) {
-		err = add_mtd_partitions(mtd, plat->parts, plat->nr_parts);
+		err = mtd_device_register(mtd, plat->parts, plat->nr_parts);
 	} else
-#endif
-		err = add_mtd_device(mtd);
+		err = mtd_device_register(mtd, NULL, 0);
 	if (err != 0)
 		goto out_free_bbbmap;
 

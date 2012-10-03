@@ -70,13 +70,16 @@ static struct tegra_kbc_wake_key enterprise_wake_cfg[] = {
 };
 
 static struct tegra_kbc_platform_data enterprise_kbc_platform_data = {
-	.debounce_cnt = 20,
+	.debounce_cnt = 20 * 32, /* 20 ms debaunce time */
 	.repeat_cnt = 1,
 	.scan_count = 30,
 	.wakeup = true,
 	.keymap_data = &keymap_data,
 	.wake_cnt = 4,
 	.wake_cfg = &enterprise_wake_cfg[0],
+#ifdef CONFIG_ANDROID
+	.disable_ev_rep = true,
+#endif
 };
 
 int __init enterprise_kbc_init(void)

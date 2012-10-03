@@ -156,7 +156,12 @@
 #define MMC_PU				(0x1 << 3)
 #define MMC_PD				(0x1 << 2)
 
-
+#define TWL_SIL_TYPE(rev)		((rev) & 0x00FFFFFF)
+#define TWL_SIL_REV(rev)		((rev) >> 24)
+#define TWL_SIL_5030			0x09002F
+#define TWL5030_REV_1_0			0x00
+#define TWL5030_REV_1_1			0x10
+#define TWL5030_REV_1_2			0x30
 
 #define TWL4030_CLASS_ID 		0x4030
 #define TWL6030_CLASS_ID 		0x6030
@@ -197,6 +202,9 @@ void twl_reg_dump(int module, int start, int end);
  */
 int twl_i2c_write(u8 mod_no, u8 *value, u8 reg, unsigned num_bytes);
 int twl_i2c_read(u8 mod_no, u8 *value, u8 reg, unsigned num_bytes);
+
+int twl_get_type(void);
+int twl_get_version(void);
 
 int twl6030_interrupt_unmask(u8 bit_mask, u8 offset);
 int twl6030_interrupt_mask(u8 bit_mask, u8 offset);
@@ -301,7 +309,12 @@ int twl6030_set_usb_in_current(int currentmA);
  *(Use TWL_4030_MODULE_INTBR)
  */
 
+#define REG_IDCODE_7_0			0x00
+#define REG_IDCODE_15_8			0x01
+#define REG_IDCODE_16_23		0x02
+#define REG_IDCODE_31_24		0x03
 #define REG_GPPUPDCTR1			0x0F
+#define REG_UNLOCK_TEST_REG		0x12
 
 /*I2C1 and I2C4(SR) SDA/SCL pull-up control bits */
 
@@ -309,6 +322,8 @@ int twl6030_set_usb_in_current(int currentmA);
 #define I2C_SDA_CTRL_PU			BIT(2)
 #define SR_I2C_SCL_CTRL_PU		BIT(4)
 #define SR_I2C_SDA_CTRL_PU		BIT(6)
+
+#define TWL_EEPROM_R_UNLOCK		0x49
 
 /*----------------------------------------------------------------------*/
 
@@ -523,7 +538,7 @@ int twl6030_set_usb_in_current(int currentmA);
 #define RES_32KCLKOUT           26
 #define RES_RESET               27
 /* Power Reference */
-#define RES_Main_Ref            28
+#define RES_MAIN_REF            28
 
 #define TOTAL_RESOURCES		28
 /*
@@ -631,6 +646,7 @@ enum twl4030_usb_mode {
 
 struct twl4030_usb_data {
 	enum twl4030_usb_mode	usb_mode;
+	unsigned long		features;
 
 	int		(*phy_init)(struct device *dev);
 	int		(*phy_exit)(struct device *dev);
@@ -677,28 +693,41 @@ struct twl4030_power_data {
 extern void twl4030_power_init(struct twl4030_power_data *triton2_scripts);
 extern int twl4030_remove_script(u8 flags);
 
-struct twl4030_codec_audio_data {
+struct twl4030_codec_data {
 	unsigned int digimic_delay; /* in ms */
 	unsigned int ramp_delay_value;
 	unsigned int offset_cncl_path;
 	unsigned int check_defaults:1;
 	unsigned int reset_registers:1;
 	unsigned int hs_extmute:1;
+	u16 hs_left_step;
+	u16 hs_right_step;
+	u16 hf_left_step;
+	u16 hf_right_step;
 	void (*set_hs_extmute)(int mute);
 };
 
-struct twl4030_codec_vibra_data {
+struct twl4030_vibra_data {
 	unsigned int	coexist;
+
+	/* twl6040 */
+	unsigned int vibldrv_res;	/* left driver resistance */
+	unsigned int vibrdrv_res;	/* right driver resistance */
+	unsigned int viblmotor_res;	/* left motor resistance */
+	unsigned int vibrmotor_res;	/* right motor resistance */
+	int vddvibl_uV;			/* VDDVIBL volt, set 0 for fixed reg */
+	int vddvibr_uV;			/* VDDVIBR volt, set 0 for fixed reg */
 };
 
-struct twl4030_codec_data {
+struct twl4030_audio_data {
 	unsigned int	audio_mclk;
-	struct twl4030_codec_audio_data		*audio;
-	struct twl4030_codec_vibra_data		*vibra;
+	struct twl4030_codec_data *codec;
+	struct twl4030_vibra_data *vibra;
 
 	/* twl6040 */
 	int audpwron_gpio;	/* audio power-on gpio */
 	int naudint_irq;	/* audio interrupt */
+	unsigned int irq_base;
 };
 
 struct twl4030_platform_data {
@@ -714,7 +743,7 @@ struct twl4030_platform_data {
 	struct twl4030_keypad_data		*keypad;
 	struct twl4030_usb_data			*usb;
 	struct twl4030_power_data		*power;
-	struct twl4030_codec_data		*codec;
+	struct twl4030_audio_data		*audio;
 
 	/* Common LDO regulators for TWL4030/TWL6030 */
 	struct regulator_init_data		*vdac;
@@ -833,24 +862,25 @@ static inline int twl4030charger_usb_en(int enable) { return 0; }
 #define TWL6030_REG_VDAC	45
 #define TWL6030_REG_VUSB	46
 
-/* These are renamed in 6025 but same registers */
-#define TWL6025_REG_LDO2	48
-#define TWL6025_REG_LDO4	49
-#define TWL6025_REG_LDO3	50
-#define TWL6025_REG_LDO5	51
-#define TWL6025_REG_LDO1	52
-#define TWL6025_REG_LDO7	53
-#define TWL6025_REG_LDO6	54
-#define TWL6025_REG_LDOLN	55
-#define TWL6025_REG_LDOUSB	56
-
-/* 6025 DCDC supplies */
-#define TWL6025_REG_SMPS3	57
-#define TWL6025_REG_SMPS4	58
-#define TWL6025_REG_VIO		59
-
 /* INTERNAL LDOs */
 #define TWL6030_REG_VRTC	47
 #define TWL6030_REG_CLK32KG	48
+
+/* LDOs on 6025 have different names */
+#define TWL6025_REG_LDO2	49
+#define TWL6025_REG_LDO4	50
+#define TWL6025_REG_LDO3	51
+#define TWL6025_REG_LDO5	52
+#define TWL6025_REG_LDO1	53
+#define TWL6025_REG_LDO7	54
+#define TWL6025_REG_LDO6	55
+#define TWL6025_REG_LDOLN	56
+#define TWL6025_REG_LDOUSB	57
+
+/* 6025 DCDC supplies */
+#define TWL6025_REG_SMPS3	58
+#define TWL6025_REG_SMPS4	59
+#define TWL6025_REG_VIO		60
+
 
 #endif /* End of __TWL4030_H */

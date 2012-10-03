@@ -150,6 +150,7 @@ static struct tps6586x_platform_data tps_platform = {
 	.num_subdevs = ARRAY_SIZE(tps_devs),
 	.subdevs = tps_devs,
 	.gpio_base = TEGRA_NR_GPIOS,
+	.use_power_off = true,
 };
 
 static struct i2c_board_info __initdata p852_regulators[] = {
@@ -159,33 +160,6 @@ static struct i2c_board_info __initdata p852_regulators[] = {
 		.platform_data	= &tps_platform,
 	},
 };
-
-static struct tegra_suspend_platform_data p852_suspend_data = {
-	.cpu_timer	= 2000,
-	.cpu_off_timer	= 0,
-	.suspend_mode	= TEGRA_SUSPEND_LP1,
-	.core_timer	= 0x7e7e,
-	.core_off_timer = 0,
-	.corereq_high	= false,
-	.sysclkreq_high	= true,
-};
-
-static void p852_power_off(void)
-{
-	int ret;
-
-	ret = tps6586x_power_off();
-	if (ret)
-		pr_err("p852: failed to power off\n");
-
-	while (1)
-		;
-}
-
-void __init p852_power_off_init(void)
-{
-	pm_power_off = p852_power_off;
-}
 
 static void __init tps6586x_rtc_preinit(void)
 {
@@ -217,7 +191,6 @@ int __init p852_regulator_init(void)
 	pmc_ctrl = readl(pmc + PMC_CTRL);
 	writel(pmc_ctrl | PMC_CTRL_INTR_LOW, pmc + PMC_CTRL);
 	i2c_register_board_info(3, p852_regulators, 1);
-	tegra_init_suspend(&p852_suspend_data);
 
 	tps6586x_rtc_preinit();
 

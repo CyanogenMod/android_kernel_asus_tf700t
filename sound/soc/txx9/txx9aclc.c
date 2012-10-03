@@ -132,7 +132,7 @@ txx9aclc_dma_submit(struct txx9aclc_dmadata *dmadata, dma_addr_t buf_dma_addr)
 	sg_set_page(&sg, pfn_to_page(PFN_DOWN(buf_dma_addr)),
 		    dmadata->frag_bytes, buf_dma_addr & (PAGE_SIZE - 1));
 	sg_dma_address(&sg) = buf_dma_addr;
-	desc = chan->device->device_prep_slave_sg(chan, &sg, 1,
+	desc = dmaengine_prep_slave_sg(chan, &sg, 1,
 		dmadata->substream->stream == SNDRV_PCM_STREAM_PLAYBACK ?
 		DMA_TO_DEVICE : DMA_FROM_DEVICE,
 		DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
@@ -288,9 +288,11 @@ static void txx9aclc_pcm_free_dma_buffers(struct snd_pcm *pcm)
 	snd_pcm_lib_preallocate_free_for_all(pcm);
 }
 
-static int txx9aclc_pcm_new(struct snd_card *card, struct snd_soc_dai *dai,
-			    struct snd_pcm *pcm)
+static int txx9aclc_pcm_new(struct snd_soc_pcm_runtime *rtd)
 {
+	struct snd_card *card = rtd->card->snd_card;
+	struct snd_soc_dai *dai = rtd->cpu_dai;
+	struct snd_pcm *pcm = rtd->pcm;
 	struct platform_device *pdev = to_platform_device(dai->platform->dev);
 	struct txx9aclc_soc_device *dev;
 	struct resource *r;

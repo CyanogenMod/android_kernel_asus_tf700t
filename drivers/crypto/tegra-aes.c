@@ -33,6 +33,7 @@
 #include <linux/interrupt.h>
 #include <linux/completion.h>
 #include <linux/workqueue.h>
+#include <linux/delay.h>
 
 #include <mach/arb_sema.h>
 #include <mach/clk.h>
@@ -142,6 +143,7 @@ struct tegra_aes_reqctx {
 
 struct tegra_aes_engine {
 	struct tegra_aes_dev *dd;
+	struct tegra_aes_ctx *ctx;
 	struct clk *iclk;
 	struct clk *pclk;
 	struct ablkcipher_request *req;
@@ -163,12 +165,9 @@ struct tegra_aes_engine {
 	u32 *buf_in;
 	u32 *buf_out;
 	int res_id;
-	int slot_num;
-	int keylen;
 	unsigned long busy;
 	u8 irq;
-	bool new_key;
-	bool use_ssk;
+	u32 status;
 };
 
 struct tegra_aes_dev {
@@ -178,7 +177,6 @@ struct tegra_aes_dev {
 	struct tegra_aes_engine bsea;
 	struct nvmap_client *client;
 	struct nvmap_handle_ref *h_ref;
-	struct tegra_aes_ctx *ctx;
 	struct crypto_queue queue;
 	spinlock_t lock;
 	u64 ctr;
@@ -190,7 +188,12 @@ static struct tegra_aes_dev *aes_dev;
 
 struct tegra_aes_ctx {
 	struct tegra_aes_dev *dd;
+	struct tegra_aes_engine *eng;
 	struct tegra_aes_slot *slot;
+	int key[AES_MAX_KEY_SIZE];
+	int keylen;
+	bool use_ssk;
+	u8 dt[DEFAULT_RNG_BLK_SZ];
 };
 
 static struct tegra_aes_ctx rng_ctx;
@@ -198,7 +201,6 @@ static struct tegra_aes_ctx rng_ctx;
 /* keep registered devices data here */
 static LIST_HEAD(slot_list);
 static DEFINE_SPINLOCK(list_lock);
-static DEFINE_MUTEX(aes_lock);
 
 /* Engine specific work queues */
 static void bsev_workqueue_handler(struct work_struct *work);
@@ -225,13 +227,13 @@ static inline void aes_writel(struct tegra_aes_engine *engine,
 
 static int alloc_iram(struct tegra_aes_dev *dd)
 {
-	size_t size, align ;
+	size_t size;
 	int err;
 
 	dd->h_ref = NULL;
 
 	/* [key+iv+u-iv=64B] * 8 = 512Bytes */
-	size = align = (AES_HW_KEY_TABLE_LENGTH_BYTES * AES_NR_KEYSLOTS);
+	size = AES_MAX_KEY_SIZE;
 	dd->client = nvmap_create_client(nvmap_dev, "aes_bsea");
 	if (IS_ERR(dd->client)) {
 		dev_err(dd->dev, "nvmap_create_client failed\n");
@@ -246,7 +248,7 @@ static int alloc_iram(struct tegra_aes_dev *dd)
 
 	/* Allocate memory in the iram */
 	err = nvmap_alloc_handle_id(dd->client, nvmap_ref_to_id(dd->h_ref),
-		NVMAP_HEAP_CARVEOUT_IRAM, align, 0);
+		NVMAP_HEAP_CARVEOUT_IRAM, size, 0);
 	if (err) {
 		dev_err(dd->dev, "nvmap_alloc_handle_id failed\n");
 		nvmap_free_handle_id(dd->client, nvmap_ref_to_id(dd->h_ref));
@@ -258,11 +260,11 @@ static int alloc_iram(struct tegra_aes_dev *dd)
 	dd->bsea.iram_virt = nvmap_mmap(dd->h_ref);	/* get virtual address */
 	if (!dd->bsea.iram_virt) {
 		dev_err(dd->dev, "%s: no mem, BSEA IRAM alloc failure\n",
-		__func__);
+			__func__);
 		goto out;
 	}
-	memset(dd->bsea.iram_virt, 0, dd->h_ref->handle->size);
 
+	memset(dd->bsea.iram_virt, 0, size);
 	return 0;
 
 out:
@@ -325,12 +327,21 @@ static void aes_hw_deinit(struct tegra_aes_engine *engine)
 		clk_disable(engine->iclk);
 }
 
+#define MIN_RETRIES	3
 static int aes_start_crypt(struct tegra_aes_engine *eng, u32 in_addr,
 	u32 out_addr, int nblocks, int mode, bool upd_iv)
 {
 	u32 cmdq[AES_HW_MAX_ICQ_LENGTH];
 	int qlen = 0, i, eng_busy, icq_empty, ret;
 	u32 value;
+	int retries = MIN_RETRIES;
+
+start:
+	do {
+		value = aes_readl(eng, INTR_STATUS);
+		eng_busy = value & BIT(0);
+		icq_empty = value & BIT(3);
+	} while (eng_busy || (!icq_empty));
 
 	aes_writel(eng, 0xFFFFFFFF, INTR_STATUS);
 
@@ -354,7 +365,7 @@ static int aes_start_crypt(struct tegra_aes_engine *eng, u32 in_addr,
 	value = 0;
 	if (mode & FLAGS_CBC) {
 		value = ((0x1 << SECURE_INPUT_ALG_SEL_SHIFT) |
-			((eng->keylen * 8) << SECURE_INPUT_KEY_LEN_SHIFT) |
+			((eng->ctx->keylen * 8) << SECURE_INPUT_KEY_LEN_SHIFT) |
 			((u32)upd_iv << SECURE_IV_SELECT_SHIFT) |
 			(((mode & FLAGS_ENCRYPT) ? 2 : 3)
 				<< SECURE_XOR_POS_SHIFT) |
@@ -367,7 +378,7 @@ static int aes_start_crypt(struct tegra_aes_engine *eng, u32 in_addr,
 			(0 << SECURE_HASH_ENB_SHIFT));
 	} else if (mode & FLAGS_OFB) {
 		value = ((0x1 << SECURE_INPUT_ALG_SEL_SHIFT) |
-			((eng->keylen * 8) << SECURE_INPUT_KEY_LEN_SHIFT) |
+			((eng->ctx->keylen * 8) << SECURE_INPUT_KEY_LEN_SHIFT) |
 			((u32)upd_iv << SECURE_IV_SELECT_SHIFT) |
 			((u32)0 << SECURE_IV_SELECT_SHIFT) |
 			(SECURE_XOR_POS_FIELD) |
@@ -378,7 +389,7 @@ static int aes_start_crypt(struct tegra_aes_engine *eng, u32 in_addr,
 			(0 << SECURE_HASH_ENB_SHIFT));
 	} else if (mode & FLAGS_RNG){
 		value = ((0x1 << SECURE_INPUT_ALG_SEL_SHIFT) |
-			((eng->keylen * 8) << SECURE_INPUT_KEY_LEN_SHIFT) |
+			((eng->ctx->keylen * 8) << SECURE_INPUT_KEY_LEN_SHIFT) |
 			((u32)upd_iv << SECURE_IV_SELECT_SHIFT) |
 			(0 << SECURE_XOR_POS_SHIFT) |
 			(0 << SECURE_INPUT_SEL_SHIFT) |
@@ -388,7 +399,7 @@ static int aes_start_crypt(struct tegra_aes_engine *eng, u32 in_addr,
 			(0 << SECURE_HASH_ENB_SHIFT));
 	} else {
 		value = ((0x1 << SECURE_INPUT_ALG_SEL_SHIFT) |
-			((eng->keylen * 8) << SECURE_INPUT_KEY_LEN_SHIFT) |
+			((eng->ctx->keylen * 8) << SECURE_INPUT_KEY_LEN_SHIFT) |
 			((u32)upd_iv << SECURE_IV_SELECT_SHIFT) |
 			(0 << SECURE_XOR_POS_SHIFT) |
 			(0 << SECURE_INPUT_SEL_SHIFT) |
@@ -422,6 +433,12 @@ static int aes_start_crypt(struct tegra_aes_engine *eng, u32 in_addr,
 
 	disable_irq(eng->irq);
 	aes_writel(eng, cmdq[qlen - 1], ICMDQUE_WR);
+
+	if ((eng->status != 0) && (retries-- > 0)) {
+		qlen = 0;
+		goto start;
+	}
+
 	return 0;
 }
 
@@ -453,7 +470,7 @@ static struct tegra_aes_slot *aes_find_key_slot(struct tegra_aes_dev *dd)
 	return found ? slot : NULL;
 }
 
-static int aes_set_key(struct tegra_aes_engine *eng)
+static int aes_set_key(struct tegra_aes_engine *eng, int slot_num)
 {
 	struct tegra_aes_dev *dd = aes_dev;
 	u32 value, cmdq[2];
@@ -472,13 +489,20 @@ static int aes_set_key(struct tegra_aes_engine *eng)
 	/* select the key slot */
 	value = aes_readl(eng, SECURE_CONFIG);
 	value &= ~SECURE_KEY_INDEX_FIELD;
-	value |= (eng->slot_num << SECURE_KEY_INDEX_SHIFT);
+	value |= (slot_num << SECURE_KEY_INDEX_SHIFT);
 	aes_writel(eng, value, SECURE_CONFIG);
 
-	if (eng->use_ssk)
+	if (slot_num == SSK_SLOT_NUM)
 		goto out;
 
 	if (eng->res_id == TEGRA_ARB_BSEV) {
+		memset(dd->bsev.ivkey_base, 0, AES_HW_KEY_TABLE_LENGTH_BYTES);
+		memcpy(dd->bsev.ivkey_base, eng->ctx->key, eng->ctx->keylen);
+
+		/* sync the buffer for device */
+		dma_sync_single_for_device(dd->dev, dd->bsev.ivkey_phys_base,
+				eng->ctx->keylen, DMA_TO_DEVICE);
+
 		/* copy the key table from sdram to vram */
 		cmdq[0] = 0;
 		cmdq[0] = UCQOPCODE_MEMDMAVD << ICQBITSHIFT_OPCODE |
@@ -500,7 +524,7 @@ static int aes_set_key(struct tegra_aes_engine *eng)
 		value = UCQOPCODE_SETTABLE << ICQBITSHIFT_OPCODE |
 			UCQCMD_CRYPTO_TABLESEL << ICQBITSHIFT_TABLESEL |
 			UCQCMD_VRAM_SEL << ICQBITSHIFT_VRAMSEL |
-			(UCQCMD_KEYTABLESEL | eng->slot_num)
+			(UCQCMD_KEYTABLESEL | slot_num)
 			<< ICQBITSHIFT_KEYTABLEID;
 		aes_writel(eng, value, ICMDQUE_WR);
 		do {
@@ -509,11 +533,20 @@ static int aes_set_key(struct tegra_aes_engine *eng)
 			icq_empty = value & BIT(3);
 		} while (eng_busy & (!icq_empty));
 	} else {
+		memset(dd->bsea.iram_virt, 0, AES_HW_KEY_TABLE_LENGTH_BYTES);
+		memcpy(dd->bsea.iram_virt, eng->ctx->key, eng->ctx->keylen);
+
+		/* set iram access cfg bit 0 if address >128K */
+		if (dd->bsea.iram_phys > 0x00020000)
+			aes_writel(eng, BIT(0), IRAM_ACCESS_CFG);
+		else
+			aes_writel(eng, 0, IRAM_ACCESS_CFG);
+
 		/* settable command to get key into internal registers */
 		value = 0;
 		value = UCQOPCODE_SETTABLE << ICQBITSHIFT_OPCODE |
 			UCQCMD_CRYPTO_TABLESEL << ICQBITSHIFT_TABLESEL |
-			(UCQCMD_KEYTABLESEL | eng->slot_num)
+			(UCQCMD_KEYTABLESEL | slot_num)
 			<< ICQBITSHIFT_KEYTABLEID |
 			dd->bsea.iram_phys >> 2;
 			aes_writel(eng, value, ICMDQUE_WR);
@@ -523,6 +556,7 @@ static int aes_set_key(struct tegra_aes_engine *eng)
 			icq_empty = value & BIT(3);
 		} while (eng_busy & (!icq_empty));
 	}
+
 out:
 	return 0;
 }
@@ -556,6 +590,7 @@ static int tegra_aes_handle_req(struct tegra_aes_engine *eng)
 	req = ablkcipher_request_cast(async_req);
 	dev_dbg(dd->dev, "%s: get new req (engine #%d)\n", __func__,
 		eng->res_id);
+
 	if (!req->src || !req->dst)
 		return -EINVAL;
 
@@ -582,18 +617,18 @@ static int tegra_aes_handle_req(struct tegra_aes_engine *eng)
 	ctx = crypto_ablkcipher_ctx(crypto_ablkcipher_reqtfm(req));
 	rctx->mode &= FLAGS_MODE_MASK;
 	dd->flags = (dd->flags & ~FLAGS_MODE_MASK) | rctx->mode;
-
-	if (eng->new_key) {
-		aes_set_key(eng);
-		eng->new_key = false;
-	}
+	eng->ctx = ctx;
 
 	if (((dd->flags & FLAGS_CBC) || (dd->flags & FLAGS_OFB)) && req->info) {
 		/* set iv to the aes hw slot
 		 * Hw generates updated iv only after iv is set in slot.
 		 * So key and iv is passed asynchronously.
-		 */
+		*/
 		memcpy(eng->buf_in, (u8 *)req->info, AES_BLOCK_SIZE);
+
+		/* sync the buffer for device  */
+		dma_sync_single_for_device(dd->dev, eng->dma_buf_in,
+				AES_HW_DMA_BUFFER_SIZE_BYTES, DMA_TO_DEVICE);
 
 		ret = aes_start_crypt(eng, (u32)eng->dma_buf_in,
 			(u32)eng->dma_buf_out, 1, FLAGS_CBC, false);
@@ -601,6 +636,10 @@ static int tegra_aes_handle_req(struct tegra_aes_engine *eng)
 			dev_err(dd->dev, "aes_start_crypt fail(%d)\n", ret);
 			goto out;
 		}
+
+		/* sync the buffer for cpu  */
+		dma_sync_single_for_cpu(dd->dev, eng->dma_buf_out,
+				AES_HW_DMA_BUFFER_SIZE_BYTES, DMA_FROM_DEVICE);
 	}
 
 	while (total) {
@@ -654,12 +693,67 @@ out:
 	return ret;
 }
 
+static int tegra_aes_key_save(struct tegra_aes_ctx *ctx)
+{
+	struct tegra_aes_dev *dd = aes_dev;
+	int retry_count, eng_busy, ret, eng_no;
+	struct tegra_aes_engine *eng[2] = {&dd->bsev, &dd->bsea};
+	unsigned long flags;
+
+	/* check for engine free state */
+	for (eng_no = 0; eng_no < ARRAY_SIZE(eng); eng_no++) {
+		for (retry_count = 0; retry_count <= 10; retry_count++) {
+			spin_lock_irqsave(&dd->lock, flags);
+			eng_busy = test_and_set_bit(FLAGS_BUSY,
+							&eng[eng_no]->busy);
+			spin_unlock_irqrestore(&dd->lock, flags);
+
+			if (!eng_busy)
+				break;
+
+			if (retry_count == 10) {
+				dev_err(dd->dev,
+					"%s: eng=%d busy, wait timeout\n",
+					__func__, eng[eng_no]->res_id);
+				ret = -EBUSY;
+				goto out;
+			}
+			mdelay(5);
+		}
+	}
+
+	/* save key in the engine */
+	for (eng_no = 0;  eng_no < ARRAY_SIZE(eng); eng_no++) {
+		ret = aes_hw_init(eng[eng_no]);
+		if (ret < 0) {
+			dev_err(dd->dev, "%s: eng=%d hw init fail(%d)\n",
+			__func__, eng[eng_no]->res_id, ret);
+			goto out;
+		}
+		eng[eng_no]->ctx = ctx;
+		if (ctx->use_ssk)
+			aes_set_key(eng[eng_no], SSK_SLOT_NUM);
+		else
+			aes_set_key(eng[eng_no], ctx->slot->slot_num);
+
+		aes_hw_deinit(eng[eng_no]);
+	}
+out:
+	spin_lock_irqsave(&dd->lock, flags);
+	while (--eng_no >= 0)
+		clear_bit(FLAGS_BUSY, &eng[eng_no]->busy);
+	spin_unlock_irqrestore(&dd->lock, flags);
+
+	return ret;
+}
+
 static int tegra_aes_setkey(struct crypto_ablkcipher *tfm, const u8 *key,
 	unsigned int keylen)
 {
 	struct tegra_aes_ctx *ctx = crypto_ablkcipher_ctx(tfm);
 	struct tegra_aes_dev *dd = aes_dev;
 	struct tegra_aes_slot *key_slot;
+	int ret = 0;
 
 	if (!ctx || !dd) {
 		pr_err("ctx=0x%x, dd=0x%x\n",
@@ -673,8 +767,19 @@ static int tegra_aes_setkey(struct crypto_ablkcipher *tfm, const u8 *key,
 		return -EINVAL;
 	}
 
-	dev_dbg(dd->dev, "keylen: %d\n", keylen);
+	/* take the hardware semaphore */
+	if (tegra_arb_mutex_lock_timeout(dd->bsev.res_id, ARB_SEMA_TIMEOUT) < 0) {
+		dev_err(dd->dev, "aes hardware (%d) not available\n", dd->bsev.res_id);
+		return -EBUSY;
+	}
 
+	if (tegra_arb_mutex_lock_timeout(dd->bsea.res_id, ARB_SEMA_TIMEOUT) < 0) {
+		dev_err(dd->dev, "aes hardware (%d) not available\n", dd->bsea.res_id);
+		tegra_arb_mutex_unlock(dd->bsev.res_id);
+		return -EBUSY;
+	}
+
+	dev_dbg(dd->dev, "keylen: %d\n", keylen);
 	ctx->dd = dd;
 
 	if (key) {
@@ -682,30 +787,30 @@ static int tegra_aes_setkey(struct crypto_ablkcipher *tfm, const u8 *key,
 			key_slot = aes_find_key_slot(dd);
 			if (!key_slot) {
 				dev_err(dd->dev, "no empty slot\n");
-				return -ENOMEM;
+				ret = -EBUSY;
+				goto out;
 			}
 			ctx->slot = key_slot;
 		}
 
-		/* copy the key */
-		memset(dd->bsev.ivkey_base, 0, AES_HW_KEY_TABLE_LENGTH_BYTES);
-		memset(dd->bsea.iram_virt, 0, AES_HW_KEY_TABLE_LENGTH_BYTES);
-		memcpy(dd->bsev.ivkey_base, key, keylen);
-		memcpy(dd->bsea.iram_virt, key, keylen);
+		/* copy the key to the proper slot */
+		memset(ctx->key, 0, AES_MAX_KEY_SIZE);
+		memcpy(ctx->key, key, keylen);
+		ctx->keylen = keylen;
+		ctx->use_ssk = false;
 	} else {
-		dd->bsev.slot_num = SSK_SLOT_NUM;
-		dd->bsea.slot_num = SSK_SLOT_NUM;
-		dd->bsev.use_ssk = true;
-		dd->bsea.use_ssk = true;
-		keylen = AES_KEYSIZE_128;
+		ctx->use_ssk = true;
+		ctx->keylen = AES_KEYSIZE_128;
 	}
 
-	dd->bsev.keylen = keylen;
-	dd->bsea.keylen = keylen;
-	dd->bsev.new_key = true;
-	dd->bsea.new_key = true;
+	ret = tegra_aes_key_save(ctx);
+	if (ret != 0)
+		dev_err(dd->dev, "%s failed\n", __func__);
+out:
+	tegra_arb_mutex_unlock(dd->bsev.res_id);
+	tegra_arb_mutex_unlock(dd->bsea.res_id);
 	dev_dbg(dd->dev, "done\n");
-	return 0;
+	return ret;
 }
 
 static void bsev_workqueue_handler(struct work_struct *work)
@@ -747,8 +852,11 @@ static irqreturn_t aes_bsev_irq(int irq, void *dev_id)
 	u32 value = aes_readl(&dd->bsev, INTR_STATUS);
 
 	dev_dbg(dd->dev, "bsev irq_stat: 0x%x", value);
-	if (value & INT_ERROR_MASK)
+	dd->bsev.status = 0;
+	if (value & INT_ERROR_MASK) {
 		aes_writel(&dd->bsev, INT_ERROR_MASK, INTR_STATUS);
+		dd->bsev.status = value & INT_ERROR_MASK;
+	}
 
 	value = aes_readl(&dd->bsev, INTR_STATUS);
 	if (!(value & ENGINE_BUSY_FIELD))
@@ -763,8 +871,11 @@ static irqreturn_t aes_bsea_irq(int irq, void *dev_id)
 	u32 value = aes_readl(&dd->bsea, INTR_STATUS);
 
 	dev_dbg(dd->dev, "bsea irq_stat: 0x%x", value);
-	if (value & INT_ERROR_MASK)
+	dd->bsea.status = 0;
+	if (value & INT_ERROR_MASK) {
 		aes_writel(&dd->bsea, INT_ERROR_MASK, INTR_STATUS);
+		dd->bsea.status = value & INT_ERROR_MASK;
+	}
 
 	value = aes_readl(&dd->bsea, INTR_STATUS);
 	if (!(value & ENGINE_BUSY_FIELD))
@@ -782,23 +893,27 @@ static int tegra_aes_crypt(struct ablkcipher_request *req, unsigned long mode)
 	int bsev_busy;
 	int bsea_busy;
 
-	dev_dbg(dd->dev, "nbytes: %d, enc: %d, cbc: %d\n", req->nbytes,
+	dev_dbg(dd->dev, "nbytes: %d, enc: %d, cbc: %d, ofb: %d\n", req->nbytes,
 		!!(mode & FLAGS_ENCRYPT),
-		!!(mode & FLAGS_CBC));
+		!!(mode & FLAGS_CBC),
+		!!(mode & FLAGS_OFB));
 
 	rctx->mode = mode;
 
 	spin_lock_irqsave(&dd->lock, flags);
 	err = ablkcipher_enqueue_request(&dd->queue, req);
-	bsev_busy = test_and_set_bit(FLAGS_BUSY, &dd->bsev.busy);
-	bsea_busy = test_and_set_bit(FLAGS_BUSY, &dd->bsea.busy);
 	spin_unlock_irqrestore(&dd->lock, flags);
-
-	if (!bsev_busy)
+	bsev_busy = test_and_set_bit(FLAGS_BUSY, &dd->bsev.busy);
+	if (!bsev_busy) {
 		queue_work(bsev_wq, &bsev_work);
+		goto finish;
+	}
+
+	bsea_busy = test_and_set_bit(FLAGS_BUSY, &dd->bsea.busy);
 	if (!bsea_busy)
 		queue_work(bsea_wq, &bsea_work);
 
+finish:
 	return err;
 }
 
@@ -830,22 +945,20 @@ static int tegra_aes_ofb_decrypt(struct ablkcipher_request *req)
 {
 	return tegra_aes_crypt(req, FLAGS_OFB);
 }
+
 static int tegra_aes_get_random(struct crypto_rng *tfm, u8 *rdata,
 	unsigned int dlen)
 {
 	struct tegra_aes_dev *dd = aes_dev;
-	struct tegra_aes_engine *eng = &dd->bsea;
+	struct tegra_aes_engine *eng = rng_ctx.eng;
+	unsigned long flags;
 	int ret, i;
-	u8 *dest = rdata, *dt = dd->dt;
-
-	/* take mutex to access the aes hw */
-	mutex_lock(&aes_lock);
+	u8 *dest = rdata, *dt = rng_ctx.dt;
 
 	/* take the hardware semaphore */
 	if (tegra_arb_mutex_lock_timeout(eng->res_id, ARB_SEMA_TIMEOUT) < 0) {
 		dev_err(dd->dev, "aes hardware (%d) not available\n",
 		eng->res_id);
-		mutex_unlock(&aes_lock);
 		return -EBUSY;
 	}
 
@@ -859,6 +972,10 @@ static int tegra_aes_get_random(struct crypto_rng *tfm, u8 *rdata,
 	memset(eng->buf_in, 0, AES_BLOCK_SIZE);
 	memcpy(eng->buf_in, dt, DEFAULT_RNG_BLK_SZ);
 
+	/* sync the buffer for device */
+	dma_sync_single_for_device(dd->dev, eng->dma_buf_in,
+			AES_HW_DMA_BUFFER_SIZE_BYTES, DMA_TO_DEVICE);
+
 	ret = aes_start_crypt(eng, (u32)eng->dma_buf_in, (u32)eng->dma_buf_out,
 		1, FLAGS_ENCRYPT | FLAGS_RNG, true);
 	if (ret < 0) {
@@ -866,6 +983,10 @@ static int tegra_aes_get_random(struct crypto_rng *tfm, u8 *rdata,
 		dlen = ret;
 		goto out;
 	}
+	/* sync the buffer for cpu */
+	dma_sync_single_for_cpu(dd->dev, eng->dma_buf_out,
+			AES_HW_DMA_BUFFER_SIZE_BYTES, DMA_FROM_DEVICE);
+
 	memcpy(dest, eng->buf_out, dlen);
 
 	/* update the DT */
@@ -878,10 +999,13 @@ static int tegra_aes_get_random(struct crypto_rng *tfm, u8 *rdata,
 out:
 	aes_hw_deinit(eng);
 
+	spin_lock_irqsave(&dd->lock, flags);
+	clear_bit(FLAGS_BUSY, &eng->busy);
+	spin_unlock_irqrestore(&dd->lock, flags);
+
 fail:
 	/* release the hardware semaphore */
 	tegra_arb_mutex_unlock(eng->res_id);
-	mutex_unlock(&aes_lock);
 	dev_dbg(dd->dev, "%s: done\n", __func__);
 	return dlen;
 }
@@ -891,47 +1015,47 @@ static int tegra_aes_rng_reset(struct crypto_rng *tfm, u8 *seed,
 {
 	struct tegra_aes_dev *dd = aes_dev;
 	struct tegra_aes_ctx *ctx = &rng_ctx;
-	struct tegra_aes_engine *eng = &dd->bsea;
+	struct tegra_aes_engine *eng = NULL;
 	struct tegra_aes_slot *key_slot;
+	int bsea_busy = false;
+	unsigned long flags;
 	struct timespec ts;
-	int ret = 0;
 	u64 nsec, tmp[2];
+	int ret = 0;
 	u8 *dt;
 
-	if (!eng || !dd) {
-		dev_err(dd->dev, "eng=0x%x, dd=0x%x\n",
-			(unsigned int)eng, (unsigned int)dd);
+	if (!dd)
 		return -EINVAL;
-	}
 
 	if (slen < (DEFAULT_RNG_BLK_SZ + AES_KEYSIZE_128)) {
 		return -ENOMEM;
 	}
 
-	dd->flags = FLAGS_ENCRYPT | FLAGS_RNG;
+	spin_lock_irqsave(&dd->lock, flags);
+	bsea_busy = test_and_set_bit(FLAGS_BUSY, &dd->bsea.busy);
+	spin_unlock_irqrestore(&dd->lock, flags);
 
-	/* take mutex to access the aes hw */
-	mutex_lock(&aes_lock);
+	if (!bsea_busy)
+		eng = &dd->bsea;
+	else
+		return -EBUSY;
+
+	ctx->eng = eng;
+	dd->flags = FLAGS_ENCRYPT | FLAGS_RNG;
 
 	if (!ctx->slot) {
 		key_slot = aes_find_key_slot(dd);
 		if (!key_slot) {
 			dev_err(dd->dev, "no empty slot\n");
-			mutex_unlock(&aes_lock);
 			return -ENOMEM;
 		}
 		ctx->slot = key_slot;
 	}
 
-	/* copy the key to the key slot */
-	memset(dd->bsea.iram_virt, 0, AES_HW_KEY_TABLE_LENGTH_BYTES);
-	memcpy(dd->bsea.iram_virt, seed + DEFAULT_RNG_BLK_SZ, AES_KEYSIZE_128);
-
 	/* take the hardware semaphore */
 	if (tegra_arb_mutex_lock_timeout(eng->res_id, ARB_SEMA_TIMEOUT) < 0) {
 		dev_err(dd->dev, "aes hardware (%d) not available\n",
 		eng->res_id);
-		mutex_unlock(&aes_lock);
 		return -EBUSY;
 	}
 
@@ -941,20 +1065,29 @@ static int tegra_aes_rng_reset(struct crypto_rng *tfm, u8 *seed,
 		goto fail;
 	}
 
-	dd->ctx = ctx;
-	eng->slot_num = ctx->slot->slot_num;
-	eng->keylen = AES_KEYSIZE_128;
-	aes_set_key(eng);
+	memcpy(ctx->key, seed + DEFAULT_RNG_BLK_SZ, AES_KEYSIZE_128);
+
+	eng->ctx = ctx;
+	eng->ctx->keylen = AES_KEYSIZE_128;
+	aes_set_key(eng, ctx->slot->slot_num);
 
 	/* set seed to the aes hw slot */
 	memset(eng->buf_in, 0, AES_BLOCK_SIZE);
 	memcpy(eng->buf_in, seed, DEFAULT_RNG_BLK_SZ);
+
+	/* sync the buffer for device */
+	dma_sync_single_for_device(dd->dev, eng->dma_buf_in,
+			AES_HW_DMA_BUFFER_SIZE_BYTES, DMA_TO_DEVICE);
+
 	ret = aes_start_crypt(eng, (u32)eng->dma_buf_in,
 	  (u32)eng->dma_buf_out, 1, FLAGS_CBC, false);
 	if (ret < 0) {
 		dev_err(dd->dev, "aes_start_crypt fail(%d)\n", ret);
 		goto out;
 	}
+	/* sync the buffer for cpu */
+	dma_sync_single_for_cpu(dd->dev, eng->dma_buf_out,
+			AES_HW_DMA_BUFFER_SIZE_BYTES, DMA_FROM_DEVICE);
 
 	if (slen >= (2 * DEFAULT_RNG_BLK_SZ + AES_KEYSIZE_128)) {
 		dt = seed + DEFAULT_RNG_BLK_SZ + AES_KEYSIZE_128;
@@ -968,7 +1101,7 @@ static int tegra_aes_rng_reset(struct crypto_rng *tfm, u8 *seed,
 		tmp[1] = tegra_chip_uid();
 		dt = (u8 *)tmp;
 	}
-	memcpy(dd->dt, dt, DEFAULT_RNG_BLK_SZ);
+	memcpy(ctx->dt, dt, DEFAULT_RNG_BLK_SZ);
 
 out:
 	aes_hw_deinit(eng);
@@ -976,7 +1109,6 @@ out:
 fail:
 	/* release the hardware semaphore */
 	tegra_arb_mutex_unlock(eng->res_id);
-	mutex_unlock(&aes_lock);
 
 	dev_dbg(dd->dev, "%s: done\n", __func__);
 	return ret;
@@ -1175,14 +1307,15 @@ static int tegra_aes_probe(struct platform_device *pdev)
 	 * - hardware key table
 	 * - key schedule
 	 */
+	dd->bsea.ivkey_base = NULL;
 	dd->bsev.ivkey_base = dma_alloc_coherent(dev, SZ_512,
 		&dd->bsev.ivkey_phys_base, GFP_KERNEL);
-	dd->bsea.ivkey_base = NULL;
 	if (!dd->bsev.ivkey_base) {
 		dev_err(dev, "can not allocate iv/key buffer for BSEV\n");
 		err = -ENOMEM;
 		goto out;
 	}
+	memset(dd->bsev.ivkey_base, 0, SZ_512);
 
 	dd->bsev.buf_in = dma_alloc_coherent(dev, AES_HW_DMA_BUFFER_SIZE_BYTES,
 		&dd->bsev.dma_buf_in, GFP_KERNEL);
@@ -1377,7 +1510,6 @@ static struct platform_driver tegra_aes_driver = {
 
 static int __init tegra_aes_mod_init(void)
 {
-	mutex_init(&aes_lock);
 	INIT_LIST_HEAD(&slot_list);
 	return  platform_driver_register(&tegra_aes_driver);
 }
@@ -1392,4 +1524,4 @@ module_exit(tegra_aes_mod_exit);
 
 MODULE_DESCRIPTION("Tegra AES hw acceleration support.");
 MODULE_AUTHOR("NVIDIA Corporation");
-MODULE_LICENSE("GPLv2");
+MODULE_LICENSE("GPL v2");

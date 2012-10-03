@@ -29,7 +29,7 @@
 #include <linux/types.h>
 
 #include <mach/clk.h>
-#include <mach/nvmap.h>
+#include <linux/nvmap.h>
 
 #include "../../../../video/tegra/nvmap/nvmap.h"
 
@@ -102,6 +102,9 @@ struct avp_svc_info {
 	struct trpc_node		*rpc_node;
 	unsigned long			max_avp_rate;
 	unsigned long			emc_rate;
+
+	/* variable to check if video is present */
+	bool				is_vde_on;
 };
 
 static void do_svc_nvmap_create(struct avp_svc_info *avp_svc,
@@ -350,7 +353,7 @@ static void do_svc_module_clock(struct avp_svc_info *avp_svc,
 	struct svc_common_resp resp;
 	struct avp_module *mod;
 	struct avp_clk *aclk;
-	unsigned long emc_rate;
+	unsigned long emc_rate = 0;
 
 	mod = find_avp_module(avp_svc, msg->module_id);
 	if (!mod) {
@@ -361,9 +364,10 @@ static void do_svc_module_clock(struct avp_svc_info *avp_svc,
 	}
 
 	if (msg->module_id == AVP_MODULE_ID_VDE)
+		avp_svc->is_vde_on = msg->enable;
+
+	if (avp_svc->is_vde_on == true)
 		emc_rate = ULONG_MAX;
-	else
-		emc_rate = 0;
 
 	mutex_lock(&avp_svc->clk_lock);
 	aclk = &avp_svc->clks[mod->clk_req];
@@ -460,7 +464,7 @@ static void do_svc_module_clock_set(struct avp_svc_info *avp_svc,
 	struct svc_clock_ctrl *msg = (struct svc_clock_ctrl *)_msg;
 	struct svc_clock_ctrl_response resp;
 	struct avp_module *mod;
-	struct avp_clk *aclk;
+	struct avp_clk *aclk = NULL;
 	int ret = 0;
 
 	mod = find_avp_module(avp_svc, msg->module_id);
@@ -850,8 +854,9 @@ struct avp_svc_info *avp_svc_init(struct platform_device *pdev,
 		clk_set_rate(avp_svc->emcclk, pdata->emc_clk_rate);
 		avp_svc->emc_rate = pdata->emc_clk_rate;
 	}
-	else
+	else {
 		clk_set_rate(avp_svc->emcclk, ULONG_MAX);
+	}
 
 	avp_svc->rpc_node = rpc_node;
 

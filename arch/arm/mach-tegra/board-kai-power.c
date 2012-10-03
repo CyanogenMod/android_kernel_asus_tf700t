@@ -26,7 +26,7 @@
 #include <linux/regulator/max77663-regulator.h>
 #include <linux/gpio.h>
 #include <linux/io.h>
-#include <linux/regulator/gpio-switch-regulator.h>
+#include <linux/regulator/fixed.h>
 #include <linux/power/gpio-charger.h>
 
 #include <asm/mach-types.h>
@@ -40,7 +40,6 @@
 #include "board.h"
 #include "board-kai.h"
 #include "pm.h"
-#include "wakeups-t3.h"
 #include "tegra3_tsensor.h"
 
 #define PMC_CTRL		0x0
@@ -178,16 +177,16 @@ static struct max77663_regulator_fps_cfg max77663_fps_cfgs[] = {
 	}
 
 MAX77663_PDATA_INIT(sd0,  600000, 3387500, NULL, 1, 0, 0,
-		    0, 0, -1, FPS_SRC_NONE, -1, -1, EN2_CTRL_SD0 | SD_FSRADE_DISABLE);
+		    0, 0, -1, FPS_SRC_NONE, -1, -1, EN2_CTRL_SD0);
 
 MAX77663_PDATA_INIT(sd1,  800000, 1587500, NULL, 1, 0, 0,
-		    1, 1, -1, FPS_SRC_1, -1, -1, SD_FSRADE_DISABLE);
+		    1, 1, -1, FPS_SRC_1, FPS_POWER_PERIOD_1, FPS_POWER_PERIOD_6, 0);
 
-MAX77663_PDATA_INIT(sd2,  600000, 3387500, NULL, 1, 0, 0,
-		    1, 1, -1, FPS_SRC_NONE, -1, -1, 0);
+MAX77663_PDATA_INIT(sd2,  1800000, 1800000, NULL, 1, 0, 0,
+		    1, 1, -1, FPS_SRC_0, -1, -1, 0);
 
 MAX77663_PDATA_INIT(sd3,  600000, 3387500, NULL, 1, 0, 0,
-		    1, 1, -1, FPS_SRC_NONE, -1, -1, 0);
+		    1, 1, -1, FPS_SRC_0, -1, -1, 0);
 
 MAX77663_PDATA_INIT(ldo0, 800000, 2350000, max77663_rails(sd3), 1, 0, 0,
 		    1, 1, -1, FPS_SRC_1, -1, -1, 0);
@@ -199,10 +198,10 @@ MAX77663_PDATA_INIT(ldo2, 800000, 3950000, NULL, 1, 0, 0,
 		    1, 1, -1, FPS_SRC_1, -1, -1, 0);
 
 MAX77663_PDATA_INIT(ldo3, 800000, 3950000, NULL, 1, 0, 0,
-		    1, 1, -1, FPS_SRC_NONE, -1, -1, 0);
+		    1, 1, -1, FPS_SRC_1, -1, -1, 0);
 
 MAX77663_PDATA_INIT(ldo4, 800000, 1587500, NULL, 0, 0, 0,
-		    1, 1, -1, FPS_SRC_NONE, -1, -1, 0);
+		    1, 1, 1000000, FPS_SRC_0, -1, -1, LDO4_EN_TRACKING);
 
 MAX77663_PDATA_INIT(ldo5, 800000, 2800000, NULL, 0, 0, 0,
 		    1, 1, -1, FPS_SRC_NONE, -1, -1, 0);
@@ -220,7 +219,8 @@ MAX77663_PDATA_INIT(ldo8, 800000, 3950000, max77663_rails(sd3), 0, 0, 0,
 	{								\
 		.name = "max77663-regulator",				\
 		.id = MAX77663_REGULATOR_ID_##_id,			\
-		.mfd_data = &max77663_regulator_pdata_##_data,		\
+		.platform_data = &max77663_regulator_pdata_##_data,	\
+		.pdata_size = sizeof(max77663_regulator_pdata_##_data),	\
 	}
 
 #define MAX77663_RTC()							\
@@ -256,7 +256,7 @@ static struct max77663_gpio_config max77663_gpio_cfgs[] = {
 	},
 	{
 		.gpio = MAX77663_GPIO1,
-		.dir = GPIO_DIR_OUT,
+		.dir = GPIO_DIR_IN,
 		.dout = GPIO_DOUT_LOW,
 		.out_drv = GPIO_OUT_DRV_PUSH_PULL,
 		.alternate = GPIO_ALT_DISABLE,
@@ -271,15 +271,15 @@ static struct max77663_gpio_config max77663_gpio_cfgs[] = {
 	{
 		.gpio = MAX77663_GPIO3,
 		.dir = GPIO_DIR_OUT,
-		.dout = GPIO_DOUT_HIGH,
+		.dout = GPIO_DOUT_LOW,
 		.out_drv = GPIO_OUT_DRV_OPEN_DRAIN,
-		.alternate = GPIO_ALT_DISABLE,
+		.alternate = GPIO_ALT_ENABLE,
 	},
 	{
 		.gpio = MAX77663_GPIO4,
 		.dir = GPIO_DIR_OUT,
 		.dout = GPIO_DOUT_HIGH,
-		.out_drv = GPIO_OUT_DRV_OPEN_DRAIN,
+		.out_drv = GPIO_OUT_DRV_PUSH_PULL,
 		.alternate = GPIO_ALT_ENABLE,
 	},
 	{
@@ -298,7 +298,7 @@ static struct max77663_gpio_config max77663_gpio_cfgs[] = {
 		.gpio = MAX77663_GPIO7,
 		.dir = GPIO_DIR_OUT,
 		.dout = GPIO_DOUT_LOW,
-		.out_drv = GPIO_OUT_DRV_PUSH_PULL,
+		.out_drv = GPIO_OUT_DRV_OPEN_DRAIN,
 		.alternate = GPIO_ALT_DISABLE,
 	},
 };
@@ -312,6 +312,10 @@ static struct max77663_platform_data max7763_pdata = {
 
 	.num_subdevs	= ARRAY_SIZE(max77663_subdevs),
 	.sub_devices	= max77663_subdevs,
+
+	.rtc_i2c_addr	= 0x68,
+
+	.use_power_off	= true,
 };
 
 static struct i2c_board_info __initdata max77663_regulators[] = {
@@ -339,171 +343,234 @@ static int __init kai_max77663_regulator_init(void)
 	return 0;
 }
 
-static struct regulator_consumer_supply gpio_switch_en_3v3_sys_supply[] = {
+static struct regulator_consumer_supply fixed_reg_en_3v3_sys_a00_supply[] = {
 	REGULATOR_SUPPLY("vdd_3v3", NULL),
 	REGULATOR_SUPPLY("vdd_3v3_devices", NULL),
 	REGULATOR_SUPPLY("debug_cons", NULL),
 	REGULATOR_SUPPLY("pwrdet_pex_ctl", NULL),
 };
-static int gpio_switch_en_3v3_sys_voltages[] = { 3300};
 
-static struct regulator_consumer_supply gpio_switch_en_avdd_hdmi_usb_supply[] = {
+static struct regulator_consumer_supply fixed_reg_en_3v3_sys_a01_supply[] = {
+	REGULATOR_SUPPLY("vdd_3v3", NULL),
+	REGULATOR_SUPPLY("vdd_3v3_devices", NULL),
+	REGULATOR_SUPPLY("debug_cons", NULL),
+	REGULATOR_SUPPLY("pwrdet_pex_ctl", NULL),
+	REGULATOR_SUPPLY("vddio_gmi", NULL),
+};
+
+static struct regulator_consumer_supply fixed_reg_en_avdd_hdmi_usb_a00_supply[] = {
 	REGULATOR_SUPPLY("avdd_hdmi", NULL),
 	REGULATOR_SUPPLY("avdd_usb", NULL),
 	REGULATOR_SUPPLY("vddio_gmi", NULL),
 };
-static int gpio_switch_en_avdd_hdmi_usb_voltages[] = { 3300};
 
-static struct regulator_consumer_supply gpio_switch_en_1v8_cam_supply[] = {
+static struct regulator_consumer_supply fixed_reg_en_avdd_hdmi_usb_a01_supply[] = {
+	REGULATOR_SUPPLY("avdd_hdmi", NULL),
+	REGULATOR_SUPPLY("avdd_usb", NULL),
+};
+
+static struct regulator_consumer_supply fixed_reg_en_1v8_cam_supply[] = {
 	REGULATOR_SUPPLY("vdd_1v8_cam1", NULL),
 	REGULATOR_SUPPLY("vdd_1v8_cam2", NULL),
 	REGULATOR_SUPPLY("vdd_1v8_cam3", NULL),
 };
-static int gpio_switch_en_1v8_cam_voltages[] = { 1800};
 
-static struct regulator_consumer_supply gpio_switch_en_vddio_vid_supply[] = {
+static struct regulator_consumer_supply fixed_reg_en_vddio_vid_supply[] = {
 	REGULATOR_SUPPLY("vdd_hdmi_con", NULL),
 };
-static int gpio_switch_en_vddio_vid_voltages[] = { 5000};
 
-static struct regulator_consumer_supply gpio_switch_en_3v3_modem_supply[] = {
+static struct regulator_consumer_supply fixed_reg_en_3v3_modem_supply[] = {
 	REGULATOR_SUPPLY("vdd_mini_card", NULL),
 };
-static int gpio_switch_en_3v3_modem_voltages[] = { 3300};
 
-static struct regulator_consumer_supply gpio_switch_en_vdd_pnl_supply[] = {
+static struct regulator_consumer_supply fixed_reg_en_vdd_pnl_supply[] = {
 	REGULATOR_SUPPLY("vdd_lvds", NULL),
 	REGULATOR_SUPPLY("vdd_lcd_panel", NULL),
 	REGULATOR_SUPPLY("vdd_touch", NULL),
 	REGULATOR_SUPPLY("vddio_ts", NULL),
 };
-static int gpio_switch_en_vdd_pnl_voltages[] = { 3300};
 
-static struct regulator_consumer_supply gpio_switch_en_cam3_ldo_supply[] = {
+static struct regulator_consumer_supply fixed_reg_en_cam3_ldo_supply[] = {
 	REGULATOR_SUPPLY("vdd_cam3", NULL),
 };
-static int gpio_switch_en_cam3_ldo_voltages[] = { 3300};
 
-static struct regulator_consumer_supply gpio_switch_en_vdd_com_supply[] = {
+static struct regulator_consumer_supply fixed_reg_en_vdd_com_supply[] = {
 	REGULATOR_SUPPLY("vdd_com_bd", NULL),
 };
-static int gpio_switch_en_vdd_com_voltages[] = { 3300};
 
-static struct regulator_consumer_supply gpio_switch_en_vdd_sdmmc1_supply[] = {
+static struct regulator_consumer_supply fixed_reg_en_vdd_sdmmc1_supply[] = {
 	REGULATOR_SUPPLY("vddio_sd_slot", "sdhci-tegra.0"),
 };
-static int gpio_switch_en_vdd_sdmmc1_voltages[] = { 3300};
 
-static struct regulator_consumer_supply gpio_switch_en_3v3_fuse_supply[] = {
-	REGULATOR_SUPPLY("vpp_fuse", NULL),
+static struct regulator_consumer_supply fixed_reg_en_3v3_fuse_supply[] = {
+	REGULATOR_SUPPLY("vdd_fuse", NULL),
 };
-static int gpio_switch_en_3v3_fuse_voltages[] = { 3300};
 
-static struct regulator_consumer_supply gpio_switch_cdc_en_supply[] = {
+static struct regulator_consumer_supply fixed_reg_cdc_en_supply[] = {
 	REGULATOR_SUPPLY("cdc_en", NULL),
 };
-static int gpio_switch_cdc_en_voltages[] = { 1200};
 
-/* Macro for defining gpio switch regulator sub device data */
-#define GREG_INIT(_id, _var, _name, _input_supply, _always_on, _boot_on, \
-	_gpio_nr, _active_low, _init_state, _pg, _enable, _disable)	 \
-	static struct gpio_switch_regulator_subdev_data gpio_pdata_##_var =  \
+/* Macro for defining fixed regulator sub device data */
+#define FIXED_SUPPLY(_name) "fixed_reg_"#_name
+#define FIXED_REG(_id, _var, _name, _in_supply, _always_on, _boot_on,	\
+	_gpio_nr, _active_high, _boot_state, _millivolts)	\
+	static struct regulator_init_data ri_data_##_var =		\
 	{								\
-		.regulator_name	= "gpio-switch-"#_name,			\
-		.input_supply	= _input_supply,			\
-		.id		= _id,					\
-		.gpio_nr	= _gpio_nr,				\
-		.pin_group	= _pg,					\
-		.active_low	= _active_low,				\
-		.init_state	= _init_state,				\
-		.voltages	= gpio_switch_##_name##_voltages,	\
-		.n_voltages	= ARRAY_SIZE(gpio_switch_##_name##_voltages), \
+		.supply_regulator = _in_supply,				\
 		.num_consumer_supplies =				\
-				ARRAY_SIZE(gpio_switch_##_name##_supply), \
-		.consumer_supplies = gpio_switch_##_name##_supply,	\
+			ARRAY_SIZE(fixed_reg_##_name##_supply),		\
+		.consumer_supplies = fixed_reg_##_name##_supply,	\
 		.constraints = {					\
 			.valid_modes_mask = (REGULATOR_MODE_NORMAL |	\
-					     REGULATOR_MODE_STANDBY),	\
+					REGULATOR_MODE_STANDBY),	\
 			.valid_ops_mask = (REGULATOR_CHANGE_MODE |	\
-					   REGULATOR_CHANGE_STATUS |	\
-					   REGULATOR_CHANGE_VOLTAGE),	\
+					REGULATOR_CHANGE_STATUS |	\
+					REGULATOR_CHANGE_VOLTAGE),	\
 			.always_on = _always_on,			\
 			.boot_on = _boot_on,				\
 		},							\
-		.enable_rail = _enable,					\
-		.disable_rail = _disable,				\
+	};								\
+	static struct fixed_voltage_config fixed_reg_##_var##_pdata =	\
+	{								\
+		.supply_name = FIXED_SUPPLY(_name),			\
+		.microvolts = _millivolts * 1000,			\
+		.gpio = _gpio_nr,					\
+		.enable_high = _active_high,				\
+		.enabled_at_boot = _boot_state,				\
+		.init_data = &ri_data_##_var,				\
+	};								\
+	static struct platform_device fixed_reg_##_var##_dev = {	\
+		.name = "reg-fixed-voltage",				\
+		.id = _id,						\
+		.dev = {						\
+			.platform_data = &fixed_reg_##_var##_pdata,	\
+		},							\
 	}
 
-GREG_INIT(1, en_3v3_sys,	en_3v3_sys,		NULL,
-	1,	0,	MAX77663_GPIO_BASE + MAX77663_GPIO3,	false,	1,	0,	0,	0);
-GREG_INIT(2, en_avdd_hdmi_usb,	en_avdd_hdmi_usb,	"vdd_3v3_devices",
-	1,	0,	MAX77663_GPIO_BASE + MAX77663_GPIO2,	false,	1,	0,	0,	0);
-GREG_INIT(3, en_1v8_cam,	en_1v8_cam,		"vdd_gen1v8",
-	0,	0,	TEGRA_GPIO_PS0,				false,	0,	0,	0,	0);
-GREG_INIT(4, en_vddio_vid_oc,	en_vddio_vid,		NULL,
-	0,	0,	TEGRA_GPIO_PB2,				false,	0,	0,	0,	0);
-GREG_INIT(5, en_3v3_modem,	en_3v3_modem,		NULL,
-	0,	0,	TEGRA_GPIO_PP0,				false,	0,	0,	0,	0);
-GREG_INIT(6, en_vdd_pnl,	en_vdd_pnl,		"vdd_3v3_devices",
-	0,	0,	TEGRA_GPIO_PW1,				false,	0,	0,	0,	0);
-GREG_INIT(7, en_cam3_ldo,	en_cam3_ldo,		"vdd_3v3_devices",
-	0,	0,	TEGRA_GPIO_PR7,				false,	0,	0,	0,	0);
-GREG_INIT(8, en_vdd_com,	en_vdd_com,		"vdd_3v3_devices",
-	0,	0,	TEGRA_GPIO_PD0,				false,	0,	0,	0,	0);
-GREG_INIT(9,  en_vdd_sdmmc1,	en_vdd_sdmmc1,		"vdd_3v3_devices",
-	0,	0,	TEGRA_GPIO_PC6,				false,	0,	0,	0,	0);
-GREG_INIT(10, en_3v3_fuse,	en_3v3_fuse,		"vdd_3v3_devices",
-	0,	0,	TEGRA_GPIO_PC1,				false,	0,	0,	0,	0);
-GREG_INIT(11, cdc_en,		cdc_en,			"vddio_audio",
-	0,	1,	TEGRA_GPIO_PX2,				false,	0,	0,	0,	0);
 
+/* A00 specific */
+FIXED_REG(1, en_3v3_sys_a00,	en_3v3_sys_a00,		NULL,
+	1,	0,	MAX77663_GPIO_BASE + MAX77663_GPIO3,	true,	1,	3300);
+FIXED_REG(2, en_avdd_hdmi_usb_a00, en_avdd_hdmi_usb_a00, FIXED_SUPPLY(en_3v3_sys_a00),
+	1,	0,	MAX77663_GPIO_BASE + MAX77663_GPIO2,	true,	1,	3300);
+FIXED_REG(3, en_1v8_cam_a00,	en_1v8_cam,		max77663_rails(sd2),
+	0,	0,	TEGRA_GPIO_PS0,				true,	0,	1800);
+FIXED_REG(4, en_vddio_vid_a00,	en_vddio_vid,		NULL,
+	0,	0,	TEGRA_GPIO_PB2,				true,	0,	5000);
+FIXED_REG(5, en_3v3_modem_a00,	en_3v3_modem,		NULL,
+	0,	1,	TEGRA_GPIO_PP0,				true,	0,	3300);
+FIXED_REG(6, en_vdd_pnl_a00,	en_vdd_pnl,		FIXED_SUPPLY(en_3v3_sys_a00),
+	0,	0,	TEGRA_GPIO_PW1,				true,	0,	3300);
+FIXED_REG(7, en_cam3_ldo_a00,	en_cam3_ldo,		FIXED_SUPPLY(en_3v3_sys_a00),
+	0,	0,	TEGRA_GPIO_PR7,				true,	0,	3300);
+FIXED_REG(8, en_vdd_com_a00,	en_vdd_com,		FIXED_SUPPLY(en_3v3_sys_a00),
+	1,	0,	TEGRA_GPIO_PD0,				true,	0,	3300);
+FIXED_REG(9,  en_vdd_sdmmc1_a00, en_vdd_sdmmc1,		FIXED_SUPPLY(en_3v3_sys_a00),
+	0,	0,	TEGRA_GPIO_PC6,				true,	0,	3300);
+FIXED_REG(10, en_3v3_fuse_a00,	en_3v3_fuse,		FIXED_SUPPLY(en_3v3_sys_a00),
+	0,	0,	TEGRA_GPIO_PC1,				true,	0,	3300);
+FIXED_REG(11, cdc_en_a00,	cdc_en,			max77663_rails(sd2),
+	0,	1,	TEGRA_GPIO_PX2,				true,	0,	1200);
 
-#define ADD_GPIO_REG(_name) &gpio_pdata_##_name
+/* A01 specific */
+FIXED_REG(1, en_3v3_sys_a01,	en_3v3_sys_a01,		NULL,
+	1,	0,	MAX77663_GPIO_BASE + MAX77663_GPIO3,	true,	1,	3300);
+FIXED_REG(2, en_avdd_hdmi_usb_a01, en_avdd_hdmi_usb_a01, FIXED_SUPPLY(en_3v3_sys_a01),
+	0,	0,	MAX77663_GPIO_BASE + MAX77663_GPIO2,	true,	0,	3300);
+FIXED_REG(3, en_1v8_cam_a01,	en_1v8_cam,		max77663_rails(sd2),
+	0,	0,	TEGRA_GPIO_PS0,				true,	0,	1800);
+FIXED_REG(4, en_vddio_vid_a01,	en_vddio_vid,		NULL,
+	0,	0,	TEGRA_GPIO_PB2,				true,	0,	5000);
+FIXED_REG(5, en_3v3_modem_a01,	en_3v3_modem,		NULL,
+	0,	1,	TEGRA_GPIO_PP0,				true,	0,	3300);
+FIXED_REG(6, en_vdd_pnl_a01,	en_vdd_pnl,		FIXED_SUPPLY(en_3v3_sys_a01),
+	0,	1,	TEGRA_GPIO_PW1,				true,	0,	3300);
+FIXED_REG(7, en_cam3_ldo_a01,	en_cam3_ldo,		FIXED_SUPPLY(en_3v3_sys_a01),
+	0,	0,	TEGRA_GPIO_PR7,				true,	0,	3300);
+FIXED_REG(8, en_vdd_com_a01,	en_vdd_com,		FIXED_SUPPLY(en_3v3_sys_a01),
+	1,	0,	TEGRA_GPIO_PD0,				true,	0,	3300);
+FIXED_REG(9,  en_vdd_sdmmc1_a01, en_vdd_sdmmc1,		FIXED_SUPPLY(en_3v3_sys_a01),
+	0,	0,	TEGRA_GPIO_PC6,				true,	0,	3300);
+FIXED_REG(10, en_3v3_fuse_a01,	en_3v3_fuse,		FIXED_SUPPLY(en_3v3_sys_a01),
+	0,	0,	TEGRA_GPIO_PC1,				true,	0,	3300);
+FIXED_REG(11, cdc_en_a01,	cdc_en,			max77663_rails(sd2),
+	0,	1,	TEGRA_GPIO_PX2,				true,	0,	1200);
 
-#define E1565_GPIO_REG \
-	ADD_GPIO_REG(en_3v3_sys),		\
-	ADD_GPIO_REG(en_avdd_hdmi_usb),		\
-	ADD_GPIO_REG(en_1v8_cam),		\
-	ADD_GPIO_REG(en_vddio_vid_oc),		\
-	ADD_GPIO_REG(en_3v3_modem),		\
-	ADD_GPIO_REG(en_vdd_pnl),		\
-	ADD_GPIO_REG(en_cam3_ldo),		\
-	ADD_GPIO_REG(en_vdd_com),		\
-	ADD_GPIO_REG(en_vdd_sdmmc1),		\
-	ADD_GPIO_REG(en_3v3_fuse),		\
-	ADD_GPIO_REG(cdc_en),			\
+/*
+ * Creating the fixed regulator device tables
+ */
 
+#define ADD_FIXED_REG(_name)	(&fixed_reg_##_name##_dev)
 
-static struct gpio_switch_regulator_subdev_data *gswitch_subdevs[] = {
-	E1565_GPIO_REG
+/* A00 specific */
+#define E1565_A00_FIXED_REG \
+	ADD_FIXED_REG(en_3v3_sys_a00),		\
+	ADD_FIXED_REG(en_avdd_hdmi_usb_a00),	\
+	ADD_FIXED_REG(en_1v8_cam_a00),		\
+	ADD_FIXED_REG(en_vddio_vid_a00),	\
+	ADD_FIXED_REG(en_3v3_modem_a00),	\
+	ADD_FIXED_REG(en_vdd_pnl_a00),		\
+	ADD_FIXED_REG(en_cam3_ldo_a00),		\
+	ADD_FIXED_REG(en_vdd_com_a00),		\
+	ADD_FIXED_REG(en_vdd_sdmmc1_a00),	\
+	ADD_FIXED_REG(en_3v3_fuse_a00),		\
+	ADD_FIXED_REG(cdc_en_a00),		\
+
+/* A01 specific */
+#define E1565_A01_FIXED_REG \
+	ADD_FIXED_REG(en_3v3_sys_a01),		\
+	ADD_FIXED_REG(en_avdd_hdmi_usb_a01),	\
+	ADD_FIXED_REG(en_1v8_cam_a01),		\
+	ADD_FIXED_REG(en_vddio_vid_a01),	\
+	ADD_FIXED_REG(en_3v3_modem_a01),	\
+	ADD_FIXED_REG(en_vdd_pnl_a01),		\
+	ADD_FIXED_REG(en_cam3_ldo_a01),		\
+	ADD_FIXED_REG(en_vdd_com_a01),		\
+	ADD_FIXED_REG(en_vdd_sdmmc1_a01),	\
+	ADD_FIXED_REG(en_3v3_fuse_a01),		\
+	ADD_FIXED_REG(cdc_en_a01),		\
+
+/* Gpio switch regulator platform data for Kai A00 */
+static struct platform_device *fixed_reg_devs_a00[] = {
+	E1565_A00_FIXED_REG
 };
 
-static struct gpio_switch_regulator_platform_data gswitch_pdata = {
-	.subdevs = gswitch_subdevs,
-	.num_subdevs = ARRAY_SIZE(gswitch_subdevs),
+/* Gpio switch regulator platform data for Kai A01 */
+static struct platform_device *fixed_reg_devs_a01[] = {
+	E1565_A01_FIXED_REG
 };
 
-static struct platform_device gswitch_regulator_pdata = {
-	.name = "gpio-switch-regulator",
-	.id   = -1,
-	.dev  = {
-	     .platform_data = &gswitch_pdata,
-	},
-};
-
-static int __init kai_max77663_gpio_switch_regulator_init(void)
+static int __init kai_fixed_regulator_init(void)
 {
 	int i;
+	struct board_info board_info;
+	struct platform_device **fixed_reg_devs;
+	int nfixreg_devs;
 
-	for (i = 0; i < gswitch_pdata.num_subdevs; ++i) {
-		struct gpio_switch_regulator_subdev_data *gswitch_data =
-						gswitch_pdata.subdevs[i];
-		if (gswitch_data->gpio_nr <= TEGRA_NR_GPIOS)
-			tegra_gpio_enable(gswitch_data->gpio_nr);
+	tegra_get_board_info(&board_info);
+
+	if (board_info.fab == BOARD_FAB_A00) {
+		fixed_reg_devs = fixed_reg_devs_a00;
+		nfixreg_devs = ARRAY_SIZE(fixed_reg_devs_a00);
+	} else {
+		fixed_reg_devs = fixed_reg_devs_a01;
+		nfixreg_devs = ARRAY_SIZE(fixed_reg_devs_a01);
 	}
 
-	return platform_device_register(&gswitch_regulator_pdata);
+	if (!machine_is_kai())
+		return 0;
+
+	for (i = 0; i < nfixreg_devs; ++i) {
+		int gpio_nr;
+		struct fixed_voltage_config *fixed_reg_pdata =
+			fixed_reg_devs[i]->dev.platform_data;
+		gpio_nr = fixed_reg_pdata->gpio;
+
+	}
+
+	return platform_add_devices(fixed_reg_devs, nfixreg_devs);
 }
+subsys_initcall_sync(kai_fixed_regulator_init);
 
 int __init kai_regulator_init(void)
 {
@@ -521,7 +588,7 @@ int __init kai_regulator_init(void)
 	if (ret < 0)
 		return ret;
 
-	return kai_max77663_gpio_switch_regulator_init();
+	return 0;
 }
 
 static void kai_board_suspend(int lp_state, enum suspend_stage stg)
@@ -552,25 +619,6 @@ static struct tegra_suspend_platform_data kai_suspend_data = {
 int __init kai_suspend_init(void)
 {
 	tegra_init_suspend(&kai_suspend_data);
-	return 0;
-}
-
-static void kai_power_off(void)
-{
-	int ret;
-	pr_err("kai: Powering off the device\n");
-	ret = max77663_power_off();
-	if (ret)
-		pr_err("kai: failed to power off\n");
-
-	while (1)
-		;
-}
-
-int __init kai_power_off_init(void)
-{
-	pm_power_off = kai_power_off;
-
 	return 0;
 }
 

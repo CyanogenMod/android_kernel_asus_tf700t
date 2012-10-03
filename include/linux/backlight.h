@@ -111,6 +111,16 @@ static inline void backlight_update_status(struct backlight_device *bd)
 	mutex_unlock(&bd->update_lock);
 }
 
+static inline int backlight_get_brightness(struct backlight_device *bd)
+{
+	int brightness = 0;
+	mutex_lock(&bd->update_lock);
+	if (bd->ops && bd->ops->get_brightness)
+		brightness = bd->ops->get_brightness(bd);
+	mutex_unlock(&bd->update_lock);
+	return brightness;
+}
+
 extern struct backlight_device *backlight_device_register(const char *name,
 	struct device *dev, void *devdata, const struct backlight_ops *ops,
 	const struct backlight_properties *props);

@@ -2,8 +2,8 @@
  * drivers/rtc/rtc-max77663.c
  * Max77663 RTC driver
  *
- * Copyright 2011 Maxim Integrated Products, Inc.
- * Copyright (C) 2011 NVIDIA Corporation
+ * Copyright 2011-2012, Maxim Integrated Products, Inc.
+ * Copyright (c) 2011-2012, NVIDIA CORPORATION. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -97,6 +97,7 @@ struct max77663_rtc {
 	struct mutex io_lock;
 	int irq;
 	u8 irq_mask;
+	bool shutdown_ongoing;
 };
 
 static inline struct device *_to_parent(struct max77663_rtc *rtc)
@@ -273,6 +274,12 @@ static inline int max77663_rtc_do_irq(struct max77663_rtc *rtc)
 	u8 irq_status;
 	int ret;
 
+	ret = max77663_rtc_update_buffer(rtc, 0);
+	if (ret < 0) {
+		dev_err(rtc->dev, "rtc_irq: Failed to get rtc update buffer\n");
+		return ret;
+	}
+
 	ret = max77663_read(parent, MAX77663_RTC_IRQ, &irq_status, 1, 1);
 	if (ret < 0) {
 		dev_err(rtc->dev, "rtc_irq: Failed to get rtc irq status\n");
@@ -437,11 +444,16 @@ static int max77663_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	u8 buf[RTC_NR];
 	int ret;
 
+	if (rtc->shutdown_ongoing) {
+		dev_warn(rtc->dev, "rtc_set_alarm: "
+			 "Device shutdown on-going, skip alarm setting.\n");
+		return -ESHUTDOWN;
+	}
 	dev_dbg(rtc->dev, "rtc_set_alarm: "
-		"tm: %d-%02d-%02d %02d:%02d:%02d, wday=%d\n",
+		"tm: %d-%02d-%02d %02d:%02d:%02d, wday=%d [%s]\n",
 		alrm->time.tm_year, alrm->time.tm_mon, alrm->time.tm_mday,
 		alrm->time.tm_hour, alrm->time.tm_min, alrm->time.tm_sec,
-		alrm->time.tm_wday);
+		alrm->time.tm_wday, alrm->enabled?"enable":"disable");
 
 	ret = max77663_rtc_tm_to_reg(rtc, buf, &alrm->time, 1);
 	if (ret < 0) {
@@ -463,7 +475,7 @@ static int max77663_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 		return ret;
 	}
 
-	ret = max77663_rtc_alarm_irq_enable(dev, 1);
+	ret = max77663_rtc_alarm_irq_enable(dev, alrm->enabled);
 	if (ret < 0) {
 		dev_err(rtc->dev,
 			"rtc_set_alarm: Failed to enable rtc alarm\n");
@@ -528,7 +540,7 @@ static int max77663_rtc_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "probe: kzalloc() failed\n");
 		return -ENOMEM;
 	}
-
+	rtc->shutdown_ongoing = false;
 	dev_set_drvdata(&pdev->dev, rtc);
 	rtc->dev = &pdev->dev;
 	mutex_init(&rtc->io_lock);
@@ -585,6 +597,17 @@ static int __devexit max77663_rtc_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void max77663_rtc_shutdown(struct platform_device *pdev)
+{
+	struct max77663_rtc *rtc = dev_get_drvdata(&pdev->dev);
+	u8 buf[RTC_NR] = { 0x0, 0x0, 0x0, 0x1, 0x1, 0x0, 0x1 };
+
+	rtc->shutdown_ongoing = true;
+	dev_info(rtc->dev, "rtc_shutdown: clean alarm\n");
+	max77663_rtc_write(rtc, MAX77663_RTC_ALARM_SEC1, buf, sizeof(buf), 1);
+	max77663_rtc_alarm_irq_enable(&pdev->dev, 0);
+}
+
 static struct platform_driver max77663_rtc_driver = {
 	.probe = max77663_rtc_probe,
 	.remove = __devexit_p(max77663_rtc_remove),
@@ -592,6 +615,7 @@ static struct platform_driver max77663_rtc_driver = {
 		   .name = "max77663-rtc",
 		   .owner = THIS_MODULE,
 	},
+	.shutdown = max77663_rtc_shutdown,
 };
 
 static int __init max77663_rtc_init(void)

@@ -190,9 +190,17 @@ static void fixup_use_write_buffers(struct mtd_info *mtd)
 {
 	struct map_info *map = mtd->priv;
 	struct cfi_private *cfi = map->fldrv_priv;
+	struct cfi_pri_amdstd *extp = cfi->cmdset_priv;
+
 	if (cfi->cfiq->BufWriteTimeoutTyp) {
 		DEBUG(MTD_DEBUG_LEVEL1, "Using buffer write method\n" );
 		mtd->write = cfi_amdstd_write_buffers;
+
+		if (extp->SiliconRevision >= 0x1C) {
+			mtd->writesize = 512;
+			mtd->flags &= ~MTD_BIT_WRITEABLE;
+			printk(KERN_INFO "Enabling Spansion 65nm mode, writesize = 512 bytes\n");
+		}
 	}
 }
 
@@ -462,13 +470,14 @@ struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 			cfi_fixup_major_minor(cfi, extp);
 
 			/*
-			 * Valid primary extension versions are: 1.0, 1.1, 1.2, 1.3, 1.4
+			 * Valid primary extension versions are: 1.0, 1.1, 1.2, 1.3, 1.4, 1.5
 			 * see: http://cs.ozerki.net/zap/pub/axim-x5/docs/cfi_r20.pdf, page 19 
 			 *      http://www.spansion.com/Support/AppNotes/cfi_100_20011201.pdf
 			 *      http://www.spansion.com/Support/Datasheets/s29ws-p_00_a12_e.pdf
+			 *      http://www.spansion.com/Support/Datasheets/S29GL_128S_01GS_00_02_e.pdf
 			 */
 			if (extp->MajorVersion != '1' ||
-			    (extp->MajorVersion == '1' && (extp->MinorVersion < '0' || extp->MinorVersion > '4'))) {
+			    (extp->MajorVersion == '1' && (extp->MinorVersion < '0' || extp->MinorVersion > '5'))) {
 				printk(KERN_ERR "  Unknown Amd/Fujitsu Extended Query "
 				       "version %c.%c (%#02x/%#02x).\n",
 				       extp->MajorVersion, extp->MinorVersion,
@@ -710,9 +719,7 @@ static int get_chip(struct map_info *map, struct flchip *chip, unsigned long adr
 				 * there was an error (so leave the erase
 				 * routine to recover from it) or we trying to
 				 * use the erase-in-progress sector. */
-				map_write(map, cfi->sector_erase_cmd, chip->in_progress_block_addr);
-				chip->state = FL_ERASING;
-				chip->oldstate = FL_READY;
+				put_chip(map, chip, adr);
 				printk(KERN_ERR "MTD %s(): chip not ready after erase suspend\n", __func__);
 				return -EIO;
 			}
@@ -762,7 +769,6 @@ static void put_chip(struct map_info *map, struct flchip *chip, unsigned long ad
 
 	switch(chip->oldstate) {
 	case FL_ERASING:
-		chip->state = chip->oldstate;
 		map_write(map, cfi->sector_erase_cmd, chip->in_progress_block_addr);
 		chip->oldstate = FL_READY;
 		chip->state = FL_ERASING;
@@ -1374,21 +1380,18 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 }
 
 
-/*
- * FIXME: interleaved mode not tested, and probably not supported!
- */
 static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 				    unsigned long adr, const u_char *buf,
 				    int len)
 {
 	struct cfi_private *cfi = map->fldrv_priv;
 	unsigned long timeo = jiffies + HZ;
-	/* see comments in do_write_oneword() regarding uWriteTimeo. */
-	unsigned long uWriteTimeout = ( HZ / 1000 ) + 1;
+	/* see comments in do_write_oneword() regarding uWriteTimeout, 20ms */
+	unsigned long uWriteTimeout = (HZ / 50) + 1;
 	int ret = -EIO;
 	unsigned long cmd_adr;
-	int z, words;
-	map_word datum;
+	int z, words, prolog, epilog, buflen = len;
+	map_word datum, pdat, edat;
 
 	adr += chip->start;
 	cmd_adr = adr;
@@ -1409,6 +1412,21 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 	ENABLE_VPP(map);
 	xip_disable(map, chip, cmd_adr);
 
+	/* If start is not bus-aligned, prepend old contents of flash */
+	prolog = (adr & (map_bankwidth(map)-1));
+	if (prolog) {
+		adr -= prolog;
+		cmd_adr -= prolog;
+		len += prolog;
+		pdat = map_read(map, adr);
+	}
+	/* If end is not bus-aligned, append old contents of flash */
+	epilog = ((adr + len) & (map_bankwidth(map)-1));
+	if (epilog) {
+		len += map_bankwidth(map)-epilog;
+		edat = map_read(map, adr + len - map_bankwidth(map));
+	}
+
 	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
 	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi, cfi->device_type, NULL);
 
@@ -1422,8 +1440,21 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 	map_write(map, CMD(words - 1), cmd_adr);
 	/* Write data */
 	z = 0;
+	if (prolog) {
+		datum = map_word_load_partial(map, pdat, buf, prolog,
+				min_t(int, buflen,
+					map_bankwidth(map) - prolog));
+		map_write(map, datum, adr);
+
+		z += map_bankwidth(map);
+		buf += map_bankwidth(map) - prolog;
+	}
 	while(z < words * map_bankwidth(map)) {
-		datum = map_word_load(map, buf);
+		if (epilog && z >= (words-1) * map_bankwidth(map))
+			datum = map_word_load_partial(map, edat,
+					buf, 0, epilog);
+		else
+			datum = map_word_load(map, buf);
 		map_write(map, datum, adr + z);
 
 		z += map_bankwidth(map);
@@ -1472,8 +1503,13 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 
 	/* reset on all failures. */
 	map_write( map, CMD(0xF0), chip->start );
+	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map,
+				cfi, cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map,
+				cfi, cfi->device_type, NULL);
+	cfi_send_gen_cmd(0xF0, cfi->addr_unlock1, chip->start, map,
+				cfi, cfi->device_type, NULL);
 	xip_enable(map, chip, adr);
-	/* FIXME - should have reset delay before continuing */
 
 	printk(KERN_WARNING "MTD %s(): software timeout\n",
 	       __func__ );
@@ -1505,36 +1541,12 @@ static int cfi_amdstd_write_buffers(struct mtd_info *mtd, loff_t to, size_t len,
 	chipnum = to >> cfi->chipshift;
 	ofs = to  - (chipnum << cfi->chipshift);
 
-	/* If it's not bus-aligned, do the first word write */
-	if (ofs & (map_bankwidth(map)-1)) {
-		size_t local_len = (-ofs)&(map_bankwidth(map)-1);
-		if (local_len > len)
-			local_len = len;
-		ret = cfi_amdstd_write_words(mtd, ofs + (chipnum<<cfi->chipshift),
-					     local_len, retlen, buf);
-		if (ret)
-			return ret;
-		ofs += local_len;
-		buf += local_len;
-		len -= local_len;
-
-		if (ofs >> cfi->chipshift) {
-			chipnum ++;
-			ofs = 0;
-			if (chipnum == cfi->numchips)
-				return 0;
-		}
-	}
-
-	/* Write buffer is worth it only if more than one word to write... */
-	while (len >= map_bankwidth(map) * 2) {
+	while (len) {
 		/* We must not cross write block boundaries */
 		int size = wbufsize - (ofs & (wbufsize-1));
 
 		if (size > len)
 			size = len;
-		if (size % map_bankwidth(map))
-			size -= size % map_bankwidth(map);
 
 		ret = do_write_buffer(map, &cfi->chips[chipnum],
 				      ofs, buf, size);
@@ -1552,16 +1564,6 @@ static int cfi_amdstd_write_buffers(struct mtd_info *mtd, loff_t to, size_t len,
 			if (chipnum == cfi->numchips)
 				return 0;
 		}
-	}
-
-	if (len) {
-		size_t retlen_dregs = 0;
-
-		ret = cfi_amdstd_write_words(mtd, ofs + (chipnum<<cfi->chipshift),
-					     len, &retlen_dregs, buf);
-
-		*retlen += retlen_dregs;
-		return ret;
 	}
 
 	return 0;

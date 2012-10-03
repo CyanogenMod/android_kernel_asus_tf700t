@@ -27,23 +27,6 @@
 #define XMM_MODEM_VER_1121	0x1121
 #define XMM_MODEM_VER_1130	0x1130
 
-#define XMM_INFO 1
-#define XMM_DEBUG 0
-
-#if XMM_INFO
-#define xmm_info(format, arg...) \
-		printk(KERN_INFO "XMM: [%s] " format , __FUNCTION__ , ## arg)
-#else
-#define xmm_info(format, arg...)
-#endif
-
-#if XMM_DEBUG
-#define pr_debug(format, arg...) \
-		printk(KERN_DEBUG "XMM: [%s] " format , __FUNCTION__ , ## arg)
-#endif
-
-#define XMM_ATTR_MODE S_IRUSR | S_IWUSR | S_IRGRP
-
 /* shared between baseband-xmm-* modules so they can agree on same
  * modem configuration
  */
@@ -96,24 +79,22 @@ enum baseband_xmm_power_work_state_t {
 	BBXMM_WORK_INIT_FLASH_STEP1,
 	/* initialize flash (with power management support) modem */
 	BBXMM_WORK_INIT_FLASH_PM_STEP1,
-	BBXMM_WORK_INIT_FLASH_PM_VER_LT_1130_STEP1,
-	BBXMM_WORK_INIT_FLASH_PM_VER_GE_1130_STEP1,
 	/* initialize flashless (with power management support) modem */
 	BBXMM_WORK_INIT_FLASHLESS_PM_STEP1,
-	BBXMM_WORK_INIT_FLASHLESS_PM_VER_LT_1130_WAIT_IRQ,
-	BBXMM_WORK_INIT_FLASHLESS_PM_VER_LT_1130_STEP1,
-	BBXMM_WORK_INIT_FLASHLESS_PM_VER_LT_1130_STEP2,
-	BBXMM_WORK_INIT_FLASHLESS_PM_VER_GE_1130_STEP1,
-	BBXMM_WORK_INIT_FLASHLESS_PM_VER_GE_1130_STEP2,
-	BBXMM_WORK_INIT_FLASHLESS_PM_VER_GE_1130_STEP3,
-	BBXMM_WORK_INIT_FLASHLESS_PM_VER_GE_1130_STEP4,
+	BBXMM_WORK_INIT_FLASHLESS_PM_STEP2,
+	BBXMM_WORK_INIT_FLASHLESS_PM_STEP3,
+	BBXMM_WORK_INIT_FLASHLESS_PM_STEP4,
 };
 
-struct baseband_xmm_power_work_t {
-	/* work structure must be first structure member */
-	struct work_struct work;
+struct xmm_power_data {
 	/* xmm modem state */
 	enum baseband_xmm_power_work_state_t state;
+	struct baseband_power_platform_data *pdata;
+	struct work_struct work;
+	struct platform_device *hsic_device;
+	wait_queue_head_t bb_wait;
+	/* host wakeup gpio state*/
+	unsigned int hostwake;
 };
 
 enum baseband_xmm_powerstate_t {
@@ -129,10 +110,10 @@ enum baseband_xmm_powerstate_t {
 	BBXMM_PS_LAST	= -1,
 };
 
-irqreturn_t baseband_xmm_power_ipc_ap_wake_irq(int irq, void *dev_id);
+irqreturn_t xmm_power_ipc_ap_wake_irq(int irq, void *dev_id);
 
 void baseband_xmm_set_power_status(unsigned int status);
-int baseband_xmm_enable_hsic_power(int enable);
 int baseband_modem_crash_dump(int enable);
+extern struct xmm_power_data xmm_power_drv_data;
 
 #endif  /* BASREBAND_XMM_POWER_H */

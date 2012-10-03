@@ -98,6 +98,7 @@ struct asuspec_chip {
 	int ec_in_s3;	// 0: normal mode, 1: ec in deep sleep mode
 	int i2c_err_count;
 	int apwake_disabled;	// 0: normal mode, 1: apwake gets disabled
+	int audio_recording;	// 0: not recording, 1: audio recording
 };
 
 #endif

@@ -774,28 +774,28 @@ static struct sensor_reg_ex EV_minus_2[] = {
 
 /* ++ AE Lock & AE Unlock ++ */
 static struct sensor_reg_ex AE_lock_seq[] = {
-{SENSOR_WORD_WRITE,0x098E, 0xCC00} ,	// LOGICAL_ADDRESS_ACCESS [UVC_AE_MODE_CONTROL]
-{SENSOR_BYTE_WRITE,0xCC00, 0x01} ,	// UVC_AE_MODE_CONTROL - manual exposure
+{SENSOR_WORD_WRITE,0x098E, 0x0284} ,   // LOGICAL_ADDRESS_ACCESS [AE_TRACK_ALGO]
+{SENSOR_WORD_WRITE,0xA804, 0x0000} ,          // AE_TRACK_ALGO - AE disabled
 {SENSOR_TABLE_END, 0x0000}
 };
 
 static struct sensor_reg_ex AE_unlock_seq[] = {
-{SENSOR_WORD_WRITE,0x098E, 0xCC00} ,	// LOGICAL_ADDRESS_ACCESS [UVC_AE_MODE_CONTROL]
-{SENSOR_BYTE_WRITE,0xCC00, 0x02} ,	// UVC_AE_MODE_CONTROL - auto exposure
+{SENSOR_WORD_WRITE,0x098E, 0x0284} ,   // LOGICAL_ADDRESS_ACCESS [AE_TRACK_ALGO]
+{SENSOR_WORD_WRITE,0xA804, 0x00FF} ,          // AE_TRACK_ALGO - AE disabled
 {SENSOR_TABLE_END, 0x0000}
 };
 /* -- AE Lock & AE Unlock --*/
 
 /* ++ AWB Lock & AWB Unlock ++ */
 static struct sensor_reg_ex AWB_lock_seq[] = {
-{SENSOR_WORD_WRITE,0x098E, 0xCC01} ,	// LOGICAL_ADDRESS_ACCESS [UVC_AE_MODE_CONTROL]
-{SENSOR_BYTE_WRITE,0xCC01, 0x00} ,	// UVC_WHITE_BALANCE_TEMPERATURE_AUTO_CONTROL - manual white balance
+{SENSOR_WORD_WRITE,0x098E, 0x2C04} ,   // LOGICAL_ADDRESS_ACCESS [AWB_ALGO]
+{SENSOR_WORD_WRITE, 0xAC04, 0x0000} ,          // AWB_ALGO - manual white balance
 {SENSOR_TABLE_END, 0x0000}
 };
 
 static struct sensor_reg_ex AWB_unlock_seq[] = {
-{SENSOR_WORD_WRITE,0x098E, 0xCC01} ,	// LOGICAL_ADDRESS_ACCESS [UVC_AE_MODE_CONTROL]
-{SENSOR_BYTE_WRITE,0xCC01, 0x01} ,	// UVC_WHITE_BALANCE_TEMPERATURE_AUTO_CONTROL - auto white balance
+{SENSOR_WORD_WRITE,0x098E, 0x2C04} ,   // LOGICAL_ADDRESS_ACCESS [AWB_ALGO]
+{SENSOR_WORD_WRITE, 0xAC04, 0x0288} ,          // AWB_ALGO - auto white balance
 {SENSOR_TABLE_END, 0x0000}
 };
 /* -- AWB Lock & AWB Unlock --*/
@@ -1245,7 +1245,7 @@ static ssize_t dbg_set_mi1040_reg_write(struct file *file, char __user *buf, siz
 	char debug_buf[256];
 	int cnt, byte_num;
 	char ofst_str[7], reg_val_str[11];
-	unsigned int ofst, reg_val= 0;
+	unsigned int ofst = 0, reg_val= 0;
 
 	printk("%s: buf=%p, count=%d, ppos=%p\n", __FUNCTION__, buf, count, ppos);
 	if (count > sizeof(debug_buf))
@@ -1255,7 +1255,7 @@ static ssize_t dbg_set_mi1040_reg_write(struct file *file, char __user *buf, siz
 	debug_buf[count] = '\0';	/* end of string */
 	cnt = sscanf(debug_buf, "%s %s %d", ofst_str, reg_val_str, &byte_num);
 
-	printk("adogu: cnt= %d; ofst_str=\"%s\"; reg_val_str=\"%s\"; byte_num= %d\n", cnt, ofst_str, reg_val_str, byte_num);
+	//printk("cnt= %d; ofst_str=\"%s\"; reg_val_str=\"%s\"; byte_num= %d\n", cnt, ofst_str, reg_val_str, byte_num);
 
 	if (sensor_opened == false) {
 			printk("%s: Please open mi1040 first.\n", __FUNCTION__);
@@ -1283,7 +1283,7 @@ static ssize_t dbg_set_mi1040_reg_write(struct file *file, char __user *buf, siz
 
 			/* Parse Reg Value */
 			for (i = 2; i < 11; i++) {
-				// printk("adogu: i =%d\n", i);
+				// printk("i =%d\n", i);
 
 				if ((reg_val_str[i] >= '0') && (reg_val_str[i] <= '9'))
 					reg_val = reg_val * 16 + reg_val_str[i] - '0';
@@ -1409,7 +1409,7 @@ static long sensor_ioctl(struct file *file,
 	}
 	case SENSOR_IOCTL_SET_COLOR_EFFECT:
 	{
-		u8 coloreffect;
+		u16 coloreffect;
 
 		if (copy_from_user(&coloreffect,(const void __user *)arg,
 			sizeof(coloreffect))) {
@@ -1671,19 +1671,18 @@ static long sensor_ioctl(struct file *file,
 
 static int sensor_open(struct inode *inode, struct file *file)
 {
-	int ret;
+	int ret = -EIO;
 
 	pr_info("yuv %s\n",__func__);
+
 	file->private_data = info;
+
 	if (info->pdata && info->pdata->power_on)
 		ret = info->pdata->power_on();
-	if (ret == 0)
-		sensor_opened = true;
-	else{
-		sensor_opened = false;
-		return -EBUSY;
-	}
-	return 0;
+
+	sensor_opened = !ret;
+
+	return ret;
 }
 
 int mi1040_sensor_release(struct inode *inode, struct file *file)

@@ -34,9 +34,11 @@ static u32 cffrml_rcv_error;
 static u32 cffrml_rcv_checsum_error;
 struct cflayer *cffrml_create(u16 phyid, bool use_fcs)
 {
-	struct cffrml *this = kzalloc(sizeof(struct cffrml), GFP_ATOMIC);
-	if (!this)
+	struct cffrml *this = kmalloc(sizeof(struct cffrml), GFP_ATOMIC);
+	if (!this) {
+		pr_warn("Out of memory\n");
 		return NULL;
+	}
 	this->pcpu_refcnt = alloc_percpu(int);
 	if (this->pcpu_refcnt == NULL) {
 		kfree(this);
@@ -45,6 +47,7 @@ struct cflayer *cffrml_create(u16 phyid, bool use_fcs)
 
 	caif_assert(offsetof(struct cffrml, layer) == 0);
 
+	memset(this, 0, sizeof(struct cflayer));
 	this->layer.receive = cffrml_receive;
 	this->layer.transmit = cffrml_transmit;
 	this->layer.ctrlcmd = cffrml_ctrlcmd;

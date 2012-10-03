@@ -29,12 +29,16 @@ extern int usb_wwan_suspend(struct usb_serial *serial, pm_message_t message);
 extern int usb_wwan_resume(struct usb_serial *serial);
 #endif
 
+extern struct usb_interface *get_usb_interface(void);
+
 /* per port private data */
 
 #define N_IN_URB 4
 #define N_OUT_URB 4
 #define IN_BUFLEN 4096
 #define OUT_BUFLEN 4096
+#define RIL_PORT_NUM 2
+#define LAST_SER_NUM 4
 
 struct usb_wwan_intf_private {
 	spinlock_t susp_lock;

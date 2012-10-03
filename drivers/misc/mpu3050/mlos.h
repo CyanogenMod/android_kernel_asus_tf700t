@@ -54,18 +54,18 @@ extern "C" {
 	/* - Function p-types. - */
 	/* --------------------- */
 
-	void *inv_malloc(unsigned int numBytes);
-	inv_error_t inv_free(void *ptr);
-	inv_error_t inv_create_mutex(HANDLE *mutex);
-	inv_error_t inv_lock_mutex(HANDLE mutex);
-	inv_error_t inv_unlock_mutex(HANDLE mutex);
-	FILE *inv_fopen(char *filename);
-	void inv_fclose(FILE *fp);
+	void *MLOSMalloc(unsigned int numBytes);
+	tMLError MLOSFree(void *ptr);
+	tMLError MLOSCreateMutex(HANDLE *mutex);
+	tMLError MLOSLockMutex(HANDLE mutex);
+	tMLError MLOSUnlockMutex(HANDLE mutex);
+	FILE *MLOSFOpen(char *filename);
+	void MLOSFClose(FILE *fp);
 
-	inv_error_t inv_destroy_mutex(HANDLE handle);
+	tMLError MLOSDestroyMutex(HANDLE handle);
 
-	void inv_sleep(int mSecs);
-	unsigned long inv_get_tick_count(void);
+	void MLOSSleep(int mSecs);
+	unsigned long MLOSGetTickCount(void);
 
 #ifdef __cplusplus
 }

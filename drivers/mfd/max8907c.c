@@ -26,7 +26,7 @@ static int max8907c_i2c_read(struct i2c_client *i2c, u8 reg, u8 count, u8 *dest)
 	int ret = 0;
 
 	xfer[0].addr = i2c->addr;
-	xfer[0].flags = I2C_M_NOSTART;
+	xfer[0].flags = 0;
 	xfer[0].len = 1;
 	xfer[0].buf = &reg;
 
@@ -152,12 +152,12 @@ int max8907c_set_bits(struct i2c_client *i2c, u8 reg, u8 mask, u8 val)
 EXPORT_SYMBOL_GPL(max8907c_set_bits);
 
 static struct i2c_client *max8907c_client = NULL;
-int max8907c_power_off(void)
+static void max8907c_power_off(void)
 {
 	if (!max8907c_client)
-		return -EINVAL;
+		return;
 
-	return max8907c_set_bits(max8907c_client, MAX8907C_REG_RESET_CNFG,
+	max8907c_set_bits(max8907c_client, MAX8907C_REG_RESET_CNFG,
 						MAX8907C_MASK_POWER_OFF, 0x40);
 }
 
@@ -275,6 +275,7 @@ static int max8907c_i2c_probe(struct i2c_client *i2c,
 	struct max8907c_platform_data *pdata = i2c->dev.platform_data;
 	int ret;
 	int i;
+	u8 tmp;
 
 	max8907c = kzalloc(sizeof(struct max8907c), GFP_KERNEL);
 	if (max8907c == NULL)
@@ -291,12 +292,14 @@ static int max8907c_i2c_probe(struct i2c_client *i2c,
 
 	mutex_init(&max8907c->io_lock);
 
-	for (i = 0; i < ARRAY_SIZE(cells); i++)
-		cells[i].mfd_data = max8907c;
+	for (i = 0; i < ARRAY_SIZE(cells); i++) {
+		cells[i].platform_data = max8907c;
+		cells[i].pdata_size = sizeof(*max8907c);
+	}
 	ret = mfd_add_devices(max8907c->dev, -1, cells, ARRAY_SIZE(cells),
 			      NULL, 0);
 	if (ret != 0) {
-	  	i2c_unregister_device(max8907c->i2c_rtc);
+		i2c_unregister_device(max8907c->i2c_rtc);
 		kfree(max8907c);
 		pr_debug("max8907c: failed to add MFD devices   %X\n", ret);
 		return ret;
@@ -307,6 +310,21 @@ static int max8907c_i2c_probe(struct i2c_client *i2c,
 	max8907c_irq_init(max8907c, i2c->irq, pdata->irq_base);
 
 	ret = max8097c_add_subdevs(max8907c, pdata);
+
+	if (pdata->use_power_off && !pm_power_off)
+		pm_power_off = max8907c_power_off;
+
+	ret = max8907c_i2c_read(i2c, MAX8907C_REG_SYSENSEL, 1, &tmp);
+	/*Mask HARD RESET, if enabled */
+	if (ret == 0) {
+		tmp &= ~(BIT(7));
+		ret = max8907c_i2c_write(i2c, MAX8907C_REG_SYSENSEL, 1, &tmp);
+	}
+
+	if (ret != 0) {
+		pr_err("Failed to write max8907c I2C driver: %d\n", ret);
+		return ret;
+	}
 
 	if (pdata->max8907c_setup)
 		return pdata->max8907c_setup();

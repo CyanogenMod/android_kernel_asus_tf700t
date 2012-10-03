@@ -3,7 +3,7 @@
  *
  * Driver for NCT1008, temperature monitoring device from ON Semiconductors
  *
- * Copyright (c) 2010-2011, NVIDIA Corporation.
+ * Copyright (c) 2010-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,15 +32,6 @@
 #include <linux/delay.h>
 #include <linux/regulator/consumer.h>
 
-#include <../gpio-names.h>
-#include <mach/board-cardhu-misc.h>
-
-extern void tegra_watchdog_enable(unsigned int timeout);
-extern void tegra_watchdog_disable(void);
-extern void tegra_watchdog_touch( unsigned int timeout  );
-
-#define DRIVER_NAME "nct1008"
-
 /* Register Addresses */
 #define LOCAL_TEMP_RD			0x00
 #define EXT_TEMP_RD_HI			0x01
@@ -60,6 +51,7 @@ extern void tegra_watchdog_touch( unsigned int timeout  );
 #define LOCAL_TEMP_LO_LIMIT_WR		0x0C
 #define EXT_TEMP_HI_LIMIT_HI_BYTE_WR	0x0D
 #define EXT_TEMP_LO_LIMIT_HI_BYTE_WR	0x0E
+#define ONE_SHOT			0x0F
 #define OFFSET_WR			0x11
 #define OFFSET_QUARTER_WR		0x12
 #define EXT_THERM_LIMIT_WR		0x19
@@ -82,9 +74,13 @@ extern void tegra_watchdog_touch( unsigned int timeout  );
 
 #define MAX_STR_PRINT 50
 
-#define MIN_SLEEP_MSEC			20
+#define MAX_CONV_TIME_ONESHOT_MS (52)
 #define CELSIUS_TO_MILLICELSIUS(x) ((x)*1000)
 #define MILLICELSIUS_TO_CELSIUS(x) ((x)/1000)
+
+
+static int conv_period_ms_table[] =
+	{16000, 8000, 4000, 2000, 1000, 500, 250, 125, 63, 32, 16};
 
 static inline s8 value_to_temperature(bool extended, u8 value)
 {
@@ -96,7 +92,7 @@ static inline u8 temperature_to_value(bool extended, s8 temp)
 	return extended ? (u8)(temp + EXTENDED_RANGE_OFFSET) : (u8)temp;
 }
 
-static int nct1008_get_temp(struct device *dev, long *pTemp)
+static int nct1008_get_temp(struct device *dev, long *etemp, long *itemp)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct nct1008_platform_data *pdata = client->dev.platform_data;
@@ -108,29 +104,35 @@ static int nct1008_get_temp(struct device *dev, long *pTemp)
 	u8 value;
 
 	/* Read Local Temp */
-	value = i2c_smbus_read_byte_data(client, LOCAL_TEMP_RD);
-	if (value < 0)
-		goto error;
-	temp_local = value_to_temperature(pdata->ext_range, value);
-	temp_local_milli = CELSIUS_TO_MILLICELSIUS(temp_local);
+	if (itemp) {
+		value = i2c_smbus_read_byte_data(client, LOCAL_TEMP_RD);
+		if (value < 0)
+			goto error;
+		temp_local = value_to_temperature(pdata->ext_range, value);
+		temp_local_milli = CELSIUS_TO_MILLICELSIUS(temp_local);
+
+		*itemp = temp_local_milli;
+	}
 
 	/* Read External Temp */
-	value = i2c_smbus_read_byte_data(client, EXT_TEMP_RD_LO);
-	if (value < 0)
-		goto error;
-	temp_ext_lo = (value >> 6);
+	if (etemp) {
+		value = i2c_smbus_read_byte_data(client, EXT_TEMP_RD_LO);
+		if (value < 0)
+			goto error;
+		temp_ext_lo = (value >> 6);
 
-	value = i2c_smbus_read_byte_data(client, EXT_TEMP_RD_HI);
-	if (value < 0)
-		goto error;
-	temp_ext_hi = value_to_temperature(pdata->ext_range, value);
+		value = i2c_smbus_read_byte_data(client, EXT_TEMP_RD_HI);
+		if (value < 0)
+			goto error;
+		temp_ext_hi = value_to_temperature(pdata->ext_range, value);
 
-	temp_ext_milli = CELSIUS_TO_MILLICELSIUS(temp_ext_hi) +
-				temp_ext_lo * 250;
+		temp_ext_milli = CELSIUS_TO_MILLICELSIUS(temp_ext_hi) +
+					temp_ext_lo * 250;
 
-	/* Return max between Local and External Temp */
-	*pTemp = max(temp_local_milli, temp_ext_milli);
-	printk("%s: ret temp=%dC \n", __func__, MILLICELSIUS_TO_CELSIUS(*pTemp));
+		*etemp = temp_ext_milli;
+	}
+
+	//printk("%s: ret temp=%dC \n", __func__, *pTemp);
 	return 0;
 error:
 	dev_err(&client->dev, "\n error in file=: %s %s() line=%d: "
@@ -226,7 +228,7 @@ static ssize_t nct1008_set_temp_overheat(struct device *dev,
 		return -EINVAL;
 	}
 	/* check for system power down */
-	err = nct1008_get_temp(dev, &currTemp);
+	err = nct1008_get_temp(dev, &currTemp, NULL);
 	if (err)
 		goto error;
 
@@ -369,9 +371,6 @@ static DEVICE_ATTR(temperature_alert, (S_IRUGO | (S_IWUSR | S_IWGRP)),
 		nct1008_show_temp_alert, nct1008_set_temp_alert);
 static DEVICE_ATTR(ext_temperature, S_IRUGO, nct1008_show_ext_temp, NULL);
 //===============stress test start ================
-#ifdef CONFIG_PM
-int nct1008_pm_notify(struct notifier_block *notify_block,unsigned long mode, void *unused);
-#endif
  struct nct1008_data *pnct1008_data=NULL;
 static ssize_t show_nct1008_i2c_status(struct device *dev, struct device_attribute *devattr, char *buf)
 {
@@ -418,19 +417,9 @@ static void dump_reg(const char *reg_name, int offset)
 }
 void nct1008_read_stress_test(struct work_struct *work)
 {
-	#if 0
-	u8 data = 0;
-	data = i2c_smbus_read_byte_data(pnct1008_data->client, LOCAL_TEMP_RD);
-	if (data < 0) {
-		dev_err(&pnct1008_data->client->dev, "%s: failed to read temperature\n", __func__);
-	}
-	#else
-	u8 temperature=0;
-	tegra_watchdog_touch(45);
-	nct1008_get_temp(&pnct1008_data->client->dev, &temperature);
-	dump_reg("Status              ",  0x02);
-	dump_reg("Configuration       ", 0x03);
-	#endif
+	long ext_temperature=0;
+	nct1008_get_temp(&pnct1008_data->client->dev, &ext_temperature, NULL);
+	printk("cpu ext_temperature=%ld\n", ext_temperature/1000);
        queue_delayed_work(nct1008_stress_work_queue, &pnct1008_data->stress_test, 5*HZ);
 	return ;
 }
@@ -496,7 +485,7 @@ static void print_reg(const char *reg_name, struct seq_file *s,
 
 static int dbg_nct1008_show(struct seq_file *s, void *unused)
 {
-	seq_printf(s, "nct1008 Registers\n");
+	seq_printf(s, "nct1008 nct72 Registers\n");
 	seq_printf(s, "------------------\n");
 	print_reg("Local Temp Value    ",     s, 0x00);
 	print_reg("Ext Temp Value Hi   ",     s, 0x01);
@@ -535,8 +524,12 @@ static int __init nct1008_debuginit(struct nct1008_data *nct)
 {
 	int err = 0;
 	struct dentry *d;
-	d = debugfs_create_file("nct1008", S_IRUGO, NULL,
-			(void *)nct, &debug_fops);
+	if (nct->chip == NCT72)
+		d = debugfs_create_file("nct72", S_IRUGO, NULL,
+				(void *)nct, &debug_fops);
+	else
+		d = debugfs_create_file("nct1008", S_IRUGO, NULL,
+				(void *)nct, &debug_fops);
 	if ((!d) || IS_ERR(d)) {
 		dev_err(&nct->client->dev, "Error: %s debugfs_create_file"
 			" returned an error\n", __func__);
@@ -586,115 +579,66 @@ static int nct1008_disable(struct i2c_client *client)
 	return err;
 }
 
-static int nct1008_disable_alert(struct nct1008_data *data)
+static int nct1008_within_limits(struct nct1008_data *data)
 {
-	struct i2c_client *client = data->client;
-	int ret = 0;
-	int val;
+	int intr_status;
 
-	/*
-	 * Disable ALERT# output, because these chips don't implement
-	 * SMBus alert correctly; they should only hold the alert line
-	 * low briefly.
-	 */
-	val = i2c_smbus_read_byte_data(data->client, CONFIG_RD);
-	if (val < 0) {
-		dev_err(&client->dev, "%s, line=%d, disable alert failed ... "
-			"i2c read error=%d\n", __func__, __LINE__, val);
-		return val;
-	}
-	data->config = val | ALERT_BIT;
-	ret = i2c_smbus_write_byte_data(client, CONFIG_WR, data->config);
-	if (ret)
-		dev_err(&client->dev, "%s: fail to disable alert, i2c "
-			"write error=%d#\n", __func__, ret);
+	intr_status = i2c_smbus_read_byte_data(data->client, STATUS_RD);
 
-	return ret;
-}
-
-static int nct1008_enable_alert(struct nct1008_data *data)
-{
-	int val;
-	int ret;
-
-	val = i2c_smbus_read_byte_data(data->client, CONFIG_RD);
-	if (val < 0) {
-		dev_err(&data->client->dev, "%s, line=%d, enable alert "
-			"failed ... i2c read error=%d\n", __func__,
-			__LINE__, val);
-		return val;
-	}
-	val &= ~(ALERT_BIT | THERM2_BIT);
-	data->config =val;
-	ret = i2c_smbus_write_byte_data(data->client, CONFIG_WR, val);
-	if (ret) {
-		dev_err(&data->client->dev, "%s: fail to enable alert, i2c "
-			"write error=%d\n", __func__, ret);
-		return ret;
-	}
-
-	return ret;
+	return !(intr_status & (BIT(3) | BIT(4)));
 }
 
 static void nct1008_work_func(struct work_struct *work)
 {
 	struct nct1008_data *data = container_of(work, struct nct1008_data,
 						work);
-	int err = 0;
-	int intr_status = i2c_smbus_read_byte_data(data->client, STATUS_RD);
+	int intr_status;
+	struct timespec ts;
 
-	if (intr_status < 0) {
-		dev_err(&data->client->dev, "%s, line=%d, i2c read error=%d\n",
-			__func__, __LINE__, intr_status);
-		return;
-	}
+	nct1008_disable(data->client);
 
-	intr_status &= (BIT(3) | BIT(4));
-	if (!intr_status)
-		return;
+	if (data->alert_func)
+		if (!nct1008_within_limits(data))
+			data->alert_func(data->alert_data);
 
-	if (data->alert_func) {
-		err = nct1008_disable_alert(data);
-		if (err) {
-			dev_err(&data->client->dev,
-				"%s: disable alert fail(error=%d)\n",
-				__func__, err);
-			return;
-		}
+	/* Initiate one-shot conversion */
+	i2c_smbus_write_byte_data(data->client, ONE_SHOT, 0x1);
 
-		data->alert_func(data->alert_data);
+	/* Give hardware necessary time to finish conversion */
+	ts = ns_to_timespec(MAX_CONV_TIME_ONESHOT_MS * 1000 * 1000);
+	hrtimer_nanosleep(&ts, NULL, HRTIMER_MODE_REL, CLOCK_MONOTONIC);
 
-		nct1008_enable_alert(data);
-	}
+	intr_status = i2c_smbus_read_byte_data(data->client, STATUS_RD);
 
+	nct1008_enable(data->client);
 
-	if (err)
-		dev_err(&data->client->dev, "%s: fail(error=%d)\n", __func__,
-			err);
-	else
-		pr_debug("%s: done\n", __func__);
+	enable_irq(data->client->irq);
 }
 
 static irqreturn_t nct1008_irq(int irq, void *dev_id)
 {
 	struct nct1008_data *data = dev_id;
 
-	schedule_work(&data->work);
+	disable_irq_nosync(irq);
+	queue_work(data->workqueue, &data->work);
+
 	return IRQ_HANDLED;
 }
 
 static void nct1008_power_control(struct nct1008_data *data, bool is_enable)
 {
 	int ret;
-	#define NCT1008_POWER_EN TEGRA_GPIO_PP0
-
 	if (!data->nct_reg) {
 		data->nct_reg = regulator_get(&data->client->dev, "vdd");
 		if (IS_ERR_OR_NULL(data->nct_reg)) {
-			dev_warn(&data->client->dev, "Error [%d] in"
-				"getting the regulator handle for vdd "
-				"of %s\n", (int)data->nct_reg,
-				dev_name(&data->client->dev));
+			if (PTR_ERR(data->nct_reg) == -ENODEV)
+				dev_info(&data->client->dev,
+					"no regulator found for vdd."
+					" Assuming vdd is always powered");
+			else
+				dev_warn(&data->client->dev, "Error [%ld] in "
+					"getting the regulator handle for"
+					" vdd\n", PTR_ERR(data->nct_reg));
 			data->nct_reg = NULL;
 			return;
 		}
@@ -703,29 +647,16 @@ static void nct1008_power_control(struct nct1008_data *data, bool is_enable)
 		ret = regulator_enable(data->nct_reg);
 	else
 		ret = regulator_disable(data->nct_reg);
-	if(tegra3_get_project_id()==TEGRA3_PROJECT_TF700T){
-		printk("nct1008_power_control\n");
-		ret = gpio_request(NCT1008_POWER_EN, "nct1008_power_control");
-		if (ret < 0){
-			printk("nct1008_power_control: request nct1008_power_control fail!\n");
-			return ret;
-		}
-
-		ret = gpio_direction_output(NCT1008_POWER_EN, 1);
-		if (ret < 0){
-			printk("nct1008_power_control: set nct1008_power_control as output fail!\n");
-			gpio_free(NCT1008_POWER_EN);
-		}else
-			tegra_gpio_enable(NCT1008_POWER_EN);
-	}
 
 	if (ret < 0)
-		dev_err(&data->client->dev, "Error in %s rail vdd_nct1008, "
+		dev_err(&data->client->dev, "Error in %s rail vdd_nct%s, "
 			"error %d\n", (is_enable) ? "enabling" : "disabling",
+			(data->chip == NCT72) ? "72" : "1008",
 			ret);
 	else
-		dev_info(&data->client->dev, "success in %s rail vdd_nct1008\n",
-			(is_enable) ? "enabling" : "disabling");
+		dev_info(&data->client->dev, "success in %s rail vdd_nct%s\n",
+			(is_enable) ? "enabling" : "disabling",
+			(data->chip == NCT72) ? "72" : "1008");
 }
 
 static int __devinit nct1008_configure_sensor(struct nct1008_data* data)
@@ -771,6 +702,8 @@ static int __devinit nct1008_configure_sensor(struct nct1008_data* data)
 	err = i2c_smbus_write_byte_data(client, CONV_RATE_WR, pdata->conv_rate);
 	if (err)
 		goto error;
+
+	data->conv_period_ms = conv_period_ms_table[pdata->conv_rate];
 
 	/* Setup local hi and lo limits */
 	err = i2c_smbus_write_byte_data(client,
@@ -847,48 +780,28 @@ error:
 
 static int __devinit nct1008_configure_irq(struct nct1008_data *data)
 {
+	data->workqueue = create_singlethread_workqueue((data->chip == NCT72) \
+							? "nct72" : "nct1008");
+
 	INIT_WORK(&data->work, nct1008_work_func);
 
 	if (data->client->irq < 0)
 		return 0;
 	else
 		return request_irq(data->client->irq, nct1008_irq,
-			IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
-			DRIVER_NAME, data);
-}
-
-static unsigned int get_ext_mode_delay_ms(unsigned int conv_rate)
-{
-	switch (conv_rate) {
-	case 0:
-		return 16000;
-	case 1:
-		return 8000;
-	case 2:
-		return 4000;
-	case 3:
-		return 2000;
-	case 4:
-		return 1000;
-	case 5:
-		return 500;
-	case 6:
-		return 250;
-	case 7:
-		return 125;
-	case 9:
-		return 32;
-	case 10:
-		return 16;
-	case 8:
-	default:
-		return 63;
-	}
+			IRQF_TRIGGER_LOW,
+			(data->chip == NCT72) ? "nct72" : "nct1008",
+			data);
 }
 
 int nct1008_thermal_get_temp(struct nct1008_data *data, long *temp)
 {
-	return nct1008_get_temp(&data->client->dev, temp);
+	return nct1008_get_temp(&data->client->dev, temp, NULL);
+}
+
+int nct1008_thermal_get_temps(struct nct1008_data *data, long *etemp, long *itemp)
+{
+	return nct1008_get_temp(&data->client->dev, etemp, itemp);
 }
 
 int nct1008_thermal_get_temp_low(struct nct1008_data *data, long *temp)
@@ -909,10 +822,6 @@ int nct1008_thermal_set_limits(struct nct1008_data *data,
 
 	if (lo_limit >= hi_limit)
 		return -EINVAL;
-
-	if (data->current_lo_limit == lo_limit &&
-		data->current_hi_limit == hi_limit)
-		return 0;
 
 	if (data->current_lo_limit != lo_limit) {
 		value = temperature_to_value(extended_range, lo_limit);
@@ -996,23 +905,22 @@ static int __devinit nct1008_probe(struct i2c_client *client,
 {
 	struct nct1008_data *data;
 	int err;
-	unsigned int delay;
-	long temp_milli;
 
-	printk("nct1008_probe+\n");
 	data = kzalloc(sizeof(struct nct1008_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
 	data->client = client;
+	data->chip = id->driver_data;
 	memcpy(&data->plat_data, client->dev.platform_data,
 		sizeof(struct nct1008_platform_data));
 	i2c_set_clientdata(client, data);
-	mutex_init(&data->mutex);
+
 	//===================stress test start=====================
 	pnct1008_data=data;
        pnct1008_data->i2c_status=0;
 	//===================stress test end=====================
+
 	nct1008_power_control(data, true);
 	/* extended range recommended steps 1 through 4 taken care
 	 * in nct1008_configure_sensor function */
@@ -1022,17 +930,18 @@ static int __devinit nct1008_probe(struct i2c_client *client,
 			__FILE__, __func__, __LINE__);
 		goto error;
 	}
+
 	 //===================stress test start=====================
-       //err = sysfs_create_group(&client->dev.kobj, &nct1008_attr_group);
 	INIT_DELAYED_WORK(&pnct1008_data->stress_test,  nct1008_read_stress_test) ;
        nct1008_stress_work_queue = create_singlethread_workqueue("nct1008_strees_test_workqueue");
        pnct1008_data->i2c_status=1;
 	pnct1008_data->nct1008_misc.minor	= MISC_DYNAMIC_MINOR;
-	pnct1008_data->nct1008_misc.name	= DRIVER_NAME;
+	pnct1008_data->nct1008_misc.name	=  "nct1008";
 	pnct1008_data->nct1008_misc.fops  	= &nct1008_fops;
        err=misc_register(&pnct1008_data->nct1008_misc);
 	 printk(KERN_INFO "nct1008 register misc device for I2C stress test rc=%x\n", err);
 	 //===================stress test end=====================
+
 	err = nct1008_configure_irq(data);
 	if (err < 0) {
 		dev_err(&client->dev, "\n error file: %s : %s(), line=%d ",
@@ -1053,48 +962,12 @@ static int __devinit nct1008_probe(struct i2c_client *client,
 	if (err < 0)
 		err = 0; /* without debugfs we may continue */
 
-	/* switch to extended mode reports correct temperature
-	 * from next measurement cycle */
-	if (data->plat_data.ext_range) {
-		delay = get_ext_mode_delay_ms(
-			data->plat_data.conv_rate);
-		msleep(delay); /* 63msec for default conv rate 0x8 */
-	}
-	err = nct1008_get_temp(&data->client->dev, &temp_milli);
-	if (err) {
-		dev_err(&data->client->dev, "%s: get temp fail(%d)",
-			__func__, err);
-		return 0;	/*do not fail init on the 1st read */
-	}
-	tegra_edp_update_thermal_zone(MILLICELSIUS_TO_CELSIUS(temp_milli));
-
-#ifdef CONFIG_TEGRA_THERMAL_SYSFS
-	thz = thermal_zone_device_register("nct1008",
-					1, /* trips */
-					data,
-					&nct1008_thermal_zone_ops,
-					1, /* tc1 */
-					5, /* tc2 */
-					2000, /* passive delay */
-					0); /* polling delay */
-
-	if (IS_ERR(thz)) {
-		data->thz = NULL;
-		err = -ENODEV;
-		goto error;
-	}
-#endif
 	/* notify callback that probe is done */
 	if (data->plat_data.probe_callback)
 		data->plat_data.probe_callback(data);
-
 	queue_delayed_work(nct1008_stress_work_queue, &pnct1008_data->stress_test, 5*HZ);
-	tegra_watchdog_enable(45);
-	#ifdef CONFIG_PM
-	pnct1008_data->pm_notify.notifier_call =  nct1008_pm_notify;
-	#endif
-	register_pm_notifier(&pnct1008_data->pm_notify);
 	printk("nct1008_probe-\n");
+
 	return 0;
 
 error:
@@ -1126,33 +999,12 @@ static int __devexit nct1008_remove(struct i2c_client *client)
 }
 
 #ifdef CONFIG_PM
-int nct1008_pm_notify(struct notifier_block *notify_block,
-					unsigned long mode, void *unused)
-{
-	printk("nct1008_pm_notify mode=%x+\n",mode);
-	switch (mode) {
-	case PM_HIBERNATION_PREPARE:
-	case PM_SUSPEND_PREPARE:
-			cancel_delayed_work_sync(&pnct1008_data->stress_test);
-			flush_workqueue(nct1008_stress_work_queue);
-			tegra_watchdog_disable();
-		break;
-
-	case PM_POST_SUSPEND:
-	case PM_POST_HIBERNATION:
-	case PM_POST_RESTORE:
-			cancel_delayed_work_sync(&pnct1008_data->stress_test);
-			queue_delayed_work(nct1008_stress_work_queue, &pnct1008_data->stress_test, 5*HZ);
-			tegra_watchdog_enable(45);
-		break;
-	}
-
-	printk("nct1008_pm_notify-\n");
-	return 0;
-}
 static int nct1008_suspend(struct i2c_client *client, pm_message_t state)
 {
 	int err;
+
+	cancel_delayed_work_sync(&pnct1008_data->stress_test);
+	flush_workqueue(nct1008_stress_work_queue);
 
 	disable_irq(client->irq);
 	err = nct1008_disable(client);
@@ -1161,7 +1013,6 @@ static int nct1008_suspend(struct i2c_client *client, pm_message_t state)
 
 static int nct1008_resume(struct i2c_client *client)
 {
-	struct nct1008_data *data = i2c_get_clientdata(client);
 	int err;
 
 	err = nct1008_enable(client);
@@ -1171,21 +1022,23 @@ static int nct1008_resume(struct i2c_client *client)
 		return err;
 	}
 	enable_irq(client->irq);
-	schedule_work(&data->work);
 
+	cancel_delayed_work_sync(&pnct1008_data->stress_test);
+	queue_delayed_work(nct1008_stress_work_queue, &pnct1008_data->stress_test, 5*HZ);
 	return 0;
 }
 #endif
 
 static const struct i2c_device_id nct1008_id[] = {
-	{ DRIVER_NAME, 0 },
-	{ }
+	{ "nct1008", NCT1008 },
+	{ "nct72", NCT72},
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, nct1008_id);
 
 static struct i2c_driver nct1008_driver = {
 	.driver = {
-		.name	= DRIVER_NAME,
+		.name	= "nct1008_nct72",
 	},
 	.probe		= nct1008_probe,
 	.remove		= __devexit_p(nct1008_remove),
@@ -1206,7 +1059,7 @@ static void __exit nct1008_exit(void)
 	i2c_del_driver(&nct1008_driver);
 }
 
-MODULE_DESCRIPTION("Temperature sensor driver for OnSemi NCT1008");
+MODULE_DESCRIPTION("Temperature sensor driver for OnSemi NCT1008/NCT72");
 MODULE_LICENSE("GPL");
 
 module_init(nct1008_init);

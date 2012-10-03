@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-p852-panel.c
  *
- * Copyright (c) 2010-2011, NVIDIA Corporation.
+ * Copyright (c) 2010-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,13 +25,14 @@
 #include <linux/nvhost.h>
 #include <linux/platform_device.h>
 #include <asm/mach-types.h>
-#include <mach/nvmap.h>
+#include <linux/nvmap.h>
 #include <mach/irqs.h>
 #include <mach/iomap.h>
 #include <mach/dc.h>
 #include <mach/fb.h>
 
 #include "board-p852.h"
+#include "../tegra2_host1x_devices.h"
 
 #define CARVEOUT_IRAM {\
 	.name = "iram",\
@@ -157,7 +158,6 @@ static struct platform_device p852_nvmap_device = {
 };
 
 static struct platform_device *p852_gfx_devices[] __initdata = {
-	&tegra_grhost_device,
 	&tegra_pwfm2_device,
 };
 
@@ -174,6 +174,12 @@ int __init p852_panel_init(void)
 	err = platform_device_register(&p852_nvmap_device);
 	if (err)
 		return err;
+
+#ifdef CONFIG_TEGRA_GRHOST
+	err = tegra2_register_host1x_devices();
+	if (err)
+		return err;
+#endif
 
 	err = platform_add_devices(p852_gfx_devices,
 				   ARRAY_SIZE(p852_gfx_devices));

@@ -240,9 +240,18 @@ int fm34_config_DSP(void)
 		else
 			FM34_INFO("DSP ACK,  read 0x%x: %d\n", buf1, ret);
 
-		FM34_INFO("Load TF201 DSP parameters\n");
-		config_length= sizeof(input_parameter);
-		config_table= (u8 *)input_parameter;
+		if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T){
+			FM34_INFO("Load TF700T DSP parameters\n");
+			config_length= sizeof(input_parameter_TF700T);
+			config_table= (u8 *)input_parameter_TF700T;
+		}else if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201){
+			config_length= sizeof(input_parameter_TF201);
+			config_table= (u8 *)input_parameter_TF201;
+		}else{
+			FM34_INFO("Load  DSP parameters\n");
+			config_length= sizeof(input_parameter);
+			config_table= (u8 *)input_parameter;
+		}
 
 		ret = fm34_i2c_retry(dsp_chip->client, config_table, config_length);
 		FM34_INFO("config_length = %d\n", config_length);
@@ -455,8 +464,12 @@ long fm34_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 							fm34_i2c_retry(dsp_chip->client, (u8 *)enable_parameter,
 										sizeof(enable_parameter));
 
-							FM34_INFO("Disable Noise Suppression (for TF201)\n");
-							fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_disable_NS,
+							FM34_INFO("Disable Noise Suppression\n");
+							if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_disable_NS,
+										sizeof(TF700T_disable_NS));
+							else
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_disable_NS,
 										sizeof(TF201_disable_NS));
 						}
 						else if(output_source==OUTPUT_SOURCE_VOICE || input_agc==INPUT_SOURCE_AGC){
@@ -464,8 +477,12 @@ long fm34_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 							fm34_i2c_retry(dsp_chip->client, (u8 *)enable_parameter,
 										sizeof(enable_parameter));
 
-							FM34_INFO("Enable Noise Suppression (for TF201)\n");
-							fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
+							FM34_INFO("Enable Noise Suppression\n");
+							if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_enable_NS,
+										sizeof(TF700T_enable_NS));
+							else
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
 										sizeof(TF201_enable_NS));
 						}
 						else{
@@ -489,8 +506,12 @@ long fm34_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 							fm34_i2c_retry(dsp_chip->client, (u8 *)enable_parameter,
 										 sizeof(enable_parameter));
 
-							FM34_INFO("Enable Noise Suppression (for TF201)\n");
-							fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
+							FM34_INFO("Enable Noise Suppression\n");
+							if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_enable_NS,
+										sizeof(TF700T_enable_NS));
+							else
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
 										sizeof(TF201_enable_NS));
 
                                                }
@@ -502,14 +523,22 @@ long fm34_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 							if(input_source==INPUT_SOURCE_VR){
 
-								FM34_INFO("Disable Noise Suppression (for TF201)\n");
-								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_disable_NS,
+								FM34_INFO("Disable Noise Suppression\n");
+								if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+									fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_disable_NS,
+										sizeof(TF700T_disable_NS));
+								else
+									fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_disable_NS,
                                                                                 sizeof(TF201_disable_NS));
 
 							}
 							else{
-								FM34_INFO("Enable Noise Suppression (for TF201)\n");
-								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
+								FM34_INFO("Enable Noise Suppression\n");
+								if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+									fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_enable_NS,
+										sizeof(TF700T_enable_NS));
+								else
+									fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
 										sizeof(TF201_enable_NS));
 							}
 #endif  //BYPASS_DSP_FOR_VR
@@ -759,17 +788,25 @@ static int fm34_resume(struct device *dev)
 
 static int __init fm34_init(void)
 {
-	printk(KERN_INFO "%s+ #####\n", __func__);
-	int ret;
+	unsigned int project_info = 0;
+	project_info = tegra3_get_project_id();
 
-	//Enalbe dsp power 1.8V
-	fm34_power_switch_init();
+	if(project_info == TEGRA3_PROJECT_TF500T ||
+		project_info == TEGRA3_PROJECT_P1801)
+		return 0;
+	else{
+		printk(KERN_INFO "%s+ #####\n", __func__);
+		int ret;
 
-	pr_info("%s()\n", __func__);
-	ret = i2c_add_driver(&fm34_driver);
+		//Enalbe dsp power 1.8V
+		fm34_power_switch_init();
 
-	printk(KERN_INFO "%s- #####\n", __func__);
-	return ret;
+		pr_info("%s()\n", __func__);
+		ret = i2c_add_driver(&fm34_driver);
+
+		printk(KERN_INFO "%s- #####\n", __func__);
+		return ret;
+	}
 }
 
 static void __exit fm34_exit(void)

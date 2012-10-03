@@ -26,10 +26,13 @@ static int cfutill_transmit(struct cflayer *layr, struct cfpkt *pkt);
 
 struct cflayer *cfutill_create(u8 channel_id, struct dev_info *dev_info)
 {
-	struct cfsrvl *util = kzalloc(sizeof(struct cfsrvl), GFP_ATOMIC);
-	if (!util)
+	struct cfsrvl *util = kmalloc(sizeof(struct cfsrvl), GFP_ATOMIC);
+	if (!util) {
+		pr_warn("Out of memory\n");
 		return NULL;
+	}
 	caif_assert(offsetof(struct cfsrvl, layer) == 0);
+	memset(util, 0, sizeof(struct cfsrvl));
 	cfsrvl_init(util, channel_id, dev_info, true);
 	util->layer.receive = cfutill_receive;
 	util->layer.transmit = cfutill_transmit;

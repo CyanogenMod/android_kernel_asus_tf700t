@@ -12,7 +12,7 @@
 #include "ril.h"
 #include "ril_sim.h"
 
-#define NAME_SIM_PLUG "sim_plug"
+#define NAME_SIM_PLUG "ril_sim_plug"
 
 //**** external symbols
 
@@ -86,8 +86,7 @@ static void hotplug_work_handle(void)
 	switch_set_state(&sim_sdev, sim_plug_state);
 
 	// wake up modem to read card state
-	unsigned int project = tegra3_get_project_id();
-	if (project == TEGRA3_PROJECT_TF300TG) {
+	if (TEGRA3_PROJECT_TF300TG == tegra3_get_project_id()) {
 		baseband_xmm_ap_resume_work();
 	} else {
 		// do nothing
@@ -116,7 +115,6 @@ static void release_sim_plug_state_work_handle(void)
 	is_sim_plug_state_freezed = false;
 	hotplug_work_handle();
 }
-
 
 //**** sysfs callback functions
 
@@ -181,17 +179,16 @@ static void null_work_handle(void)
 	panic("default_work_handle should NOT be invoked (%s#%d)", __FILE__, __LINE__);
 }
 
-int init_sim_hot_plug(struct device *target_device, struct workqueue_struct *queue)
+int sim_hot_plug_init(struct device *target_device, struct workqueue_struct *queue)
 {
 	int rc = 0, i = 0;
 	int sim_irq = gpio_to_irq(SIM_CARD_DET);
+	sim_plug_state = get_sim_plug_state_from_pin();
 	unsigned int project = tegra3_get_project_id();
 	struct device_attribute *device_attr_list;
 	int device_attr_list_len;
 
 	dev = target_device;
-
-	sim_plug_state = get_sim_plug_state_from_pin();
 
 	RIL_INFO(
 	  "GPIO = %d , irq = %d, state = %d\n",
@@ -208,11 +205,13 @@ int init_sim_hot_plug(struct device *target_device, struct workqueue_struct *que
 		INIT_WORK(&modem_reset_finish_task, release_sim_plug_state_work_handle);
 		device_attr_list = device_attr_TF300TG;
 		device_attr_list_len = ARRAY_SIZE(device_attr_TF300TG);
-	} else {
+	} else if (TEGRA3_PROJECT_TF300TL == project) {
 		INIT_WORK(&modem_reset_start_task, null_work_handle);
 		INIT_WORK(&modem_reset_finish_task, null_work_handle);
 		device_attr_list = device_attr_TF300TL;
 		device_attr_list_len = ARRAY_SIZE(device_attr_TF300TL);
+	} else {
+		return -1;
 	}
 
 	// create sysfses
@@ -250,7 +249,7 @@ create_sysfs_failed:
 	return rc;
 }
 
-void free_sim_hot_plug(void)
+void sim_hot_plug_exit(void)
 {
 	int i;
 

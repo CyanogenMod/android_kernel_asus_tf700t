@@ -9,8 +9,8 @@
  * your option) any later version.
  */
 
-#ifndef MMC_SD_H
-#define MMC_SD_H
+#ifndef LINUX_MMC_SD_H
+#define LINUX_MMC_SD_H
 
 /* SD commands                           type  argument     response */
   /* class 0 */
@@ -18,6 +18,10 @@
 #define SD_SEND_RELATIVE_ADDR     3   /* bcr                     R6  */
 #define SD_SEND_IF_COND           8   /* bcr  [11:0] See below   R7  */
 #define SD_SWITCH_VOLTAGE         11  /* ac                      R1  */
+
+  /* class 2 */
+#define SD_SEND_TUNING_PATTERN   19   /* adtc                    R1  */
+#define SD_SPEED_CLASS_CONTROL   20   /* ac                      R1b */
 
   /* class 10 */
 #define SD_SWITCH                 6   /* adtc [31:0] See below   R1  */
@@ -66,7 +70,7 @@
 
 #define SCR_SPEC_VER_0		0	/* Implements system specification 1.0 - 1.01 */
 #define SCR_SPEC_VER_1		1	/* Implements system specification 1.10 */
-#define SCR_SPEC_VER_2		2	/* Implements system specification 2.00 */
+#define SCR_SPEC_VER_2		2	/* Implements system specification 2.00-3.0X */
 
 /*
  * SD bus widths
@@ -91,5 +95,13 @@
 #define SD_SWITCH_ACCESS_DEF	0
 #define SD_SWITCH_ACCESS_HS	1
 
-#endif
+/*
+ * SD_SPEED_CLASS_CONTROL definitions
+ */
+#define SD_SPEED_CLASS_CONTROL_START_REC		0x0
+#define SD_SPEED_CLASS_CONTROL_CREATE_DIR		0x1
+#define SD_SPEED_CLASS_CONTROL_UPDATE_CI		0x4
+
+
+#endif /* LINUX_MMC_SD_H */
 

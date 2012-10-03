@@ -20,11 +20,9 @@
  * Timberdale FPGA LogiWin Video In
  */
 
-#include <linux/version.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/dmaengine.h>
-#include <linux/mfd/core.h>
 #include <linux/scatterlist.h>
 #include <linux/interrupt.h>
 #include <linux/list.h>
@@ -565,8 +563,8 @@ static void buffer_queue(struct videobuf_queue *vq, struct videobuf_buffer *vb)
 
 	spin_unlock_irq(&fh->queue_lock);
 
-	desc = fh->chan->device->device_prep_slave_sg(fh->chan,
-		buf->sg, sg_elems, DMA_FROM_DEVICE,
+	desc = dmaengine_prep_slave_sg(fh->chan,
+		buf->sg, sg_elems, DMA_DEV_TO_MEM,
 		DMA_PREP_INTERRUPT | DMA_COMPL_SKIP_SRC_UNMAP);
 	if (!desc) {
 		spin_lock_irq(&fh->queue_lock);
@@ -791,7 +789,7 @@ static int __devinit timblogiw_probe(struct platform_device *pdev)
 {
 	int err;
 	struct timblogiw *lw = NULL;
-	struct timb_video_platform_data *pdata = mfd_get_data(pdev);
+	struct timb_video_platform_data *pdata = pdev->dev.platform_data;
 
 	if (!pdata) {
 		dev_err(&pdev->dev, "No platform data\n");

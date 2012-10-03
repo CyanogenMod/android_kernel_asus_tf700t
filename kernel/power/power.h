@@ -15,6 +15,7 @@ struct swsusp_info {
 
 #ifdef CONFIG_HIBERNATION
 /* kernel/power/snapshot.c */
+extern void __init hibernate_reserved_size_init(void);
 extern void __init hibernate_image_size_init(void);
 
 #ifdef CONFIG_ARCH_HIBERNATION_HEADER
@@ -55,6 +56,7 @@ extern int hibernation_platform_enter(void);
 
 #else /* !CONFIG_HIBERNATION */
 
+static inline void hibernate_reserved_size_init(void) {}
 static inline void hibernate_image_size_init(void) {}
 #endif /* !CONFIG_HIBERNATION */
 
@@ -72,6 +74,8 @@ static struct kobj_attribute _name##_attr = {	\
 
 /* Preferred image size in bytes (default 500 MB) */
 extern unsigned long image_size;
+/* Size of memory reserved for drivers (default SPARE_PAGES x PAGE_SIZE) */
+extern unsigned long reserved_size;
 extern int in_suspend;
 extern dev_t swsusp_resume_device;
 extern sector_t swsusp_resume_block;
@@ -188,23 +192,6 @@ extern void suspend_test_finish(const char *label);
 static inline void suspend_test_start(void) {}
 static inline void suspend_test_finish(const char *label) {}
 #endif /* !CONFIG_PM_TEST_SUSPEND */
-
-#ifdef CONFIG_PM_EXPIRE_SUSPEND
-/* kernel/power/suspend_expire.c */
-extern void dram_expire_start(void);
-extern void dram_expire_finish(void);
-extern void suspend_expire_start(void);
-extern void suspend_expire_finish(const char *label);
-extern void freezer_expire_start(void);
-extern void freezer_expire_finish(const char *label);
-#else /* !CONFIG_PM_EXPIRE_SUSPEND */
-static inline void dram_expire_start(void) {}
-static inline void dram_expire_finish(void) {}
-static inline void suspend_expire_start(void) {}
-static inline void suspend_expire_finish(const char *label) {}
-static inline void freezer_expire_start(void) {}
-static inline void freezer_expire_finish(const char *label) {}
-#endif /* !CONFIG_PM_EXPIRE_SUSPEND */
 
 #ifdef CONFIG_PM_SLEEP
 /* kernel/power/main.c */

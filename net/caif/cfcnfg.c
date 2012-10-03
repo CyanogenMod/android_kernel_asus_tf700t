@@ -45,8 +45,8 @@ struct cfcnfg_phyinfo {
 	/* Interface index */
 	int ifindex;
 
-	/* Protocol head room added for CAIF link layer */
-	int head_room;
+	/* Use Start of frame extension */
+	bool use_stx;
 
 	/* Use Start of frame checksum */
 	bool use_fcs;
@@ -78,8 +78,10 @@ struct cfcnfg *cfcnfg_create(void)
 
 	/* Initiate this layer */
 	this = kzalloc(sizeof(struct cfcnfg), GFP_ATOMIC);
-	if (!this)
+	if (!this) {
+		pr_warn("Out of memory\n");
 		return NULL;
+	}
 	this->mux = cfmuxl_create();
 	if (!this->mux)
 		goto out_of_mem;
@@ -106,6 +108,8 @@ struct cfcnfg *cfcnfg_create(void)
 
 	return this;
 out_of_mem:
+	pr_warn("Out of memory\n");
+
 	synchronize_rcu();
 
 	kfree(this->mux);
@@ -309,7 +313,6 @@ int caif_connect_client(struct net *net, struct caif_connect_request *conn_req,
 	int err;
 	struct cfctrl_link_param param;
 	struct cfcnfg *cfg = get_cfcnfg(net);
-	caif_assert(cfg != NULL);
 
 	rcu_read_lock();
 	err = caif_connect_req_to_link_param(cfg, conn_req, &param);
@@ -350,7 +353,9 @@ int caif_connect_client(struct net *net, struct caif_connect_request *conn_req,
 
 	*ifindex = phy->ifindex;
 	*proto_tail = 2;
-	*proto_head = protohead[param.linktype] + phy->head_room;
+	*proto_head =
+
+	protohead[param.linktype] + (phy->use_stx ? 1 : 0);
 
 	rcu_read_unlock();
 
@@ -442,8 +447,10 @@ cfcnfg_linkup_rsp(struct cflayer *layer, u8 channel_id, enum cfctrl_srv serv,
 				"- unknown channel type\n");
 		goto unlock;
 	}
-	if (!servicel)
+	if (!servicel) {
+		pr_warn("Out of memory\n");
 		goto unlock;
+	}
 	layer_set_dn(servicel, cnfg->mux);
 	cfmuxl_set_uplayer(cnfg->mux, servicel, channel_id);
 	layer_set_up(servicel, adapt_layer);
@@ -458,14 +465,14 @@ unlock:
 }
 
 void
-cfcnfg_add_phy_layer(struct cfcnfg *cnfg,
+cfcnfg_add_phy_layer(struct cfcnfg *cnfg, enum cfcnfg_phy_type phy_type,
 		     struct net_device *dev, struct cflayer *phy_layer,
 		     enum cfcnfg_phy_preference pref,
-		     struct cflayer *link_support,
-		     bool fcs, int head_room)
+		     bool fcs, bool stx)
 {
 	struct cflayer *frml;
-	struct cfcnfg_phyinfo *phyinfo = NULL;
+	struct cflayer *phy_driver = NULL;
+	struct cfcnfg_phyinfo *phyinfo;
 	int i;
 	u8 phyid;
 
@@ -480,13 +487,26 @@ cfcnfg_add_phy_layer(struct cfcnfg *cnfg,
 			goto got_phyid;
 	}
 	pr_warn("Too many CAIF Link Layers (max 6)\n");
-	goto out_err;
+	goto out;
 
 got_phyid:
 	phyinfo = kzalloc(sizeof(struct cfcnfg_phyinfo), GFP_ATOMIC);
-	if (!phyinfo)
-		goto out_err;
 
+	switch (phy_type) {
+	case CFPHYTYPE_FRAG:
+		phy_driver =
+		    cfserl_create(CFPHYTYPE_FRAG, phyid, stx);
+		if (!phy_driver) {
+			pr_warn("Out of memory\n");
+			goto out;
+		}
+		break;
+	case CFPHYTYPE_CAIF:
+		phy_driver = NULL;
+		break;
+	default:
+		goto out;
+	}
 	phy_layer->id = phyid;
 	phyinfo->pref = pref;
 	phyinfo->id = phyid;
@@ -494,33 +514,32 @@ got_phyid:
 	phyinfo->dev_info.dev = dev;
 	phyinfo->phy_layer = phy_layer;
 	phyinfo->ifindex = dev->ifindex;
-	phyinfo->head_room = head_room;
+	phyinfo->use_stx = stx;
 	phyinfo->use_fcs = fcs;
 
 	frml = cffrml_create(phyid, fcs);
 
-	if (!frml)
-		goto out_err;
+	if (!frml) {
+		pr_warn("Out of memory\n");
+		kfree(phyinfo);
+		goto out;
+	}
 	phyinfo->frm_layer = frml;
 	layer_set_up(frml, cnfg->mux);
 
-	if (link_support != NULL) {
-		link_support->id = phyid;
-		layer_set_dn(frml, link_support);
-		layer_set_up(link_support, frml);
-		layer_set_dn(link_support, phy_layer);
-		layer_set_up(phy_layer, link_support);
+	if (phy_driver != NULL) {
+		phy_driver->id = phyid;
+		layer_set_dn(frml, phy_driver);
+		layer_set_up(phy_driver, frml);
+		layer_set_dn(phy_driver, phy_layer);
+		layer_set_up(phy_layer, phy_driver);
 	} else {
 		layer_set_dn(frml, phy_layer);
 		layer_set_up(phy_layer, frml);
 	}
 
 	list_add_rcu(&phyinfo->node, &cnfg->phys);
-	mutex_unlock(&cnfg->lock);
-	return;
-
-out_err:
-	kfree(phyinfo);
+out:
 	mutex_unlock(&cnfg->lock);
 }
 EXPORT_SYMBOL(cfcnfg_add_phy_layer);

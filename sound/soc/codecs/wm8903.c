@@ -37,11 +37,16 @@
 
 #include "wm8903.h"
 
+#include <../board-cardhu.h>
+
 static int codec_wm8903_status = 0;
 static struct attribute_group attrs;
 
 struct snd_soc_codec *wm8903_codec;
 EXPORT_SYMBOL(wm8903_codec);
+
+extern int asusAudiodec_i2c_write_data(char *data, int length);
+extern int asusAudiodec_i2c_read_data(char *data, int length);
 
 /* Register defaults at reset */
 static u16 wm8903_reg_defaults[] = {
@@ -248,6 +253,8 @@ static u16 wm8903_reg_defaults[] = {
 #define FORCE_HEADPHONE (1)
 #define NO_FORCE_HEADPHONE (0)
 
+#define CODEC_SPKVDD_POWER_5V0_EN_GPIO TPS6591X_GPIO_8
+
 /*Use delayed work for i2c stress test */
 static int poll_rate = 0;
 static struct delayed_work poll_audio_work;
@@ -258,7 +265,7 @@ static int output_source=OUTPUT_SOURCE_NORMAL;
 static int input_agc = INPUT_SOURCE_NO_AGC;
 
 extern bool headset_alive;
-extern unsigned int factory_mode;
+//extern unsigned int factory_mode;
 int force_headphone = NO_FORCE_HEADPHONE;
 EXPORT_SYMBOL(force_headphone) ;
 
@@ -281,6 +288,9 @@ static ssize_t wm8903_no_force_headphone(struct device *dev,
 
 
 static DEVICE_ATTR(no_force_headphone, S_IRUGO, wm8903_no_force_headphone, NULL);
+
+
+
 static ssize_t read_audio_codec_status(struct device *dev, struct device_attribute *devattr, char *buf)
 {
 	return sprintf(buf, "%d\n",codec_wm8903_status);
@@ -493,11 +503,13 @@ static int wm8903_spk_event(struct snd_soc_dapm_widget *w,
 	int shift;
 
 	if (event & SND_SOC_DAPM_POST_PMU) {
+/*
 		if(count <= 1){
 			printk("%s: Init to eanble amp: ignore\n", __func__);
 			count++;
 			return 0;
 		}
+*/
 		snd_soc_write(codec, WM8903_GPIO_CONTROL_3, 0x0033);
 		/* Set speaker gain = 3dB */
 		snd_soc_write(codec, WM8903_ANALOGUE_OUT3_LEFT, 0x00BC);
@@ -640,6 +652,27 @@ static int wm8903_dcs_event(struct snd_soc_dapm_widget *w,
 	}
 
 	return 0;
+}
+
+
+static int wm8903_lineout_event(struct snd_soc_dapm_widget *w,
+                            struct snd_kcontrol *kcontrol, int event)
+{
+        struct snd_soc_codec *codec = w->codec;
+        struct wm8903_priv *wm8903 = snd_soc_codec_get_drvdata(codec);
+	char mute_all_audioDock[2] = {0xFF, 0x01};
+        char unmute_all_audioDock[2] = {0x00, 0x01};
+
+        switch (event) {
+        case SND_SOC_DAPM_POST_PMU:
+		asusAudiodec_i2c_write_data(unmute_all_audioDock, 2);
+                break;
+        case SND_SOC_DAPM_PRE_PMD:
+		asusAudiodec_i2c_write_data(mute_all_audioDock, 2);
+                break;
+        }
+
+        return 0;
 }
 
 #define WM8903_DCS_MODE_WRITE_STOP 0
@@ -1324,16 +1357,16 @@ SND_SOC_DAPM_PGA_S("HPR_ENA", 1, WM8903_ANALOGUE_HP_0, 0, 0, NULL, 0),
 
 SND_SOC_DAPM_PGA_S("LINEOUTL_RMV_SHORT", 4, WM8903_ANALOGUE_LINEOUT_0, 7, 0,
 		   NULL, 0),
-SND_SOC_DAPM_PGA_S("LINEOUTL_ENA_OUTP", 3, WM8903_ANALOGUE_LINEOUT_0, 6, 0,
-		   NULL, 0),
+SND_SOC_DAPM_PGA_S("LINEOUTL_ENA_OUTP", 3, WM8903_ANALOGUE_LINEOUT_0, 6, 0,wm8903_lineout_event,
+                   SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
 SND_SOC_DAPM_PGA_S("LINEOUTL_ENA_DLY", 2, WM8903_ANALOGUE_LINEOUT_0, 5, 0,
 		   NULL, 0),
 SND_SOC_DAPM_PGA_S("LINEOUTL_ENA", 1, WM8903_ANALOGUE_LINEOUT_0, 4, 0,
 		   NULL, 0),
 SND_SOC_DAPM_PGA_S("LINEOUTR_RMV_SHORT", 4, WM8903_ANALOGUE_LINEOUT_0, 3, 0,
 		   NULL, 0),
-SND_SOC_DAPM_PGA_S("LINEOUTR_ENA_OUTP", 3, WM8903_ANALOGUE_LINEOUT_0, 2, 0,
-		   NULL, 0),
+SND_SOC_DAPM_PGA_S("LINEOUTR_ENA_OUTP", 3, WM8903_ANALOGUE_LINEOUT_0, 2, 0,wm8903_lineout_event,
+                   SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
 SND_SOC_DAPM_PGA_S("LINEOUTR_ENA_DLY", 2, WM8903_ANALOGUE_LINEOUT_0, 1, 0,
 		   NULL, 0),
 SND_SOC_DAPM_PGA_S("LINEOUTR_ENA", 1, WM8903_ANALOGUE_LINEOUT_0, 0, 0,
@@ -2347,9 +2380,23 @@ static int wm8903_probe(struct snd_soc_codec *codec)
 	int ret, i;
 	int trigger, irq_pol;
 	u16 val;
-
+	printk("%s+\n", __func__);
 	wm8903->codec = codec;
 	wm8903_codec = codec;
+
+	tegra_gpio_enable(CODEC_SPKVDD_POWER_5V0_EN_GPIO);
+	ret = gpio_request(CODEC_SPKVDD_POWER_5V0_EN_GPIO, "WM8903_5V");
+	if (ret) {
+		printk("gpio_request failed for input %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO);
+	}
+	ret = gpio_direction_output(CODEC_SPKVDD_POWER_5V0_EN_GPIO, 1) ;
+	if (ret) {
+		printk("gpio_direction_output failed for input %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO);
+	}
+	printk("GPIO = %d , state = %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO,
+			gpio_get_value_cansleep(CODEC_SPKVDD_POWER_5V0_EN_GPIO));
+	gpio_set_value_cansleep(CODEC_SPKVDD_POWER_5V0_EN_GPIO, 1);
+
 	ret = snd_soc_codec_set_cache_io(codec, 8, 16, SND_SOC_I2C);
 	if (ret != 0) {
 		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
@@ -2478,7 +2525,7 @@ static int wm8903_probe(struct snd_soc_codec *codec)
 	wm8903_add_widgets(codec);
 
 	wm8903_init_gpio(codec);
-
+	printk("%s-\n", __func__);
 	return ret;
 }
 
@@ -2522,9 +2569,9 @@ static __devinit int wm8903_i2c_probe(struct i2c_client *i2c,
 	if (ret < 0)
 		kfree(wm8903);
 
-	if(factory_mode)
-		attrs.attrs  = factory_audio_codec_attr;
-	else
+	//if(factory_mode)
+		//attrs.attrs  = factory_audio_codec_attr;
+	//else
 		attrs.attrs  = audio_codec_attr;
 	ret = sysfs_create_group(&i2c->dev.kobj, &attrs);
 	INIT_DELAYED_WORK(&poll_audio_work, audio_codec_stress);

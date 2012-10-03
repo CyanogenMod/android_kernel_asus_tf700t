@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-aruba-panel.c
  *
- * Copyright (c) 2010-2011, NVIDIA Corporation.
+ * Copyright (c) 2010-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,7 +26,7 @@
 #include <linux/platform_device.h>
 #include <linux/pwm_backlight.h>
 #include <linux/nvhost.h>
-#include <mach/nvmap.h>
+#include <linux/nvmap.h>
 #include <mach/irqs.h>
 #include <mach/iomap.h>
 #include <mach/dc.h>
@@ -35,6 +35,7 @@
 #include "board.h"
 #include "devices.h"
 #include "gpio-names.h"
+#include "tegra2_host1x_devices.h"
 
 #define aruba_lvds_shutdown	TEGRA_GPIO_PB2
 #define aruba_bl_enb		TEGRA_GPIO_PW1
@@ -49,8 +50,6 @@ static int aruba_backlight_init(struct device *dev) {
 	ret = gpio_direction_output(aruba_bl_enb, 1);
 	if (ret < 0)
 		gpio_free(aruba_bl_enb);
-	else
-		tegra_gpio_enable(aruba_bl_enb);
 
 	return ret;
 };
@@ -183,6 +182,7 @@ static struct nvhost_device aruba_disp1_device = {
 };
 #endif
 
+#if defined(CONFIG_TEGRA_NVMAP)
 static struct nvmap_platform_carveout aruba_carveouts[] = {
 	[0] = NVMAP_HEAP_CARVEOUT_IRAM_INIT,
 	[1] = {
@@ -206,11 +206,11 @@ static struct platform_device aruba_nvmap_device = {
 		.platform_data = &aruba_nvmap_data,
 	},
 };
+#endif
 
 static struct platform_device *aruba_gfx_devices[] __initdata = {
+#if defined(CONFIG_TEGRA_NVMAP)
 	&aruba_nvmap_device,
-#ifdef CONFIG_TEGRA_GRHOST
-	&tegra_grhost_device,
 #endif
 	&tegra_pwfm2_device,
 	&aruba_backlight_device,
@@ -221,8 +221,16 @@ int __init aruba_panel_init(void)
 	int err;
 	struct resource __maybe_unused *res;
 
+#if defined(CONFIG_TEGRA_NVMAP)
 	aruba_carveouts[1].base = tegra_carveout_start;
 	aruba_carveouts[1].size = tegra_carveout_size;
+#endif
+
+#ifdef CONFIG_TEGRA_GRHOST
+	err = tegra2_register_host1x_devices();
+	if (err)
+		return err;
+#endif
 
 	err = platform_add_devices(aruba_gfx_devices,
 				   ARRAY_SIZE(aruba_gfx_devices));

@@ -28,11 +28,13 @@
 #define AP_TO_MOD_RST   TEGRA_GPIO_PN0
 #define MOD_HANG        TEGRA_GPIO_PN2
 #define MOD_SUS_REQ     TEGRA_GPIO_PX7
-#define AP_WAKE_IND     TEGRA_GPIO_PEE0
+#define AP_WAKE_IND     TEGRA_GPIO_PEE0 //AP Wake MOD Ack
 #define AP_WAKE_MOD     TEGRA_GPIO_PEE1
-#define MOD_WAKE_IND    TEGRA_GPIO_PEE2
+#define MOD_WAKE_AP     TEGRA_GPIO_PU5
+#define MOD_WAKE_IND    TEGRA_GPIO_PEE2 //MOD Wake AP Ack
 #define DL_MODE         TEGRA_GPIO_PN3
 #define DL_COMPLETE     TEGRA_GPIO_PO6
-#define MODEM_MODE_SEL  TEGRA_GPIO_PX5
+
+extern int project_id;
 
 #endif
