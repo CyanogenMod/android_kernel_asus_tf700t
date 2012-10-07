@@ -100,6 +100,10 @@
 #include "check.h"
 #include "efi.h"
 
+#ifdef CONFIG_TEGRA_BOOTBLOCK_EXPOSE
+int tegra_bootblock_offset;
+#endif
+
 /* This allows a kernel command line option 'gpt' to override
  * the test for invalid PMBR.  Not __initdata because reloading
  * the partition tables happens after init too.
@@ -680,12 +684,13 @@ int efi_partition(struct parsed_partitions *state)
 		state->parts[i + 1].has_info = true;
 	}
 
-        #ifdef CONFIG_TEGRA_BOOTBLOCK_EXPOSE
-           printk(KERN_NOTICE "Adding SOS as MMC partition %i: offset %i bytes, size: %i bytes\n", i+1, CONFIG_BOOTBLOCK_EXPOSE_SOS_OFFSET * 512, CONFIG_BOOTBLOCK_EXPOSE_SOS_SIZE * 512);
-           put_partition(state, i+1, CONFIG_BOOTBLOCK_EXPOSE_SOS_OFFSET * ssz, CONFIG_BOOTBLOCK_EXPOSE_SOS_SIZE * ssz);
-           printk(KERN_NOTICE "Adding LNX as MMC partition %i: offset %i bytes, size: %i bytes\n", i+2, CONFIG_BOOTBLOCK_EXPOSE_LNX_OFFSET * 512, CONFIG_BOOTBLOCK_EXPOSE_LNX_SIZE * 512);
-           put_partition(state, i+2, CONFIG_BOOTBLOCK_EXPOSE_LNX_OFFSET * ssz, CONFIG_BOOTBLOCK_EXPOSE_LNX_SIZE * ssz);
-        #endif
+/* Add static partitions for SOS and LNX if specified in kernel config (Tegra platform) */
+#ifdef CONFIG_TEGRA_BOOTBLOCK_EXPOSE
+    printk(KERN_NOTICE "Adding SOS as MMC partition %i: offset %i bytes, size: %i bytes\n", i+1, ((CONFIG_BOOTBLOCK_EXPOSE_SOS_OFFSET * 512) - tegra_bootblock_offset), CONFIG_BOOTBLOCK_EXPOSE_SOS_SIZE * 512);
+    put_partition(state, i+1, ((CONFIG_BOOTBLOCK_EXPOSE_SOS_OFFSET * ssz) - (tegra_bootblock_offset / 512)), CONFIG_BOOTBLOCK_EXPOSE_SOS_SIZE * ssz);
+    printk(KERN_NOTICE "Adding LNX as MMC partition %i: offset %i bytes, size: %i bytes\n", i+2, ((CONFIG_BOOTBLOCK_EXPOSE_LNX_OFFSET * 512) - tegra_bootblock_offset), CONFIG_BOOTBLOCK_EXPOSE_LNX_SIZE * 512);
+    put_partition(state, i+2, ((CONFIG_BOOTBLOCK_EXPOSE_LNX_OFFSET * ssz) - (tegra_bootblock_offset / 512)), CONFIG_BOOTBLOCK_EXPOSE_LNX_SIZE * ssz);
+#endif
 
 	kfree(ptes);
 	kfree(gpt);

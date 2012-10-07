@@ -213,7 +213,7 @@ config TEGRA_BOOTBLOCK_EXPOSE
 config BOOTBLOCK_EXPOSE_SOS_OFFSET
        depends on TEGRA_BOOTBLOCK_EXPOSE
        int "Offset for start of recovery partition (512-byte blocks)"
-       default "15360"
+       default "23552"
 
 config BOOTBLOCK_EXPOSE_SOS_SIZE
        depends on TEGRA_BOOTBLOCK_EXPOSE
@@ -223,7 +223,7 @@ config BOOTBLOCK_EXPOSE_SOS_SIZE
 config BOOTBLOCK_EXPOSE_LNX_OFFSET
        depends on TEGRA_BOOTBLOCK_EXPOSE
        int "Offset for start of boot partition (512-byte blocks)"
-       default "31744"
+       default "39936"
 
 config BOOTBLOCK_EXPOSE_LNX_SIZE
        depends on TEGRA_BOOTBLOCK_EXPOSE

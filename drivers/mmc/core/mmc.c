@@ -24,6 +24,12 @@
 #include "sd_ops.h"
 
 #include "../debug_mmc.h"
+
+#ifdef CONFIG_TEGRA_BOOTBLOCK_EXPOSE
+#include <linux/efi.h>
+extern int tegra_bootblock_offset;
+#endif
+
 static const unsigned int tran_exp[] = {
 	10000,		100000,		1000000,	10000000,
 	0,		0,		0,		0
@@ -350,6 +356,18 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 		 */
 		card->ext_csd.boot_size = ext_csd[EXT_CSD_BOOT_MULT] << 17;
 	}
+
+#ifdef CONFIG_TEGRA_BOOTBLOCK_EXPOSE
+	/*
+	 * This detects the size of boot of the internal emmc
+	 * for determining the correct offsets for locating
+	 * boot and recovery.
+	 */
+	if (strcmp(mmc_hostname(card->host), "mmc0") == 0) {
+		tegra_bootblock_offset = (ext_csd[EXT_CSD_BOOT_MULT] << 17) * 2;
+		MMC_printk("Boot Block Expose, boot size of mmc0 is %u", tegra_bootblock_offset);
+	}
+#endif
 
 	card->ext_csd.raw_hc_erase_gap_size =
 		ext_csd[EXT_CSD_PARTITION_ATTRIBUTE];
