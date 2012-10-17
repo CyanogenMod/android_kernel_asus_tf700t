@@ -1516,11 +1516,6 @@ static void asusdec_lid_report_function(struct work_struct *dat)
 	}
 	msleep(CONVERSION_TIME_MS);
 	value = gpio_get_value(asusdec_hall_sensor_gpio);
-	if (value == 1) {
-	        value = 0;
-	} else if (value == 0) {
-    		value = 1;
-	}
 	input_report_switch(ec_chip->lid_indev, SW_LID, !value);
 	input_sync(ec_chip->lid_indev);
 	ASUSDEC_NOTICE("SW_LID report value = %d\n", !value);
