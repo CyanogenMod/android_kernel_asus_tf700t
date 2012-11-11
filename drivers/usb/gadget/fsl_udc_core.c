@@ -39,7 +39,6 @@
 #include <linux/usb/otg.h>
 #include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
-#include <linux/pm_qos_params.h>
 #include <linux/fsl_devices.h>
 #include <linux/dmapool.h>
 #include <linux/delay.h>

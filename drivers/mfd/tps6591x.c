@@ -47,6 +47,7 @@
 #define DEVCTRL_PWR_OFF_SEQ	(1 << 7)
 #define DEVCTRL_DEV_ON		(1 << 2)
 #define DEVCTRL_DEV_SLP		(1 << 1)
+#define DEVCTRL_DEV_OFF		(1 << 0)
 #define TPS6591X_DEVCTRL2	0x40
 
 /* device sleep on registers */
@@ -365,16 +366,27 @@ static struct i2c_client *tps6591x_i2c_client;
 static void tps6591x_power_off(void)
 {
 	struct device *dev = NULL;
+	int ret;
+	pr_err("%s ++\n", __func__);
 
 	if (!tps6591x_i2c_client)
 		return;
 
 	dev = &tps6591x_i2c_client->dev;
 
-	if (tps6591x_set_bits(dev, TPS6591X_DEVCTRL, DEVCTRL_PWR_OFF_SEQ) < 0)
-		return;
+	pr_err("%s(): Setting power off seq\n", __func__);
+	ret = tps6591x_set_bits(dev, TPS6591X_DEVCTRL, DEVCTRL_PWR_OFF_SEQ);
+	if (ret < 0)
+		return ret;
 
-	tps6591x_clr_bits(dev, TPS6591X_DEVCTRL, DEVCTRL_DEV_ON);
+	pr_err("%s(): Clearing DEV_SLP\n", __func__);
+	ret = tps6591x_clr_bits(dev, TPS6591X_DEVCTRL, DEVCTRL_DEV_SLP);
+	if (ret < 0)
+		return ret;
+
+	pr_err("%s(): Setting device off and clearing dev-on\n", __func__);
+	ret = tps6591x_update(dev, TPS6591X_DEVCTRL, DEVCTRL_DEV_OFF,
+			DEVCTRL_DEV_OFF | DEVCTRL_DEV_ON);
 }
 
 static int tps6591x_gpio_get(struct gpio_chip *gc, unsigned offset)
