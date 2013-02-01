@@ -353,8 +353,8 @@ static int mmc_read_switch(struct mmc_card *card)
 		card->sw_caps.sd3_curr_limit = status[7];
 	}
 
-	if (status[13] & SD_MODE_HIGH_SPEED)
-		card->sw_caps.hs_max_dtr = HIGH_SPEED_MAX_DTR;
+        if (status[13] & 0x02)
+                card->sw_caps.hs_max_dtr = 50000000;
 
 out:
 	kfree(status);
@@ -486,14 +486,14 @@ static void sd_update_bus_speed_mode(struct mmc_card *card)
 
 	if ((card->host->caps & MMC_CAP_UHS_SDR104) &&
 	    (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR104)) {
-			card->sd_bus_speed = UHS_SDR104_BUS_SPEED;
+                        card->sd_bus_speed = UHS_SDR25_BUS_SPEED;
 	} else if ((card->host->caps & MMC_CAP_UHS_DDR50) &&
 		   (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_DDR50)) {
 			card->sd_bus_speed = UHS_DDR50_BUS_SPEED;
 	} else if ((card->host->caps & (MMC_CAP_UHS_SDR104 |
 		    MMC_CAP_UHS_SDR50)) && (card->sw_caps.sd3_bus_mode &
 		    SD_MODE_UHS_SDR50)) {
-			card->sd_bus_speed = UHS_SDR50_BUS_SPEED;
+                        card->sd_bus_speed = UHS_SDR25_BUS_SPEED;
 	} else if ((card->host->caps & (MMC_CAP_UHS_SDR104 |
 		    MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_SDR25)) &&
 		   (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR25)) {
@@ -519,7 +519,7 @@ static int sd_set_bus_speed_mode(struct mmc_card *card, u8 *status)
 		break;
 	case UHS_DDR50_BUS_SPEED:
 		timing = MMC_TIMING_UHS_DDR50;
-		card->sw_caps.uhs_max_dtr = UHS_DDR50_MAX_DTR;
+                card->sw_caps.uhs_max_dtr = UHS_DDR41_MAX_DTR;
 		break;
 	case UHS_SDR50_BUS_SPEED:
 		timing = MMC_TIMING_UHS_SDR50;
@@ -922,7 +922,7 @@ void mmc_sd_go_highspeed(struct mmc_card *card)
  * we're trying to reinitialise.
  */
 static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
-	struct mmc_card *oldcard)
+        struct mmc_card *oldcard, int retries)
 {
 	struct mmc_card *card;
 	int err;
@@ -1009,6 +1009,14 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 			mmc_sd_go_highspeed(card);
 		else if (err)
 			goto free_card;
+
+                /*
+                 * SD Workaround: do not set high speed mode for seldom specific sdcard
+                 */
+                if (retries == 1){
+                        MMC_printk("last shot, unset highspeed mode to workaround init fail");
+                        mmc_card_unset_highspeed(card);
+                }
 
 		/*
 		 * Set bus speed.
@@ -1135,7 +1143,7 @@ static int mmc_sd_resume(struct mmc_host *host)
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
 	retries = 5;
 	while (retries) {
-		err = mmc_sd_init_card(host, host->ocr, host->card);
+                err = mmc_sd_init_card(host, host->ocr, host->card, retries);
 
 		if (err) {
 			printk(KERN_ERR "%s: Re-init card rc = %d (retries = %d)\n",
@@ -1147,7 +1155,7 @@ static int mmc_sd_resume(struct mmc_host *host)
 		break;
 	}
 #else
-	err = mmc_sd_init_card(host, host->ocr, host->card);
+        err = mmc_sd_init_card(host, host->ocr, host->card, 0);
 #endif
 	mmc_release_host(host);
 
@@ -1160,7 +1168,7 @@ static int mmc_sd_power_restore(struct mmc_host *host)
 
 	host->card->state &= ~MMC_STATE_HIGHSPEED;
 	mmc_claim_host(host);
-	ret = mmc_sd_init_card(host, host->ocr, host->card);
+        ret = mmc_sd_init_card(host, host->ocr, host->card, 1);
 	mmc_release_host(host);
 
 	return ret;
@@ -1270,7 +1278,7 @@ int mmc_attach_sd(struct mmc_host *host)
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
 	retries = 5;
 	while (retries) {
-		err = mmc_sd_init_card(host, host->ocr, NULL);
+                err = mmc_sd_init_card(host, host->ocr, NULL, retries);
 		if (err) {
 			retries--;
 			continue;
@@ -1284,7 +1292,7 @@ int mmc_attach_sd(struct mmc_host *host)
 		goto err;
 	}
 #else
-	err = mmc_sd_init_card(host, host->ocr, NULL);
+        err = mmc_sd_init_card(host, host->ocr, NULL, 0);
 	if (err)
 		goto err;
 #endif

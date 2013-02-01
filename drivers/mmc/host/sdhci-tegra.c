@@ -67,6 +67,9 @@
 #define SDHOST_LOW_VOLT_MIN	1800000
 #define SDHOST_LOW_VOLT_MAX	1800000
 
+#define SD_IO_VOLT_MIN         2900000
+#define SD_IO_VOLT_MAX         2940000
+
 #define TEGRA_SDHOST_MIN_FREQ	50000000
 #define TEGRA2_SDHOST_STD_FREQ	50000000
 #define TEGRA3_SDHOST_STD_FREQ	104000000
@@ -352,14 +355,7 @@ static void tegra_sdhci_set_clk_rate(struct sdhci_host *sdhci,
 	unsigned int clk_rate;
 	unsigned int emc_clk;
 
-	/*
-	 * In SDR50 mode, run the sdmmc controller at freq greater than
-	 * 104MHz to ensure the core voltage is at 1.2V. If the core voltage
-	 * is below 1.2V, CRC errors would occur during data transfers.
-	 */
-	if (sdhci->mmc->card &&
-		(mmc_card_ddr_mode(sdhci->mmc->card) ||
-		(sdhci->mmc->ios.timing == MMC_TIMING_UHS_SDR50))) {
+        if (sdhci->mmc->ios.timing == MMC_TIMING_UHS_DDR50) {
 		/*
 		 * In ddr mode, tegra sdmmc controller clock frequency
 		 * should be double the card clock frequency.
@@ -374,6 +370,13 @@ static void tegra_sdhci_set_clk_rate(struct sdhci_host *sdhci,
 		} else {
 			clk_rate = clock * 2;
 		}
+        } else  if (sdhci->mmc->ios.timing == MMC_TIMING_UHS_SDR50) {
+                /*
+                 * In SDR50 mode, run the sdmmc controller at freq greater than
+                 * 104MHz to ensure the core voltage is at 1.2V. If the core voltage
+                 * is below 1.2V, CRC errors would occur during data transfers.
+                 */
+                clk_rate = clock * 2;
 	} else {
 		if (clock <= tegra_sdhost_min_freq)
 			clk_rate = tegra_sdhost_min_freq;
@@ -537,11 +540,20 @@ static int tegra_sdhci_signal_voltage_switch(struct sdhci_host *sdhci,
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(sdhci);
 	struct tegra_sdhci_host *tegra_host = pltfm_host->priv;
-	unsigned int min_uV = SDHOST_HIGH_VOLT_MIN;
-	unsigned int max_uV = SDHOST_HIGH_VOLT_MAX;
+        unsigned int min_uV = 0;
+        unsigned int max_uV = 0;
 	unsigned int rc = 0;
 	u16 clk, ctrl;
 	unsigned int val;
+
+        if (!strcmp(mmc_hostname(sdhci->mmc), "mmc2")) {
+                min_uV = SD_IO_VOLT_MIN;
+                max_uV = SD_IO_VOLT_MAX;
+        }
+        else {
+                min_uV = SDHOST_HIGH_VOLT_MIN;
+                max_uV = SDHOST_HIGH_VOLT_MAX;
+        }
 
 	ctrl = sdhci_readw(sdhci, SDHCI_HOST_CONTROL2);
 	if (signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
@@ -568,9 +580,14 @@ static int tegra_sdhci_signal_voltage_switch(struct sdhci_host *sdhci,
 		if (rc) {
 			dev_err(mmc_dev(sdhci->mmc), "switching to 1.8V"
 			"failed . Switching back to 3.3V\n");
-			regulator_set_voltage(tegra_host->vdd_io_reg,
-				SDHOST_HIGH_VOLT_MIN,
-				SDHOST_HIGH_VOLT_MAX);
+                        if (!strcmp(mmc_hostname(sdhci->mmc), "mmc2"))
+                                regulator_set_voltage(tegra_host->vdd_io_reg,
+                                         SD_IO_VOLT_MIN,
+                                         SD_IO_VOLT_MAX);
+                        else
+                                regulator_set_voltage(tegra_host->vdd_io_reg,
+                                        SDHOST_HIGH_VOLT_MIN,
+                                        SDHOST_HIGH_VOLT_MAX);
 			goto out;
 		}
 	}
@@ -1117,8 +1134,8 @@ static int __devinit sdhci_tegra_probe(struct platform_device *pdev)
 			 * Set the minV and maxV to default
 			 * voltage range of 2.7V - 3.6V
 			 */
-			tegra_host->vddio_min_uv = SDHOST_HIGH_VOLT_MIN;
-			tegra_host->vddio_max_uv = SDHOST_HIGH_VOLT_MAX;
+                        tegra_host->vddio_min_uv = SD_IO_VOLT_MIN;
+                        tegra_host->vddio_max_uv = SD_IO_VOLT_MAX;
 		}
 		tegra_host->vdd_io_reg = regulator_get(mmc_dev(host->mmc), "vddio_sdmmc");
 		if (IS_ERR_OR_NULL(tegra_host->vdd_io_reg)) {
@@ -1133,6 +1150,8 @@ static int __devinit sdhci_tegra_probe(struct platform_device *pdev)
 			if (rc) {
 				dev_err(mmc_dev(host->mmc), "%s regulator_set_voltage failed: %d",
 					"vddio_sdmmc", rc);
+                        } else {
+                                regulator_enable(tegra_host->vdd_io_reg);
 			}
 		}
 
@@ -1143,7 +1162,8 @@ static int __devinit sdhci_tegra_probe(struct platform_device *pdev)
 			tegra_host->vdd_slot_reg = NULL;
 		} else {
 			rc = regulator_set_voltage(tegra_host->vdd_slot_reg,
-				2850000, 2890000);
+                                3100000,
+                                3140000);
 			if (rc) {
 				dev_err(mmc_dev(host->mmc), "%s regulator_set_voltage failed: %d",
 					"vddio_sd_slot", rc);
