@@ -60,6 +60,8 @@ static ssize_t asusdec_charging_led_store(struct device *class,
 		struct device_attribute *attr,const char *buf, size_t count);
 static ssize_t asusdec_led_show(struct device *class,
 	struct device_attribute *attr,char *buf);
+static ssize_t asusdec_show_ec_wakeup(struct device *class,
+		struct device_attribute *attr,char *buf);
 static ssize_t asusdec_store_ec_wakeup(struct device *class,
 		struct device_attribute *attr,const char *buf, size_t count);
 static ssize_t asusdec_show_drain(struct device *class,
@@ -205,7 +207,7 @@ static DEVICE_ATTR(ec_info, S_IWUSR | S_IRUGO, asusdec_info_show,NULL);
 static DEVICE_ATTR(ec_dock, S_IWUSR | S_IRUGO, asusdec_show_dock,NULL);
 static DEVICE_ATTR(ec_dock_led, S_IWUSR | S_IRUGO, asusdec_led_show,asusdec_store_led);
 static DEVICE_ATTR(ec_charging_led, S_IWUSR | S_IRUGO, NULL, asusdec_charging_led_store);
-static DEVICE_ATTR(ec_wakeup, S_IWUSR | S_IRUGO, NULL,asusdec_store_ec_wakeup);
+static DEVICE_ATTR(ec_wakeup, S_IWUSR | S_IRUGO, asusdec_show_ec_wakeup, asusdec_store_ec_wakeup);
 static DEVICE_ATTR(ec_dock_discharge, S_IWUSR | S_IRUGO, asusdec_show_drain,NULL);
 static DEVICE_ATTR(ec_dock_battery, S_IWUSR | S_IRUGO, asusdec_show_dock_battery,NULL);
 static DEVICE_ATTR(ec_dock_battery_status, S_IWUSR | S_IRUGO, asusdec_show_dock_battery_status,NULL);
@@ -2041,6 +2043,15 @@ static ssize_t asusdec_led_show(struct device *class,struct device_attribute *at
 		return sprintf(buf, "Fail to EC LED Blink\n");
 	else
 		return sprintf(buf, "EC LED Blink\n");
+}
+
+static ssize_t asusdec_show_ec_wakeup(struct device *class,struct device_attribute *attr,char *buf)
+{
+	if (ec_chip->ec_wakeup == 0) {
+		return sprintf(buf, "0\n");
+	} else {
+		return sprintf(buf, "1\n");
+	}
 }
 
 static ssize_t asusdec_store_ec_wakeup(struct device *class,struct device_attribute *attr,const char *buf, size_t count)
