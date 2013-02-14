@@ -2775,8 +2775,8 @@ CONFIG_IIO=y
 #
 # Triggers - standalone
 #
-# CONFIG_XVMALLOC is not set
-# CONFIG_ZRAM is not set
+CONFIG_XVMALLOC=y
+CONFIG_ZRAM=y
 # CONFIG_FB_SM7XX is not set
 # CONFIG_VIDEO_DT3155 is not set
 # CONFIG_CRYSTALHD is not set
