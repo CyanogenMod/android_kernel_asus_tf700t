@@ -1582,6 +1582,9 @@ static void asusdec_dock_init_work_function(struct work_struct *dat)
 			}
 			ec_chip->dock_type = DOCK_UNKNOWN;
 
+			// sync ec_wakeup status
+			ec_chip->ec_wakeup = 0;
+
 			memset(ec_chip->ec_model_name, 0, 32);
 			memset(ec_chip->ec_version, 0, 32);
 			ec_chip->touchpad_member = -1;
