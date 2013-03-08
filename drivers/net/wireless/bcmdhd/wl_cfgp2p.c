@@ -1229,6 +1229,10 @@ wl_cfgp2p_listen_complete(struct wl_priv *wl, struct net_device *ndev,
 		}
 		cfg80211_remain_on_channel_expired(ndev, wl->last_roc_id, &wl->remain_on_chan,
 		    wl->remain_on_chan_type, GFP_KERNEL);
+		if (wl_add_remove_eventmsg(wl_to_prmry_ndev(wl),
+			WLC_E_P2P_PROBREQ_MSG, false) != BCME_OK) {
+			CFGP2P_ERR((" failed to unset WLC_E_P2P_PROPREQ_MSG\n"));
+		}
 	} else
 		wl_clr_p2p_status(wl, LISTEN_EXPIRED);
 
@@ -1320,6 +1324,9 @@ wl_cfgp2p_discover_listen(struct wl_priv *wl, s32 channel, u32 duration_ms)
 	} else
 		wl_clr_p2p_status(wl, LISTEN_EXPIRED);
 
+	if (wl_add_remove_eventmsg(wl_to_prmry_ndev(wl), WLC_E_P2P_PROBREQ_MSG, true) != BCME_OK) {
+		CFGP2P_ERR((" failed to set WLC_E_P2P_PROPREQ_MSG\n"));
+	}
 	wl_cfgp2p_set_p2p_mode(wl, WL_P2P_DISC_ST_LISTEN, channel, (u16) duration_ms,
 	            wl_to_p2p_bss_bssidx(wl, P2PAPI_BSSCFG_DEVICE));
 	_timer = &wl->p2p->listen_timer;
