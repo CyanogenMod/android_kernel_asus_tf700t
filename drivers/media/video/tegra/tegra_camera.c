@@ -128,20 +128,6 @@ static int tegra_camera_enable_emc(struct tegra_camera_dev *dev)
 	clk_enable(dev->emc_clk);
 #ifdef CONFIG_ARCH_TEGRA_2x_SOC
 	clk_set_rate(dev->emc_clk, 300000000);
-#else
-	switch(tegra3_get_project_id()) {
-	case TEGRA3_PROJECT_TF300T:
-	case TEGRA3_PROJECT_TF300TG:
-	case TEGRA3_PROJECT_TF300TL:
-	case TEGRA3_PROJECT_TF500T:
-		clk_set_rate(dev->emc_clk, 667000000);
-		break;
-	case TEGRA3_PROJECT_TF700T:
-		clk_set_rate(dev->emc_clk, 800000000);
-		break;
-	default:
-		break;
-	}
 #endif
 	return ret;
 }
@@ -439,7 +425,9 @@ int tegra_camera_mclk_on_off(int on)
         if ((tegra3_get_project_id()==TEGRA3_PROJECT_TF300T) ||
             (tegra3_get_project_id()==TEGRA3_PROJECT_TF300TG) ||
             (tegra3_get_project_id()==TEGRA3_PROJECT_TF300TL) ||
-            (tegra3_get_project_id()==TEGRA3_PROJECT_TF500T))
+            (tegra3_get_project_id()==TEGRA3_PROJECT_TF500T)  ||
+            (tegra3_get_project_id()==TEGRA3_PROJECT_ME301T)  ||
+            (tegra3_get_project_id()==TEGRA3_PROJECT_ME301TL))
             clk_set_rate(p_cam_dev->vi_sensor_clk, 12000000);
         else
             clk_set_rate(p_cam_dev->vi_sensor_clk, 24000000);

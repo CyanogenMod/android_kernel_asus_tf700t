@@ -12,7 +12,7 @@
 #include "pm-irq.h"
 #include "ril.h"
 #include "ril_wakeup.h"
-#include "../usb/serial/usb-wwan.h"
+#include "../usb/serial/qcserial.h"
 
 static struct wake_lock wakeup_control_lock;
 static struct workqueue_struct *workqueue;

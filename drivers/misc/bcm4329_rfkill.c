@@ -107,7 +107,6 @@ static int bcm4329_rfkill_probe(struct platform_device *pdev)
 						"bcm4329_nreset_gpio");
 	if (res) {
 		bcm4329_rfkill->gpio_reset = res->start;
-		tegra_gpio_enable(bcm4329_rfkill->gpio_reset);
 		ret = gpio_request(bcm4329_rfkill->gpio_reset,
 						"bcm4329_nreset_gpio");
 	} else {
@@ -121,7 +120,6 @@ static int bcm4329_rfkill_probe(struct platform_device *pdev)
 						"bcm4329_nshutdown_gpio");
 	if (res) {
 		bcm4329_rfkill->gpio_shutdown = res->start;
-		tegra_gpio_enable(bcm4329_rfkill->gpio_shutdown);
 		ret = gpio_request(bcm4329_rfkill->gpio_shutdown,
 						"bcm4329_nshutdown_gpio");
 	} else {
@@ -202,11 +200,7 @@ static struct platform_driver bcm4329_rfkill_driver = {
 
 static int __init bcm4329_rfkill_init(void)
 {
-	printk(KERN_INFO "%s+ #####\n", __func__);
-	int ret;
-	ret = platform_driver_register(&bcm4329_rfkill_driver);
-	printk(KERN_INFO "%s- #####\n", __func__);
-	return ret;
+	return platform_driver_register(&bcm4329_rfkill_driver);
 }
 
 static void __exit bcm4329_rfkill_exit(void)

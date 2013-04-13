@@ -769,7 +769,7 @@ void __init iotable_init(struct map_desc *io_desc, int nr)
 		create_mapping(io_desc + i);
 }
 
-static void * __initdata vmalloc_min = (void *)(VMALLOC_END - SZ_128M);
+static void * __initdata vmalloc_min = (void *)(VMALLOC_END - SZ_768M);
 
 /*
  * vmalloc=size forces the vmalloc area to be exactly 'size'

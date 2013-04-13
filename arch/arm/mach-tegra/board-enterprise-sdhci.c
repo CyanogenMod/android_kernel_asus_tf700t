@@ -22,6 +22,7 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/mmc/host.h>
+#include <linux/wl12xx.h>
 
 #include <asm/mach-types.h>
 #include <mach/irqs.h>
@@ -52,6 +53,14 @@ static struct wifi_platform_data enterprise_wifi_control = {
 	.set_carddetect = enterprise_wifi_set_carddetect,
 };
 
+static struct wl12xx_platform_data enterprise_wl12xx_wlan_data __initdata = {
+	.irq = TEGRA_GPIO_TO_IRQ(ENTERPRISE_WLAN_WOW),
+	.board_ref_clock = WL12XX_REFCLOCK_26,
+	.board_tcxo_clock = 1,
+	.set_power = enterprise_wifi_power,
+	.set_carddetect = enterprise_wifi_set_carddetect,
+};
+
 static struct resource wifi_resource[] = {
 	[0] = {
 		.name	= "bcm4329_wlan_irq",
@@ -61,7 +70,7 @@ static struct resource wifi_resource[] = {
 	},
 };
 
-static struct platform_device enterprise_wifi_device = {
+static struct platform_device enterprise_brcm_wifi_device = {
 	.name           = "bcm4329_wlan",
 	.id             = 1,
 	.num_resources	= 1,
@@ -146,6 +155,7 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data0 = {
 	.power_gpio = -1,
 	.tap_delay = 0x0F,
 	.max_clk_limit = 45000000,
+	.ddr_clk_limit = 41000000,
 };
 
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data2 = {
@@ -153,6 +163,7 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data2 = {
 	.wp_gpio = -1,
 	.power_gpio = -1,
 	.tap_delay = 0x0F,
+	.ddr_clk_limit = 41000000,
 };
 
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data3 = {
@@ -161,6 +172,7 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data3 = {
 	.power_gpio = -1,
 	.is_8bit = 1,
 	.tap_delay = 0x0F,
+	.ddr_clk_limit = 41000000,
 	.mmc_data = {
 		.built_in = 1,
 	}
@@ -235,10 +247,22 @@ static int enterprise_wifi_power(int on)
 		tegra_io_dpd_disable(sd_dpd);
 		mutex_unlock(&sd_dpd->delay_lock);
 	}
-	gpio_set_value(ENTERPRISE_WLAN_PWR, on);
-	mdelay(100);
-	gpio_set_value(ENTERPRISE_WLAN_RST, on);
-	mdelay(200);
+
+	if (on) {
+		gpio_set_value(ENTERPRISE_WLAN_RST, 1);
+		mdelay(100);
+		gpio_set_value(ENTERPRISE_WLAN_RST, 0);
+		mdelay(100);
+		gpio_set_value(ENTERPRISE_WLAN_RST, 1);
+		mdelay(100);
+		gpio_set_value(ENTERPRISE_WLAN_PWR, 1);
+		mdelay(200);
+	} else {
+		gpio_set_value(ENTERPRISE_WLAN_RST, 0);
+		mdelay(100);
+		gpio_set_value(ENTERPRISE_WLAN_PWR, 0);
+	}
+
 	if (sd_dpd) {
 		mutex_lock(&sd_dpd->delay_lock);
 		tegra_io_dpd_enable(sd_dpd);
@@ -257,7 +281,7 @@ static int enterprise_wifi_reset(int on)
 #ifdef CONFIG_TEGRA_PREPOWER_WIFI
 static int __init enterprise_wifi_prepower(void)
 {
-	if (!machine_is_tegra_enterprise())
+	if ((!machine_is_tegra_enterprise()) && (!machine_is_tai()))
 		return 0;
 
 	enterprise_wifi_power(1);
@@ -292,7 +316,11 @@ static int __init enterprise_wifi_init(void)
 	if (rc)
 		pr_err("WLAN_WOW gpio direction configuration failed:%d\n", rc);
 
-	platform_device_register(&enterprise_wifi_device);
+	if (tegra_get_commchip_id() == COMMCHIP_TI_WL18XX)
+		wl12xx_set_platform_data(&enterprise_wl12xx_wlan_data);
+	else
+		platform_device_register(&enterprise_brcm_wifi_device);
+
 	return 0;
 }
 
@@ -302,6 +330,13 @@ int __init enterprise_sdhci_init(void)
 
 	tegra_sdhci_platform_data2.cd_gpio = ENTERPRISE_SD_CD;
 	platform_device_register(&tegra_sdhci_device2);
+
+	/* TI wifi module does not use emdedded sdio */
+	if (tegra_get_commchip_id() == COMMCHIP_TI_WL18XX) {
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
+		tegra_sdhci_platform_data0.mmc_data.embedded_sdio = NULL;
+#endif
+	}
 
 	platform_device_register(&tegra_sdhci_device0);
 	enterprise_wifi_init();

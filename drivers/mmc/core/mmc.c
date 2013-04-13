@@ -103,8 +103,7 @@ static int mmc_decode_cid(struct mmc_card *card)
 		card->cid.prod_name[3]	= UNSTUFF_BITS(resp, 72, 8);
 		card->cid.prod_name[4]	= UNSTUFF_BITS(resp, 64, 8);
 		card->cid.prod_name[5]	= UNSTUFF_BITS(resp, 56, 8);
-		card->cid.prod_rev      = UNSTUFF_BITS(resp, 48, 8);
-		card->cid.prv		= UNSTUFF_BITS(resp, 48, 8);
+		card->cid.prod_rev	= UNSTUFF_BITS(resp, 48, 8);
 		card->cid.serial	= UNSTUFF_BITS(resp, 16, 32);
 		card->cid.month		= UNSTUFF_BITS(resp, 12, 4);
 		card->cid.year		= UNSTUFF_BITS(resp, 8, 4) + 1997;
@@ -116,7 +115,7 @@ static int mmc_decode_cid(struct mmc_card *card)
 		return -EINVAL;
 	}
 
-	MMC_printk("cid.prv 0x%x", card->cid.prv);
+	MMC_printk("prv: 0x%x, manfid: 0x%x", card->cid.prod_rev, card->cid.manfid);
 
 	return 0;
 }
@@ -288,8 +287,6 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 			ext_csd[EXT_CSD_SEC_CNT + 1] << 8 |
 			ext_csd[EXT_CSD_SEC_CNT + 2] << 16 |
 			ext_csd[EXT_CSD_SEC_CNT + 3] << 24;
-		MMC_printk("ext_csd.sectors 0x%x prod_name %s BOOT_SIZE_MULTI 0x%x", card->ext_csd.sectors, card->cid.prod_name, ext_csd[EXT_CSD_BOOT_MULT]);
-		card->ext_csd.sec_count = card->ext_csd.sectors;
 
 		/* Cards with density > 2GiB are sector addressed */
 		if (card->ext_csd.sectors > (2u * 1024 * 1024 * 1024) / 512)
@@ -358,15 +355,15 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 	}
 
 #ifdef CONFIG_TEGRA_BOOTBLOCK_EXPOSE
-	/*
-	 * This detects the size of boot of the internal emmc
-	 * for determining the correct offsets for locating
-	 * boot and recovery.
-	 */
-	if (strcmp(mmc_hostname(card->host), "mmc0") == 0) {
-		tegra_bootblock_offset = (ext_csd[EXT_CSD_BOOT_MULT] << 17) * 2;
-		MMC_printk("Boot Block Expose, boot size of mmc0 is %u", tegra_bootblock_offset);
-	}
+        /*
+        * This detects the size of boot of the internal emmc
+        * for determining the correct offsets for locating
+        * boot and recovery.
+        */
+        if (strcmp(mmc_hostname(card->host), "mmc0") == 0) {
+                tegra_bootblock_offset = (ext_csd[EXT_CSD_BOOT_MULT] << 17) * 2;
+                MMC_printk("Boot Block Expose, boot size of mmc0 is %u", tegra_bootblock_offset);
+        }
 #endif
 
 	card->ext_csd.raw_hc_erase_gap_size =
@@ -546,13 +543,12 @@ MMC_DEV_ATTR(hwrev, "0x%x\n", card->cid.hwrev);
 MMC_DEV_ATTR(manfid, "0x%06x\n", card->cid.manfid);
 MMC_DEV_ATTR(name, "%s\n", card->cid.prod_name);
 MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
-//MMC_DEV_ATTR(prv, "0x%x\n", card->cid.prod_rev);
+MMC_DEV_ATTR(sec_count, "0x%x\n", card->ext_csd.sectors);
+MMC_DEV_ATTR(prv, "0x%x\n", card->cid.prod_rev);
 MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
 MMC_DEV_ATTR(enhanced_area_offset, "%llu\n",
 		card->ext_csd.enhanced_area_offset);
 MMC_DEV_ATTR(enhanced_area_size, "%u\n", card->ext_csd.enhanced_area_size);
-MMC_DEV_ATTR(sec_count, "0x%x\n", card->ext_csd.sec_count);
-MMC_DEV_ATTR(prv, "0x%x\n", card->cid.prv);
 
 static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_cid.attr,
@@ -565,11 +561,11 @@ static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_manfid.attr,
 	&dev_attr_name.attr,
 	&dev_attr_oemid.attr,
+	&dev_attr_sec_count.attr,
+	&dev_attr_prv.attr,
 	&dev_attr_serial.attr,
 	&dev_attr_enhanced_area_offset.attr,
 	&dev_attr_enhanced_area_size.attr,
-	&dev_attr_sec_count.attr,
-	&dev_attr_prv.attr,
 	NULL,
 };
 
@@ -695,16 +691,17 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 			goto free_card;
 	}
 
-	/*
-	 * Fetch and process extended CSD.
-	 */
+	if (!oldcard) {
+		/*
+		 * Fetch and process extended CSD.
+		 */
 
-	err = mmc_get_ext_csd(card, &ext_csd);
-	if (err)
-		goto free_card;
-	err = mmc_read_ext_csd(card, ext_csd);
-	if (err)
-		goto free_card;
+		err = mmc_get_ext_csd(card, &ext_csd);
+		if (err)
+			goto free_card;
+		err = mmc_read_ext_csd(card, ext_csd);
+		if (err)
+			goto free_card;
 
 		if (card->ext_csd.refresh) {
 			init_timer(&card->timer);
@@ -725,8 +722,9 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 		if (!(mmc_card_blockaddr(card)) && (rocr & (1<<30)))
 			mmc_card_set_blockaddr(card);
 
-	/* Erase size depends on CSD and Extended CSD */
-	mmc_set_erase_size(card);
+		/* Erase size depends on CSD and Extended CSD */
+		mmc_set_erase_size(card);
+	}
 
 	/*
 	 * If enhanced_area_en is TRUE, host needs to enable ERASE_GRP_DEF
@@ -994,6 +992,7 @@ static int mmc_detect(struct mmc_host *host)
 		mmc_power_off(host);
 		mmc_release_host(host);
 	}
+
 	return err;
 }
 
@@ -1002,19 +1001,13 @@ static int mmc_detect(struct mmc_host *host)
  */
 static int mmc_suspend(struct mmc_host *host)
 {
-	int err;
-
 	BUG_ON(!host);
 	BUG_ON(!host->card);
 
 	mmc_claim_host(host);
-	if (mmc_card_can_sleep(host)) {
-		err = mmc_card_sleep(host);
-		if (!err)
-			mmc_card_set_sleep(host->card);
-	} else if (!mmc_host_is_spi(host))
+	if (!mmc_host_is_spi(host))
 		mmc_deselect_cards(host);
-	host->card->state &= ~(MMC_STATE_HIGHSPEED | MMC_STATE_HIGHSPEED_200);
+	host->card->state &= ~MMC_STATE_HIGHSPEED;
 	mmc_release_host(host);
 
 	return 0;
@@ -1034,11 +1027,7 @@ static int mmc_resume(struct mmc_host *host)
 	BUG_ON(!host->card);
 
 	mmc_claim_host(host);
-	if (mmc_card_is_sleep(host->card)) {
-		err = mmc_card_awake(host);
-		mmc_card_clr_sleep(host->card);
-	} else
-		err = mmc_init_card(host, host->ocr, host->card);
+	err = mmc_init_card(host, host->ocr, host->card);
 	mmc_release_host(host);
 
 	return err;
@@ -1048,8 +1037,7 @@ static int mmc_power_restore(struct mmc_host *host)
 {
 	int ret;
 
-	host->card->state &= ~(MMC_STATE_HIGHSPEED | MMC_STATE_HIGHSPEED_200);
-	mmc_card_clr_sleep(host->card);
+	host->card->state &= ~MMC_STATE_HIGHSPEED;
 	mmc_claim_host(host);
 	ret = mmc_init_card(host, host->ocr, host->card);
 	mmc_release_host(host);

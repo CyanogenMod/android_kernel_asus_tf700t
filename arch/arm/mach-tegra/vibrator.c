@@ -73,7 +73,6 @@ static int __init vibrator_init(void)
 		gpio_free(TEGRA_GPIO_PH7);
 		return ret;
 	}
-	tegra_gpio_enable(TEGRA_GPIO_PH7);
 
 	/* Turn off vibrator in default*/
 	gpio_direction_output(TEGRA_GPIO_PH7, 0);

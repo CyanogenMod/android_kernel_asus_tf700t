@@ -1320,6 +1320,16 @@ static int max98088_dai1_hw_params(struct snd_pcm_substream *substream,
                snd_soc_update_bits(codec, M98088_REG_18_DAI1_FILTERS,
                        M98088_DAI_DHF, M98088_DAI_DHF);
 
+		if (rate > 24000)
+			snd_soc_update_bits(codec, M98088_REG_18_DAI1_FILTERS,
+						M98088_DAI_MODE, M98088_DAI_MODE);
+		else
+			snd_soc_update_bits(codec, M98088_REG_18_DAI1_FILTERS,
+						M98088_DAI_MODE, 0);
+
+		snd_soc_update_bits(codec, M98088_REG_18_DAI1_FILTERS,
+						M98088_DAI_AVFLT_MASK, 5<<M98088_DAI_AVFLT_SHIFT);
+
        snd_soc_update_bits(codec, M98088_REG_51_PWR_SYS, M98088_SHDNRUN,
                M98088_SHDNRUN);
 
@@ -1694,6 +1704,7 @@ static struct snd_soc_dai_driver max98088_dai[] = {
                .formats = MAX98088_FORMATS,
        },
         .ops = &max98088_dai1_ops,
+		.symmetric_rates = 1,
 },
 {
        .name = "Aux",

@@ -58,16 +58,22 @@
 #include "../gpio-names.h"
 #include "../clock.h"
 
-#include <linux/pwm.h>
-#include <mach/board-cardhu-misc.h>
-
+#include <linux/regulator/consumer.h>
 extern bool isRecording;
 static struct timeval t_suspend;
 #define TEGRA_CRC_LATCHED_DELAY		34
 #define cardhu_hdmi_hpd                        TEGRA_GPIO_PN7
-#define cardhu_bl_enb 58
+#define cardhu_bl_enb                          TEGRA_GPIO_PH2
+#define usb_camera_power 220
 #define DC_COM_PIN_OUTPUT_POLARITY1_INIT_VAL	0x01000000
 #define DC_COM_PIN_OUTPUT_POLARITY3_INIT_VAL	0x0
+static struct regulator *cardhu_camera_reg = NULL;
+
+#include <linux/pwm.h>
+#include <mach/board-cardhu-misc.h>
+
+#define EN_VDD_BL TEGRA_GPIO_PH3
+extern int ME301T_panel_8v;
 
 static struct fb_videomode tegra_dc_hdmi_fallback_mode = {
 	.refresh = 60,
@@ -492,7 +498,7 @@ static ssize_t dbg_hdmi_reg_rw_read(struct file *file, char __user *buf, size_t 
 
 	struct tegra_dc_hdmi_data *hdmi = tegra_dc_get_outdata(tegra_dcs[1]);
 
-	printk("%s: buf=%p, count=%d, ppos=%p; *ppos= %d\n", __FUNCTION__, buf, count, ppos, *ppos);
+	printk("%s: buf=%p, count=%d, ppos=%p; *ppos= %lld\n", __FUNCTION__, buf, count, ppos, *ppos);
 
 	if (*ppos)
 		return 0;	/* the end */
@@ -518,7 +524,7 @@ static ssize_t dbg_hdmi_reg_rw_read(struct file *file, char __user *buf, size_t 
 	*ppos += tot;	/* increase offset */
 	return tot;
 }
-static ssize_t dbg_hdmi_reg_rw_write(struct file *file, char __user *buf, size_t count,
+static ssize_t dbg_hdmi_reg_rw_write(struct file *file, const char __user *buf, size_t count,
 				loff_t *ppos)
 {
 	char debug_buf[256];
@@ -1022,6 +1028,36 @@ static inline void enable_dc_irq(unsigned int irq)
 #endif
 }
 
+void tegra_dc_get_fbvblank(struct tegra_dc *dc, struct fb_vblank *vblank)
+{
+	if (dc->out->flags & TEGRA_DC_OUT_ONE_SHOT_MODE)
+		vblank->flags = FB_VBLANK_HAVE_VSYNC;
+}
+
+int tegra_dc_wait_for_vsync(struct tegra_dc *dc)
+{
+	int ret = -ENOTTY;
+
+	if (!(dc->out->flags & TEGRA_DC_OUT_ONE_SHOT_MODE) || !dc->enabled)
+		return ret;
+
+	/*
+	 * Logic is as follows
+	 * a) Indicate we need a vblank.
+	 * b) Wait for completion to be signalled from isr.
+	 * c) Initialize completion for next iteration.
+	 */
+
+	tegra_dc_hold_dc_out(dc);
+	dc->out->user_needs_vblank = true;
+
+	ret = wait_for_completion_interruptible(&dc->out->user_vblank_comp);
+	init_completion(&dc->out->user_vblank_comp);
+	tegra_dc_release_dc_out(dc);
+
+	return ret;
+}
+
 static void tegra_dc_vblank(struct work_struct *work)
 {
 	struct tegra_dc *dc = container_of(work, struct tegra_dc, vblank_work);
@@ -1172,6 +1208,13 @@ static void tegra_dc_underflow_handler(struct tegra_dc *dc)
 #ifndef CONFIG_TEGRA_FPGA_PLATFORM
 static void tegra_dc_one_shot_irq(struct tegra_dc *dc, unsigned long status)
 {
+	/* pending user vblank, so wakeup */
+	if ((status & (V_BLANK_INT | MSF_INT)) &&
+	    (dc->out->user_needs_vblank)) {
+		dc->out->user_needs_vblank = false;
+		complete(&dc->out->user_vblank_comp);
+	}
+
 	if (status & V_BLANK_INT) {
 		/* Sync up windows. */
 		tegra_dc_trigger_windows(dc);
@@ -1194,12 +1237,32 @@ static void tegra_dc_continuous_irq(struct tegra_dc *dc, unsigned long status)
 		queue_work(system_freezable_wq, &dc->vblank_work);
 
 	if (status & FRAME_END_INT) {
+		struct timespec tm = CURRENT_TIME;
+		dc->frame_end_timestamp = timespec_to_ns(&tm);
+		wake_up(&dc->timestamp_wq);
+
 		/* Mark the frame_end as complete. */
 		if (!completion_done(&dc->frame_end_complete))
 			complete(&dc->frame_end_complete);
 
 		tegra_dc_trigger_windows(dc);
 	}
+}
+
+/* XXX: Not sure if we limit look ahead to 1 frame */
+bool tegra_dc_is_within_n_vsync(struct tegra_dc *dc, s64 ts)
+{
+	BUG_ON(!dc->frametime_ns);
+	return ((ts - dc->frame_end_timestamp) < dc->frametime_ns);
+}
+
+bool tegra_dc_does_vsync_separate(struct tegra_dc *dc, s64 new_ts, s64 old_ts)
+{
+	BUG_ON(!dc->frametime_ns);
+	return (((new_ts - old_ts) > dc->frametime_ns)
+		|| (div_s64((new_ts - dc->frame_end_timestamp), dc->frametime_ns)
+			!= div_s64((old_ts - dc->frame_end_timestamp),
+				dc->frametime_ns)));
 }
 #endif
 
@@ -1363,6 +1426,7 @@ static u32 get_syncpt(struct tegra_dc *dc, int idx)
 static int tegra_dc_init(struct tegra_dc *dc)
 {
 	int i;
+	int int_enable;
 
 	tegra_dc_writel(dc, 0x00000100, DC_CMD_GENERAL_INCR_SYNCPT_CNTRL);
 	if (dc->ndev->id == 0) {
@@ -1398,8 +1462,12 @@ static int tegra_dc_init(struct tegra_dc *dc)
 	tegra_dc_writel(dc, 0x00000000, DC_DISP_DISP_MISC_CONTROL);
 #endif
 	/* enable interrupts for vblank, frame_end and underflows */
-	tegra_dc_writel(dc, (FRAME_END_INT | V_BLANK_INT | ALL_UF_INT),
-		DC_CMD_INT_ENABLE);
+	int_enable = (FRAME_END_INT | V_BLANK_INT | ALL_UF_INT);
+	/* for panels with one-shot mode enable tearing effect interrupt */
+	if (dc->out->flags & TEGRA_DC_OUT_ONE_SHOT_MODE)
+		int_enable |= MSF_INT;
+
+	tegra_dc_writel(dc, int_enable, DC_CMD_INT_ENABLE);
 	tegra_dc_writel(dc, ALL_UF_INT, DC_CMD_INT_MASK);
 
 	tegra_dc_writel(dc, 0x00000000, DC_DISP_BORDER_COLOR);
@@ -1581,15 +1649,22 @@ static int _tegra_dc_set_default_videomode(struct tegra_dc *dc)
 
 static bool _tegra_dc_enable(struct tegra_dc *dc)
 {
+	bool enabled = false;
+
 	if (dc->ndev->id == 0) {
-               struct timeval t_resume;
-               int diff_msec = 0;
-               do_gettimeofday(&t_resume);
-               diff_msec = ((t_resume.tv_sec - t_suspend.tv_sec) * 1000000 +(t_resume.tv_usec - t_suspend.tv_usec)) / 1000;
-               printk("Disp: diff_msec= %d\n", diff_msec);
-               if((diff_msec < 1000) && (diff_msec >= 0))
-                       msleep(1000 - diff_msec);
-       }
+		struct timeval t_resume;
+		int diff_msec = 0;
+		do_gettimeofday(&t_resume);
+		diff_msec = ((t_resume.tv_sec - t_suspend.tv_sec) * 1000000 +(t_resume.tv_usec - t_suspend.tv_usec)) / 1000;
+		printk("Disp: diff_msec= %d\n", diff_msec);
+                if(tegra3_get_project_id() != TEGRA3_PROJECT_P1801) {
+                        if((diff_msec < 1000) && (diff_msec >= 0))
+                                msleep(1000 - diff_msec);
+                } else {
+                        if((diff_msec < 500) && (diff_msec >= 0))
+                                msleep(500 - diff_msec);
+                }
+	}
 
 	if (dc->mode.pclk == 0)
 		return false;
@@ -1599,7 +1674,13 @@ static bool _tegra_dc_enable(struct tegra_dc *dc)
 
 	tegra_dc_io_start(dc);
 
-	if (!_tegra_dc_controller_enable(dc)) {
+	enabled = _tegra_dc_controller_enable(dc);
+	if (dc->pdata->min_emc_clk_rate && enabled) {
+		clk_enable(dc->min_emc_clk);
+		clk_set_rate(dc->min_emc_clk, dc->pdata->min_emc_clk_rate);
+	}
+
+	if (!enabled) {
 		tegra_dc_io_end(dc);
 		return false;
 	}
@@ -1610,8 +1691,10 @@ void tegra_dc_enable(struct tegra_dc *dc)
 {
 	mutex_lock(&dc->lock);
 
-	if(isRecording && (tegra3_get_project_id() == TEGRA3_PROJECT_TF201 || tegra3_get_project_id() == TEGRA3_PROJECT_TF500T))
-		gpio_set_value(cardhu_bl_enb, 1);
+        if (tegra3_get_project_id() == TEGRA3_PROJECT_TF201
+                        && isRecording) {
+                gpio_set_value(cardhu_bl_enb, 1);
+        }
 
 	if (!dc->enabled)
 		dc->enabled = _tegra_dc_enable(dc);
@@ -1625,7 +1708,8 @@ static void _tegra_dc_controller_disable(struct tegra_dc *dc)
 	unsigned i;
 
 	// ensure prepoweroff called after backlight set to 0
-	if ( dc->ndev->id==0 && dc->out->sd_settings && dc->out->sd_settings->bl_device && tegra3_get_project_id() == TEGRA3_PROJECT_TF700T) {
+	if ( dc->ndev->id==0 && dc->out->sd_settings && dc->out->sd_settings->bl_device
+			&& tegra3_get_project_id() != TEGRA3_PROJECT_P1801) {
 		struct platform_device *pdev = dc->out->sd_settings->bl_device;
 		struct backlight_device *bl = platform_get_drvdata(pdev);
 		int count = 0;
@@ -1636,7 +1720,8 @@ static void _tegra_dc_controller_disable(struct tegra_dc *dc)
 		}
 	}
 
-	if (dc->ndev->id==0 && gpio_get_value(TEGRA_GPIO_PI6)==1 && tegra3_get_project_id() == TEGRA3_PROJECT_TF700T){	//panel is hydis
+        if (dc->ndev->id==0 && gpio_get_value(TEGRA_GPIO_PI6)==1
+                        && tegra3_get_project_id() == TEGRA3_PROJECT_TF700T) {//panel is hydis
 		msleep(200);
 	}
 
@@ -1727,7 +1812,7 @@ void tegra_dc_blank(struct tegra_dc *dc)
 
 static void _tegra_dc_disable(struct tegra_dc *dc)
 {
-        if (dc->ndev->id == 0) {
+        if (dc->ndev->id == 0 && tegra3_get_project_id() != TEGRA3_PROJECT_P1801) {
                do_gettimeofday(&t_suspend);
         }
 
@@ -1745,6 +1830,15 @@ static void _tegra_dc_disable(struct tegra_dc *dc)
 
 	if (dc->out->flags & TEGRA_DC_OUT_ONE_SHOT_MODE)
 		mutex_unlock(&dc->one_shot_lock);
+
+	if (dc->pdata->min_emc_clk_rate) {
+		clk_set_rate(dc->min_emc_clk, 0);
+		clk_disable(dc->min_emc_clk);
+	}
+
+        if (dc->ndev->id == 0 && tegra3_get_project_id() == TEGRA3_PROJECT_P1801) {
+               do_gettimeofday(&t_suspend);
+        }
 }
 
 void tegra_dc_disable(struct tegra_dc *dc)
@@ -1863,6 +1957,7 @@ static int tegra_dc_probe(struct nvhost_device *ndev,
 	struct tegra_dc_mode *mode;
 	struct clk *clk;
 	struct clk *emc_clk;
+	struct clk *min_emc_clk;
 	struct resource	*res;
 	struct resource *base_res;
 	struct resource *fb_mem = NULL;
@@ -1927,12 +2022,20 @@ static int tegra_dc_probe(struct nvhost_device *ndev,
 		goto err_put_clk;
 	}
 
-	if (tegra3_get_project_id() == 0x4) {
+	if (tegra3_get_project_id() == 0x4 || tegra3_get_project_id()==TEGRA3_PROJECT_P1801) {
 		emc_clk->min_rate=(unsigned long)25500000;
+	}
+
+	min_emc_clk = clk_get(&ndev->dev, "min_emc");
+	if (IS_ERR_OR_NULL(min_emc_clk)) {
+		dev_err(&ndev->dev, "can't get min_emc clock\n");
+		ret = -ENOENT;
+		goto err_put_emc_clk;
 	}
 
 	dc->clk = clk;
 	dc->emc_clk = emc_clk;
+	dc->min_emc_clk = min_emc_clk;
 	dc->shift_clk_div = 1;
 	/* Initialize one shot work delay, it will be assigned by dsi
 	 * according to refresh rate later. */
@@ -1954,6 +2057,7 @@ static int tegra_dc_probe(struct nvhost_device *ndev,
 	mutex_init(&dc->one_shot_lock);
 	init_completion(&dc->frame_end_complete);
 	init_waitqueue_head(&dc->wq);
+	init_waitqueue_head(&dc->timestamp_wq);
 #ifdef CONFIG_ARCH_TEGRA_2x_SOC
 	INIT_WORK(&dc->reset_work, tegra_dc_reset_worker);
 #endif
@@ -2016,7 +2120,7 @@ static int tegra_dc_probe(struct nvhost_device *ndev,
 			dev_name(&ndev->dev), dc)) {
 		dev_err(&ndev->dev, "request_irq %d failed\n", irq);
 		ret = -EBUSY;
-		goto err_put_emc_clk;
+		goto err_put_min_emc_clk;
 	}
 
 	tegra_dc_dbg_add(dc);
@@ -2025,7 +2129,7 @@ static int tegra_dc_probe(struct nvhost_device *ndev,
 	dev_info(&ndev->dev, "probed\n");
 
 	if (dc->pdata->fb) {
-		if (dc->pdata->fb->bits_per_pixel == -1) {
+		if (dc->enabled && dc->pdata->fb->bits_per_pixel == -1) {
 			unsigned long fmt;
 			tegra_dc_writel(dc,
 					WINDOW_A_SELECT << dc->pdata->fb->win,
@@ -2064,6 +2168,8 @@ static int tegra_dc_probe(struct nvhost_device *ndev,
 
 err_free_irq:
 	free_irq(irq, dc);
+err_put_min_emc_clk:
+       clk_put(min_emc_clk);
 err_put_emc_clk:
 	clk_put(emc_clk);
 err_put_clk:
@@ -2126,9 +2232,9 @@ struct pwm_bl_data {
 };
 static void tegra_dc_shutdown(struct nvhost_device *ndev)
 {
-       printk("%s+, ndev->name=%s ####\n", __func__, ndev->name);
-
        struct tegra_dc *dc = nvhost_get_drvdata(ndev);
+
+       printk("%s+, ndev->name=%s ####\n", __func__, ndev->name);
 
        if (dc->ndev->id == 0) {
 
@@ -2139,15 +2245,24 @@ static void tegra_dc_shutdown(struct nvhost_device *ndev)
                        struct pwm_bl_data *pb = dev_get_drvdata(&bl->dev);
                        int brightness = 0;
 
-                       if (pb->notify)
-                               brightness = pb->notify(pb->dev, brightness);
-                       msleep(5);
-                       pwm_config(pb->pwm, 0, pb->period);
-                       pwm_disable(pb->pwm);
-               }
+		       if(tegra3_get_project_id()==TEGRA3_PROJECT_ME301T && ME301T_panel_8v) {
+			       pwm_config(pb->pwm, 0, pb->period);
+			       pwm_disable(pb->pwm);
+			       msleep(50);
+			       if (pb->notify)
+				       brightness = pb->notify(pb->dev, brightness);
+			       printk("%s: pwm disable (ME301T 8V panel)\n", __func__);
+		       }
+		       else {
+			       if (pb->notify)
+				       brightness = pb->notify(pb->dev, brightness);
+			       msleep(10);
+			       pwm_config(pb->pwm, 0, pb->period);
+			       pwm_disable(pb->pwm);
+		       }
+	       }
 
-               if (dc->out && dc->out->disable)
-                       dc->out->disable();
+		tegra_dc_disable(dc);
        }
        printk("%s-, ndev->name=%s ####\n", __func__, ndev->name);
 }
@@ -2172,6 +2287,10 @@ static int tegra_dc_suspend(struct nvhost_device *ndev, pm_message_t state)
 
 		dc->suspended = true;
 	}
+
+	//to ensure the scalar power is off in LP0
+	if ( tegra3_get_project_id() == TEGRA3_PROJECT_P1801)
+		gpio_set_value(EN_VDD_BL, 0);
 
 	if (dc->out && dc->out->postsuspend) {
 		dc->out->postsuspend();
@@ -2213,18 +2332,6 @@ static int tegra_dc_resume(struct nvhost_device *ndev)
 }
 
 #endif /* CONFIG_PM */
-/*
-static void tegra_dc_shutdown(struct nvhost_device *ndev)
-{
-	struct tegra_dc *dc = nvhost_get_drvdata(ndev);
-
-	if (!dc || !dc->enabled)
-		return;
-
-	tegra_dc_blank(dc);
-	tegra_dc_disable(dc);
-}
-*/
 extern int suspend_set(const char *val, struct kernel_param *kp)
 {
 	if (!strcmp(val, "dump"))
@@ -2255,12 +2362,11 @@ struct nvhost_driver tegra_dc_driver = {
 	},
 	.probe = tegra_dc_probe,
 	.remove = tegra_dc_remove,
-	.shutdown = tegra_dc_shutdown,
 #ifdef CONFIG_PM
 	.suspend = tegra_dc_suspend,
 	.resume = tegra_dc_resume,
 #endif
-	.shutdown = tegra_dc_shutdown,
+//	.shutdown = tegra_dc_shutdown,
 };
 
 #ifndef MODULE
@@ -2331,12 +2437,82 @@ static int __init tegra_dc_mode_override(char *str)
 __setup("disp_params=", tegra_dc_mode_override);
 #endif
 
+static struct class *usb_camera_class;
+static ssize_t camera_show_power(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int rc = -ENXIO;
+	int value = 0;
+
+	value = gpio_get_value(usb_camera_power);
+	rc = sprintf(buf, "%d\n",value);
+	return rc;
+}
+
+static ssize_t camera_store_power(struct device *dev,
+		struct device_attribute *attr, char *buf, size_t count)
+{
+	int rc = -ENXIO;
+	long val;
+
+	rc = strict_strtol(buf, 10, &val);
+	if (rc)
+		return rc;
+
+	if (val == 1) {
+		if (cardhu_camera_reg == NULL) {
+			cardhu_camera_reg = regulator_get(NULL, "vdd_1v8_cam1");
+			if (WARN_ON(IS_ERR(cardhu_camera_reg)))
+				pr_err("%s: couldn't get regulator vdd_1v8_cam1: %ld\n",
+					__func__, PTR_ERR(cardhu_camera_reg));
+			else
+				regulator_enable(cardhu_camera_reg);
+		}
+	} else {
+		if (cardhu_camera_reg) {
+			regulator_disable(cardhu_camera_reg);
+			regulator_put(cardhu_camera_reg);
+			cardhu_camera_reg = NULL;
+		}
+	}
+
+//	gpio_set_value(usb_camera_power, val);
+	rc = count;
+	printk("USB Camera Power =%d \n",val);
+
+	return rc;
+}
+
+static struct class_attribute usb_camera_attributes =
+	__ATTR(power, 0644, camera_show_power, camera_store_power);
+
+
 static int __init tegra_dc_module_init(void)
 {
+	int err = 0;
 	printk(KERN_INFO "%s+ #####\n", __func__);
+
+	if (tegra3_get_project_id() == 0x1) {
+		printk("Create sysfs of usb camera \n");
+		usb_camera_class = class_create(THIS_MODULE, "usb_camera");
+		if (IS_ERR(usb_camera_class)) {
+			printk(KERN_WARNING "Unable to create usb_camera class; errno = %ld\n",
+				PTR_ERR(usb_camera_class));
+			return PTR_ERR(usb_camera_class);
+		}
+
+		err = class_create_file(usb_camera_class, &usb_camera_attributes);
+		if (err)
+			class_destroy(usb_camera_class);
+	}
+
 	int ret = tegra_dc_ext_module_init();
 	if (ret)
 		return ret;
+
+	if (tegra3_get_project_id() != TEGRA3_PROJECT_ME301T) {
+		tegra_dc_driver.shutdown = tegra_dc_shutdown;
+	}
 
 	printk(KERN_INFO "%s- #####\n", __func__);
 	return nvhost_driver_register(&tegra_dc_driver);
@@ -2344,6 +2520,10 @@ static int __init tegra_dc_module_init(void)
 
 static void __exit tegra_dc_module_exit(void)
 {
+	if (tegra3_get_project_id() == 0x1) {
+		class_destroy(usb_camera_class);
+	}
+
 	nvhost_driver_unregister(&tegra_dc_driver);
 	tegra_dc_ext_module_exit();
 }

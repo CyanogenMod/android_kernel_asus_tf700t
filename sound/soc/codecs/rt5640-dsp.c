@@ -216,7 +216,7 @@ static int rt5640_dsp_done(struct snd_soc_codec *codec)
 		if(count > 10)
 			return -EBUSY;
 		dsp_val = snd_soc_read(codec, RT5640_DSP_CTRL3);
-		count ++;		
+		count ++;
 	}
 
 	return 0;
@@ -226,7 +226,7 @@ static int rt5640_dsp_done(struct snd_soc_codec *codec)
  * rt5640_dsp_write - Write DSP register.
  * @codec: SoC audio codec device.
  * @param: DSP parameters.
-  *
+ *
  * Modify voice DSP register for sound effect. The DSP can be controlled
  * through DSP command format (0xfc), addr (0xc4), data (0xc5) and cmd (0xc6)
  * register. It has to wait until the DSP is ready.
@@ -268,7 +268,7 @@ static int rt5640_dsp_write(struct snd_soc_codec *codec,
 	}
 	mdelay(10);
 	return 0;
-	
+
 err:
 	return ret;
 }
@@ -397,7 +397,7 @@ static int rt5640_dsp_put(struct snd_kcontrol *kcontrol,
 	return 0;
 	}
 
-static int rt5640_dsp_play_bp_get(struct snd_kcontrol *kcontrol, 
+static int rt5640_dsp_play_bp_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
@@ -408,7 +408,7 @@ static int rt5640_dsp_play_bp_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rt5640_dsp_play_bp_put(struct snd_kcontrol *kcontrol, 
+static int rt5640_dsp_play_bp_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
@@ -434,7 +434,7 @@ static int rt5640_dsp_play_bp_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rt5640_dsp_rec_bp_get(struct snd_kcontrol *kcontrol, 
+static int rt5640_dsp_rec_bp_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
@@ -445,7 +445,7 @@ static int rt5640_dsp_rec_bp_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rt5640_dsp_rec_bp_put(struct snd_kcontrol *kcontrol, 
+static int rt5640_dsp_rec_bp_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
@@ -471,13 +471,13 @@ static int rt5640_dsp_rec_bp_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rt5640_dac_active_get(struct snd_kcontrol *kcontrol, 
+static int rt5640_dac_active_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	struct snd_soc_dapm_widget *w;
-	
+
 	list_for_each_entry(w, &dapm->card->widgets, list)
 	{
 		if (!w->sname || w->dapm != dapm)
@@ -491,13 +491,13 @@ static int rt5640_dac_active_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rt5640_dac_active_put(struct snd_kcontrol *kcontrol, 
+static int rt5640_dac_active_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	struct snd_soc_dapm_widget *w;
-	
+
 	list_for_each_entry(w, &dapm->card->widgets, list)
 	{
 		if (!w->sname || w->dapm != dapm)
@@ -510,13 +510,13 @@ static int rt5640_dac_active_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rt5640_adc_active_get(struct snd_kcontrol *kcontrol, 
+static int rt5640_adc_active_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	struct snd_soc_dapm_widget *w;
-	
+
 	list_for_each_entry(w, &dapm->card->widgets, list)
 	{
 		if (!w->sname || w->dapm != dapm)
@@ -530,13 +530,13 @@ static int rt5640_adc_active_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rt5640_adc_active_put(struct snd_kcontrol *kcontrol, 
+static int rt5640_adc_active_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	struct snd_soc_dapm_widget *w;
-	
+
 	list_for_each_entry(w, &dapm->card->widgets, list)
 	{
 		if (!w->sname || w->dapm != dapm)
@@ -611,10 +611,10 @@ static int rt5640_dsp_patch_3(struct snd_soc_codec *codec)
 	struct rt5640_dsp_param param;
 	int ret, i;
 
-	param.cmd_fmt =  0x0090;
+	param.cmd_fmt = 0x0090;
 	param.addr = 0x0064;
 	param.data = 0x0004;
-	param.cmd =  RT5640_DSP_CMD_RW;
+	param.cmd = RT5640_DSP_CMD_RW;
 	ret = rt5640_dsp_write(codec, &param);
 	if (ret < 0) {
 		dev_err(codec->dev,
@@ -622,9 +622,9 @@ static int rt5640_dsp_patch_3(struct snd_soc_codec *codec)
 		goto patch_err;
 	}
 
-	param.cmd =  RT5640_DSP_CMD_PE;
+	param.cmd = RT5640_DSP_CMD_PE;
 	for(i = 0; i < RT5640_DSP_PATCH3_NUM; i++) {
-		param.cmd_fmt =  rt5640_dsp_p3_tab[i][0];
+		param.cmd_fmt = rt5640_dsp_p3_tab[i][0];
 		param.addr = rt5640_dsp_p3_tab[i][1];
 		param.data = rt5640_dsp_p3_tab[i][2];
 		ret = rt5640_dsp_write(codec, &param);
@@ -646,10 +646,10 @@ static int rt5640_dsp_patch_2(struct snd_soc_codec *codec)
 	struct rt5640_dsp_param param;
 	int ret, i;
 
-	param.cmd_fmt =  0x0090;
+	param.cmd_fmt = 0x0090;
 	param.addr = 0x0064;
 	param.data = 0x0000;
-	param.cmd =  RT5640_DSP_CMD_RW;
+	param.cmd = RT5640_DSP_CMD_RW;
 	ret = rt5640_dsp_write(codec, &param);
 	if (ret < 0) {
 		dev_err(codec->dev,
@@ -657,8 +657,8 @@ static int rt5640_dsp_patch_2(struct snd_soc_codec *codec)
 		goto patch_err;
 	}
 
-	param.cmd_fmt =  0x00e0;
-	param.cmd =  RT5640_DSP_CMD_MW;
+	param.cmd_fmt = 0x00e0;
+	param.cmd = RT5640_DSP_CMD_MW;
 	for(i = 0; i < RT5640_DSP_PATCH2_NUM; i++) {
 		param.addr = rt5640_dsp_p2_tab[i][0];
 		param.data = rt5640_dsp_p2_tab[i][1];
@@ -793,8 +793,8 @@ static int rt5640_dsp_conf(struct snd_soc_codec *codec)
 		goto conf_err;
 	}
 
-	param.cmd_fmt =  0x00e0;
-	param.cmd =  RT5640_DSP_CMD_MW;
+	param.cmd_fmt = 0x00e0;
+	param.cmd = RT5640_DSP_CMD_MW;
 	for(i = 0; i < RT5640_DSP_INIT_NUM; i++) {
 		param.addr = rt5640_dsp_init[i][0];
 		param.data = rt5640_dsp_init[i][1];
@@ -828,7 +828,7 @@ static int rt5640_dsp_rate(struct snd_soc_codec *codec, int rate)
 	int ret, i, tab_num;
 	unsigned short (*rate_tab)[2];
 
-	if (rate != 48000 &&  rate != 44100 && rate != 16000)
+	if (rate != 48000 && rate != 44100 && rate != 16000)
 		return -EINVAL;
 
 	if (rate > 44100) {
@@ -844,8 +844,8 @@ static int rt5640_dsp_rate(struct snd_soc_codec *codec, int rate)
 		}
 	}
 
-	param.cmd_fmt =  0x00e0;
-	param.cmd =  RT5640_DSP_CMD_MW;
+	param.cmd_fmt = 0x00e0;
+	param.cmd = RT5640_DSP_CMD_MW;
 	for (i = 0; i < tab_num; i++) {
 		param.addr = rate_tab[i][0];
 		param.data = rate_tab[i][1];
@@ -905,8 +905,8 @@ static int rt5640_dsp_set_mode(struct snd_soc_codec *codec, int mode)
 		return 0;
 	}
 
-	param.cmd_fmt =  0x00e0;
-	param.cmd =  RT5640_DSP_CMD_MW;
+	param.cmd_fmt = 0x00e0;
+	param.cmd = RT5640_DSP_CMD_MW;
 	for (i = 0; i < tab_num; i++) {
 		param.addr = mode_tab[i][0];
 		param.data = mode_tab[i][1];
@@ -965,7 +965,7 @@ static int rt5640_dsp_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_codec *codec = w->codec;
 	struct rt5640_priv *rt5640 = snd_soc_codec_get_drvdata(codec);
 	static unsigned int power_on;
-	
+
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMD:
 		pr_info("%s(): PMD\n", __func__);
@@ -994,7 +994,7 @@ static int rt5640_dsp_event(struct snd_soc_dapm_widget *w,
 
 	default:
 		return 0;
-	}	
+	}
 
 	return 0;
 }
@@ -1169,13 +1169,13 @@ int do_rt5640_dsp_set_mode(struct snd_soc_codec *codec, int mode) {
 		rt5640->dsp_play_pass ? "IF1" : "IF2");
 	//Stereo DAC MIXL
 	rt5640_conn_mixer_path(codec, "Stereo DAC MIXL",
-	         "DAC L1 Switch", rt5640->dsp_play_pass);
+			"DAC L1 Switch", rt5640->dsp_play_pass);
 	rt5640_conn_mixer_path(codec, "Stereo DAC MIXL",
-                "DAC L2 Switch", !rt5640->dsp_play_pass);
+			"DAC L2 Switch", !rt5640->dsp_play_pass);
 	rt5640_conn_mixer_path(codec, "Stereo DAC MIXR",
-	         "DAC R1 Switch", rt5640->dsp_play_pass);
+			"DAC R1 Switch", rt5640->dsp_play_pass);
 	rt5640_conn_mixer_path(codec, "Stereo DAC MIXR",
-                "DAC R2 Switch", !rt5640->dsp_play_pass);
+			"DAC R2 Switch", !rt5640->dsp_play_pass);
 	//Stereo ADC MIXL
 	rt5640_conn_mixer_path(codec, "Stereo ADC MIXL", "ADC1 Switch", true);
 	rt5640_conn_mixer_path(codec, "Stereo ADC MIXR", "ADC1 Switch", true);
@@ -1201,7 +1201,7 @@ int rt56xx_dsp_ioctl_common(struct snd_hwdep *hw, struct file *file, unsigned in
 	int *p;
 	int ret;
 	struct rt5640_dsp_param param;
-	
+
 	//int mask1 = 0, mask2 = 0;
 
 	struct rt56xx_cmd __user *_rt56xx =(struct rt56xx_cmd *)arg;
@@ -1219,7 +1219,7 @@ int rt56xx_dsp_ioctl_common(struct snd_hwdep *hw, struct file *file, unsigned in
 	if (copy_from_user(buf, rt56xx.buf, sizeof(*buf) * rt56xx.number)) {
 		goto err;
 	}
-	
+
 	ret = snd_soc_update_bits(codec, RT5640_PWR_DIG2,
 		RT5640_PWR_I2S_DSP, RT5640_PWR_I2S_DSP);
 	if (ret < 0) {
@@ -1232,24 +1232,24 @@ int rt56xx_dsp_ioctl_common(struct snd_hwdep *hw, struct file *file, unsigned in
 	if (ret < 0)
 		goto err;
 	*/
-	
+
 	switch (cmd) {
 	case RT_READ_CODEC_DSP_IOCTL:
 		if(DBG) printk(" case RT_READ_CODEC_DSP_IOCTL\n");
-		
+
 		for (p = buf; p < buf + rt56xx.number/2; p++)
 		{
 			*(p+rt56xx.number/2) = rt5640_dsp_read(codec, *p);
 		}
 		if (copy_to_user(rt56xx.buf, buf, sizeof(*buf) * rt56xx.number))
 			goto err;
-			
+
 		break;
 	case RT_WRITE_CODEC_DSP_IOCTL:
 		if(DBG) printk(" case RT_WRITE_CODEC_DSP_IOCTL\n");
-		
-		param.cmd_fmt =  0x00e0;
-		param.cmd =  RT5640_DSP_CMD_MW;
+
+		param.cmd_fmt = 0x00e0;
+		param.cmd = RT5640_DSP_CMD_MW;
 		p = buf;
 		param.addr = *p;
 		param.data = *(p+rt56xx.number/2);
@@ -1263,7 +1263,7 @@ int rt56xx_dsp_ioctl_common(struct snd_hwdep *hw, struct file *file, unsigned in
 		break;
 	case RT_GET_CODEC_DSP_MODE_IOCTL:
 		if(DBG) printk("case RT_GET_CODEC_DSP_MODE_IOCTL\n");
-		
+
 		*buf = rt5640->dsp_sw;
 		if (copy_to_user(rt56xx.buf, buf, sizeof(*buf) * rt56xx.number))
 			goto err;
@@ -1324,10 +1324,10 @@ int rt5640_dsp_suspend(struct snd_soc_codec *codec, pm_message_t state)
 		goto rsm_err;
 	}
 
-	param.cmd_fmt =  0x00e0;
+	param.cmd_fmt = 0x00e0;
 	param.addr = 0x3fd2;
 	param.data = 0x0030;
-	param.cmd =  RT5640_DSP_CMD_MW;
+	param.cmd = RT5640_DSP_CMD_MW;
 	ret = rt5640_dsp_write(codec, &param);
 	if (ret < 0) {
 		dev_err(codec->dev,

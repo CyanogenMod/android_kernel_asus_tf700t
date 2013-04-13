@@ -163,8 +163,8 @@ extern int osl_error(int bcmerror);
 
 
 
-#define OSL_SYSUPTIME()		((uint32)jiffies * (1000 / HZ))
-#define	printf(fmt, args...)	printk("[DHD] "fmt, ## args) //printk(fmt , ## args)
+#define OSL_SYSUPTIME()		((uint32)jiffies_to_msecs(jiffies))
+#define	printf(fmt, args...)	printk(" [DHD4330] "fmt , ## args)
 #include <linux/kernel.h>	
 #include <linux/string.h>	
 

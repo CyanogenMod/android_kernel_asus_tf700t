@@ -28,6 +28,14 @@
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
+#include <linux/switch.h>
+#include <linux/gpio.h>
+#include <../arch/arm/mach-tegra/gpio-names.h>
+#ifdef CONFIG_HAS_EARLYSUSPEND
+#include <linux/earlysuspend.h>
+#endif
+#define TOUCH_POWER_CONTROL 1
+
 #define INTERNAL_DEVICE_NAME "sis_zeus_hid_touch_device"
 #define BRIDGE_DEVICE_NAME "sis_zeus_hid_bridge_touch_device"
 #define SIS817_DEVICE_NAME "sis_aegis_hid_touch_device"
@@ -43,6 +51,7 @@ static struct class *sis_char_class = NULL;
 #define MAX_POINT		15
 #define HID_DG_SCANTIME		0x000d0056	//new usage not defined in hid.h
 #define REPORTID_01		0x01
+#define REPORTID_10		0x10
 #define REPORTID_TYPE1		0x30
 
 
@@ -51,9 +60,17 @@ static struct class *sis_char_class = NULL;
 #define ENDP_02 2
 #define DIR_IN 0x1
 
+#define P1801_DOCK_DETECT_PIN TEGRA_GPIO_PI6
+#define P1801_DOCK_ON 0
+#define P1801_DOCK_OFF 1
+
 //20110111 Tammy system call for tool
 static struct hid_device *hid_dev_backup = NULL;  //backup address
 static struct urb *backup_urb = NULL;
+
+#define PACKET_BUFFER_SIZE				128
+static unsigned char mfw_info[12] = {0}; 
+static struct switch_dev sis_touch_sdev;
 
 struct Point {
 	u16 x, y, id, pressure, width, height;
@@ -67,6 +84,18 @@ struct sis_data {
 
 static int pkg_num=0;
 static int idx=-1;
+
+#define _ENABLE_DBG_LEVEL    
+#define SIS_TOUCH_TP_VENDOR_PIN TEGRA_GPIO_PR6
+#ifdef _ENABLE_DBG_LEVEL
+#include <linux/proc_fs.h>
+#define PROC_FS_NAME	"sis_hid_dbg"
+#define PROC_FS_NAME_TP	"sis_tp_vendor"
+#define PROC_FS_MAX_LEN	8
+static struct proc_dir_entry *dbgProcFile = NULL;
+static struct proc_dir_entry *dbgProcFile_tp = NULL;
+#endif
+static bool read_fw_info_flag = false;
 
 /*
  * this driver is aimed at two firmware versions in circulation:
@@ -222,12 +251,12 @@ static int sis_raw_event (struct hid_device *hid, struct hid_report *report,
 static void sis_event_lastdata(struct hid_device *hid, struct sis_data *nd, struct input_dev *input)
 {
 	int pkg_n=0;
-	if ( (hid->product == USB_PRODUCT_ID_SIS817_TOUCH || hid->product == USB_PRODUCT_ID_SISF817_TOUCH) && nd->ReportID == REPORTID_01)	//817 method : original
+	if ( (hid->product == USB_PRODUCT_ID_SIS817_TOUCH || hid->product == USB_PRODUCT_ID_SIS1012_TOUCH || hid->product == USB_PRODUCT_ID_SISF817_TOUCH) && (nd->ReportID == REPORTID_01 || nd->ReportID == REPORTID_10))	//817 method : original
 	{
 		sis_event_emission(nd, input);
 		sis_event_clear(nd, MAX_POINT);
 	}
-	else if ( (hid->product == USB_PRODUCT_ID_SIS817_TOUCH || hid->product == USB_PRODUCT_ID_SISF817_TOUCH) && nd->ReportID != REPORTID_01)	//817 method : Extend Class Format
+	else if ( (hid->product == USB_PRODUCT_ID_SIS817_TOUCH || hid->product == USB_PRODUCT_ID_SIS1012_TOUCH || hid->product == USB_PRODUCT_ID_SISF817_TOUCH) && nd->ReportID != REPORTID_01 && nd->ReportID != REPORTID_10)	//817 method : Extend Class Format
 	{
 		if(nd->total >= 6)
 		{				
@@ -507,6 +536,10 @@ static ssize_t sis_cdev_read(struct file *file, char __user *buf, size_t count, 
 	u8 *rep_data = NULL;
 	u16 size = 0;
 	long rep_ret;
+
+      if(hid_dev_backup == NULL) 
+	  	return 0;
+	
 	struct usb_interface *intf = to_usb_interface(hid_dev_backup->dev.parent);
 	struct usb_device *dev = interface_to_usbdev(intf);
 
@@ -528,12 +561,17 @@ static ssize_t sis_cdev_read(struct file *file, char __user *buf, size_t count, 
 		return -19;
 	}
 
-	if ( hid_dev_backup->product == USB_PRODUCT_ID_SIS817_TOUCH)	//817 internal : endpoint 2 is int_in
+	if ( hid_dev_backup->product == USB_PRODUCT_ID_SIS817_TOUCH || hid_dev_backup->product == USB_PRODUCT_ID_SIS1012_TOUCH)	//817 internal : endpoint 2 is int_in
 		rep_ret = usb_interrupt_msg(dev, usb_rcvintpipe(dev, ENDP_02),
 			rep_data, size, &actual_length, timeout);
 	else								//817 bridge : endpoint 1 is int_in
 		rep_ret = usb_interrupt_msg(dev, usb_rcvintpipe(dev, ENDP_01),
 			rep_data, size, &actual_length, timeout);	
+
+      if(read_fw_info_flag){
+          memcpy(mfw_info, rep_data + 8, 12); 
+          read_fw_info_flag = false;
+      }
 
 	if( rep_ret == 0 )
 	{
@@ -561,10 +599,16 @@ static ssize_t sis_cdev_write( struct file *file, const char __user *buf, size_t
 	u8 *tmp_data = NULL;	//include report id
 	u8 *rep_data = NULL;
 	long rep_ret;
+
+      if(hid_dev_backup == NULL) 
+	  	return 0;
+	
 	struct usb_interface *intf = to_usb_interface( hid_dev_backup->dev.parent );
 	struct usb_device *dev = interface_to_usbdev( intf );
+	unsigned const char fw_info_cmd[10] = {0x09, 0x09, 0x86, 0x08, 0x04, 0xC0, 0x00, 0xA0, 0x34, 0x00};
 
-	if ( hid_dev_backup->product == USB_PRODUCT_ID_SIS817_TOUCH || hid_dev_backup->product == USB_PRODUCT_ID_SISF817_TOUCH )	//817 method
+      read_fw_info_flag = memcmp(buf, fw_info_cmd, sizeof(fw_info_cmd)) == 0;
+	if ( hid_dev_backup->product == USB_PRODUCT_ID_SIS817_TOUCH || hid_dev_backup->product == USB_PRODUCT_ID_SIS1012_TOUCH || hid_dev_backup->product == USB_PRODUCT_ID_SISF817_TOUCH )	//817 method
 	{
 		u16 size = (((u16)(buf[64] & 0xff)) << 24) + (((u16)(buf[65] & 0xff)) << 16) + 
 			(((u16)(buf[66] & 0xff)) << 8) + (u16)(buf[67] & 0xff);
@@ -589,7 +633,7 @@ static ssize_t sis_cdev_write( struct file *file, const char __user *buf, size_t
 			return -19;
 		}
 
-		if ( hid_dev_backup->product == USB_PRODUCT_ID_SIS817_TOUCH)	//817 internal : endpoint 1 is int_out
+		if ( hid_dev_backup->product == USB_PRODUCT_ID_SIS817_TOUCH || hid_dev_backup->product == USB_PRODUCT_ID_SIS1012_TOUCH)	//817 internal : endpoint 1 is int_out
 			rep_ret = usb_interrupt_msg( dev, usb_sndintpipe( dev, ENDP_01 ),
 				rep_data, size, &actual_length, timeout );
 		else								//817 bridge : endpoint 2 is int_out
@@ -811,7 +855,7 @@ static int sis_setup_chardev(struct hid_device *hdev, struct sis_data *nd)
 	// dynamic allocate driver handle
 	if (hdev->product == USB_PRODUCT_ID_SIS9200_TOUCH)
 		alloc_ret = alloc_chrdev_region(&dev, 0, sis_char_devs_count, BRIDGE_DEVICE_NAME);
-	else if (hdev->product == USB_PRODUCT_ID_SIS817_TOUCH)
+	else if (hdev->product == USB_PRODUCT_ID_SIS817_TOUCH || hdev->product == USB_PRODUCT_ID_SIS1012_TOUCH)
 		alloc_ret = alloc_chrdev_region(&dev, 0, sis_char_devs_count, SIS817_DEVICE_NAME);
 	else if (hdev->product == USB_PRODUCT_ID_SISF817_TOUCH)
 		alloc_ret = alloc_chrdev_region(&dev, 0, sis_char_devs_count, SISF817_DEVICE_NAME);
@@ -830,7 +874,7 @@ static int sis_setup_chardev(struct hid_device *hdev, struct sis_data *nd)
 
 	if (hdev->product == USB_PRODUCT_ID_SIS9200_TOUCH)
 		printk(KERN_INFO "%s driver(major %d) installed.\n", BRIDGE_DEVICE_NAME, sis_char_major);
-	else if (hdev->product == USB_PRODUCT_ID_SIS817_TOUCH)
+	else if (hdev->product == USB_PRODUCT_ID_SIS817_TOUCH || hdev->product == USB_PRODUCT_ID_SIS1012_TOUCH)
 		printk(KERN_INFO "%s driver(major %d) installed.\n", SIS817_DEVICE_NAME, sis_char_major);
 	else if (hdev->product == USB_PRODUCT_ID_SISF817_TOUCH)
 		printk(KERN_INFO "%s driver(major %d) installed.\n", SISF817_DEVICE_NAME, sis_char_major);
@@ -840,7 +884,7 @@ static int sis_setup_chardev(struct hid_device *hdev, struct sis_data *nd)
 	// register class
 	if (hdev->product == USB_PRODUCT_ID_SIS9200_TOUCH)
 		sis_char_class = class_create(THIS_MODULE, BRIDGE_DEVICE_NAME);
-	else if (hdev->product == USB_PRODUCT_ID_SIS817_TOUCH)
+	else if (hdev->product == USB_PRODUCT_ID_SIS817_TOUCH || hdev->product == USB_PRODUCT_ID_SIS1012_TOUCH)
 		sis_char_class = class_create(THIS_MODULE, SIS817_DEVICE_NAME);
 	else if (hdev->product == USB_PRODUCT_ID_SISF817_TOUCH)
 		sis_char_class = class_create(THIS_MODULE, SISF817_DEVICE_NAME);
@@ -854,7 +898,7 @@ static int sis_setup_chardev(struct hid_device *hdev, struct sis_data *nd)
 
 	if (hdev->product == USB_PRODUCT_ID_SIS9200_TOUCH)
 		class_dev = device_create(sis_char_class, NULL, MKDEV(sis_char_major, 0), NULL, BRIDGE_DEVICE_NAME);
-	else if (hdev->product == USB_PRODUCT_ID_SIS817_TOUCH)
+	else if (hdev->product == USB_PRODUCT_ID_SIS817_TOUCH || hdev->product == USB_PRODUCT_ID_SIS1012_TOUCH)
 		class_dev = device_create(sis_char_class, NULL, MKDEV(sis_char_major, 0), NULL, SIS817_DEVICE_NAME);
 	else if (hdev->product == USB_PRODUCT_ID_SISF817_TOUCH)
 		class_dev = device_create(sis_char_class, NULL, MKDEV(sis_char_major, 0), NULL, SISF817_DEVICE_NAME);
@@ -883,6 +927,91 @@ err2:
 	return -1;
 }
 
+#ifdef _ENABLE_DBG_LEVEL
+static int sis_proc_read(char *buffer, char **buffer_location, off_t offset, int buffer_length, int *eof, void *data ){
+	int ret;
+	
+	if(offset > 0)  /* we have finished to read, return 0 */
+		ret  = 0;
+	else 
+		ret = sprintf(buffer, "1\n");
+
+	return ret;
+}
+
+static int sis_proc_write(struct file *file, const char *buffer, unsigned long count, void *data){	
+	return 0; // procfs_buffer_size;
+}
+
+static int sis_proc_read_tp(char *buffer, char **buffer_location, off_t offset, int buffer_length, int *eof, void *data ){
+	int ret;
+	
+	if(offset > 0)  /* we have finished to read, return 0 */
+		ret  = 0;
+	else 
+		ret = sprintf(buffer, "%d\n", gpio_get_value(SIS_TOUCH_TP_VENDOR_PIN));
+
+	return ret;
+}
+
+static int sis_proc_write_tp(struct file *file, const char *buffer, unsigned long count, void *data){	
+	return 0; // procfs_buffer_size;
+}
+
+#endif // #ifdef _ENABLE_DBG_LEV
+
+static ssize_t sis_touch_switch_name(struct switch_dev *sdev, char *buf){ 
+       int fw_id = (mfw_info[8] << 8) | mfw_info[9];
+       int fw_version =  (mfw_info[10] << 8) | mfw_info[11];  
+       return sprintf(buf,  "SIS-%c%c%c-%c%c%c%c-%d.%d\n", mfw_info[1], mfw_info[2], mfw_info[3],
+	   	        mfw_info[4], mfw_info[5], mfw_info[6], mfw_info[7], fw_id, fw_version);
+}
+
+static ssize_t sis_touch_switch_state(struct switch_dev *sdev, char *buf){ 
+    return sprintf(buf, "1");	
+}
+
+#if (CONFIG_HAS_EARLYSUSPEND && TOUCH_POWER_CONTROL) 
+static struct early_suspend mEarly_suspend;
+static bool mEarly_suspend_registered = false;
+
+static void sis_ts_early_suspend(struct early_suspend *h){
+    printk("%s\n", __func__);
+    gpio_direction_output(TEGRA_GPIO_PS0, 0);	
+}
+
+static void sis_ts_late_resume(struct early_suspend *h){
+    printk("%s\n", __func__);
+    gpio_direction_output(TEGRA_GPIO_PS0, 1);
+}
+#endif
+
+
+static void read_firmware_version(){
+    const unsigned char fw_info_cmd[10] = {0x09, 0x09, 0x86, 0x08, 0x04, 0xC0, 0x00, 0xA0, 0x34, 0x00};
+    unsigned char buf[64] = {0};
+    int actual_length = 0, rep_ret;
+    const unsigned int timeout = 1000;
+    struct usb_interface *intf = to_usb_interface( hid_dev_backup->dev.parent );
+    struct usb_device *dev = interface_to_usbdev( intf );
+
+    if ( hid_dev_backup->product == USB_PRODUCT_ID_SIS817_TOUCH || hid_dev_backup->product == USB_PRODUCT_ID_SIS1012_TOUCH){	//817 internal : endpoint 1 is int_out
+        rep_ret = usb_interrupt_msg( dev, usb_sndintpipe( dev, ENDP_01 ),
+			  fw_info_cmd, sizeof(fw_info_cmd), &actual_length, timeout );
+	 rep_ret = usb_interrupt_msg(dev, usb_rcvintpipe(dev, ENDP_02),
+		        buf, sizeof(buf), &actual_length, timeout);
+    }else{								//817 bridge : endpoint 2 is int_out
+        rep_ret = usb_interrupt_msg( dev, usb_sndintpipe( dev, ENDP_02 ),
+			  fw_info_cmd, sizeof(fw_info_cmd), &actual_length, timeout );
+        rep_ret = usb_interrupt_msg(dev, usb_rcvintpipe(dev, ENDP_01),
+			 buf, sizeof(buf), &actual_length, timeout);
+
+    }
+    
+    memcpy(mfw_info, buf + 8, 12); 
+      
+}
+
 static int sis_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int ret;
@@ -898,6 +1027,11 @@ static int sis_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	if (!backup_urb) {
 		dev_err(&hdev->dev, "cannot allocate backup_urb\n");
 		return -ENOMEM;
+	}
+
+      if(!mfw_info[0]){
+          printk("##########SIS: read firmeare ID and versino.\n");
+          read_firmware_version();
 	}
 
 //	command Set_Feature for changing device from mouse to touch device
@@ -932,7 +1066,49 @@ static int sis_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	    if(ret){
 		printk( KERN_INFO "sis_setup_chardev fail\n");
 	    }
-	}
+        sis_touch_sdev.name = "touch";
+        sis_touch_sdev.print_name = sis_touch_switch_name;
+        sis_touch_sdev.print_state = sis_touch_switch_state;
+        if(switch_dev_register(&sis_touch_sdev) < 0){
+            printk(KERN_ERR "switch_dev_register for dock failed!\n");
+        }
+        switch_set_state(&sis_touch_sdev, 0);
+#ifdef _ENABLE_DBG_LEVEL
+        if(dbgProcFile == NULL){
+            dbgProcFile = create_proc_entry(PROC_FS_NAME, 0666, NULL);
+	        if (dbgProcFile == NULL) {
+		        remove_proc_entry(PROC_FS_NAME, NULL);
+		        printk(" Could not initialize /proc/%s\n", PROC_FS_NAME);
+	        }else{
+		        dbgProcFile->read_proc = sis_proc_read;
+		        dbgProcFile->write_proc = sis_proc_write;
+		        printk(" /proc/%s created\n", PROC_FS_NAME);
+               }
+			
+	      dbgProcFile_tp= create_proc_entry(PROC_FS_NAME_TP, 0666, NULL);
+	        if (dbgProcFile_tp== NULL) {
+		        remove_proc_entry(PROC_FS_NAME_TP, NULL);
+		        printk(" Could not initialize /proc/%s\n", PROC_FS_NAME_TP);
+	        }else{
+		        dbgProcFile_tp->read_proc = sis_proc_read_tp;
+		        dbgProcFile_tp->write_proc = sis_proc_write_tp;
+		        printk(" /proc/%s created\n", PROC_FS_NAME_TP);
+               }
+        }
+#endif // #ifdef _ENABLE_DBG_LEVEL
+    }
+
+#if(CONFIG_HAS_EARLYSUSPEND && TOUCH_POWER_CONTROL)
+    if(!mEarly_suspend_registered){
+        mEarly_suspend.level = EARLY_SUSPEND_LEVEL_DISABLE_FB + 1;
+        mEarly_suspend.suspend = sis_ts_early_suspend;
+        mEarly_suspend.resume = sis_ts_late_resume;
+        register_early_suspend(&mEarly_suspend);
+        mEarly_suspend_registered = true;
+    }
+#endif
+
+
 	ret = hid_parse(hdev);
 	if (ret) {
 		dev_err(&hdev->dev, "parse failed\n");
@@ -940,7 +1116,7 @@ static int sis_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	}
 
 	//set noget for not init reports
-	if ( hdev->product != USB_PRODUCT_ID_SIS817_TOUCH)
+	if ( hdev->product != USB_PRODUCT_ID_SIS817_TOUCH || hdev->product != USB_PRODUCT_ID_SIS1012_TOUCH)
 	{
 		hdev->quirks |= HID_QUIRK_NOGET;
 		printk(KERN_INFO "sis:sis-probe: quirk = %d", hdev->quirks);
@@ -960,21 +1136,35 @@ err_free:
 
 static void sis_remove(struct hid_device *hdev)
 {
+	dev_t dev;
+
 	printk(KERN_INFO "sis_remove\n");
-
 	//for ioctl
-	dev_t dev = MKDEV(sis_char_major, 0);
-	cdev_del(&sis_char_cdev);
-	unregister_chrdev_region(dev, sis_char_devs_count);
-	//device_destroy(sis_char_class, MKDEV(sis_char_major, 0));
-	//class_destroy(sis_char_class);
-
-	usb_kill_urb( backup_urb );
-	usb_free_urb( backup_urb );
-	backup_urb = NULL;
-	hid_hw_stop(hdev);
-	kfree(hid_get_drvdata(hdev));
-	hid_set_drvdata(hdev, NULL);
+	if(sis_char_class != NULL){
+	    dev = MKDEV(sis_char_major, 0);
+	    cdev_del(&sis_char_cdev);
+	    unregister_chrdev_region(dev, sis_char_devs_count);
+	    device_destroy(sis_char_class, MKDEV(sis_char_major, 0));
+	    class_destroy(sis_char_class);
+	    switch_dev_unregister(&sis_touch_sdev);
+#ifdef _ENABLE_DBG_LEVEL
+	    remove_proc_entry(PROC_FS_NAME, NULL);
+	    remove_proc_entry(PROC_FS_NAME_TP, NULL);
+          dbgProcFile = NULL;
+          dbgProcFile_tp = NULL;
+#endif
+          sis_char_class = NULL;
+	}
+	
+	if(hid_dev_backup){
+	    usb_kill_urb( backup_urb );
+	    usb_free_urb( backup_urb );
+	    backup_urb = NULL;
+	    hid_hw_stop(hdev);
+          kfree(hid_get_drvdata(hdev));
+          hid_set_drvdata(hdev, NULL);
+          hid_dev_backup = NULL;
+      }
 }
 
 static const struct hid_device_id sis_devices[] = {
@@ -985,6 +1175,7 @@ static const struct hid_device_id sis_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_SIS2_TOUCH, USB_PRODUCT_ID_SIS9200_TOUCH) },	//0x0457, 0x9200
 	{ HID_USB_DEVICE(USB_VENDOR_ID_SIS2_TOUCH, USB_PRODUCT_ID_SIS817_TOUCH) },	//0x0457, 0x0817
 	{ HID_USB_DEVICE(USB_VENDOR_ID_SIS2_TOUCH, USB_PRODUCT_ID_SISF817_TOUCH) },	//0x0457, 0xF817
+	{ HID_USB_DEVICE(USB_VENDOR_ID_SIS2_TOUCH, USB_PRODUCT_ID_SIS1012_TOUCH)},     // 0x0457, 0x1012
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, sis_devices);

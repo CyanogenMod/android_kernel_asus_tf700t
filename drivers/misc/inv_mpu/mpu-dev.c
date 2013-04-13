@@ -58,6 +58,8 @@
 #include "../../../../arch/arm/mach-tegra/board-cardhu.h"
 #include "../../../../arch/arm/mach-tegra/gpio-names.h"
 
+#define REG_NUM 	96	/* Number of registers about KXTF9*/
+
 //extern unsigned int factory_mode;
 extern bool flagLoadConfig;
 extern bool flagLoadAccelConfig;
@@ -223,6 +225,25 @@ static ssize_t read_compass_raw(struct device *dev, struct device_attribute *dev
 	}
 }
 
+static ssize_t KXTF9_dump_reg(struct device *dev, struct device_attribute *devattr, char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct mpu_private_data *mpu = i2c_get_clientdata(client);
+	struct mldl_cfg *mldl_cfg = &mpu->mldl_cfg;
+	int ii, err = -1;
+	ssize_t bytes_printed = 0;
+	unsigned char data;
+
+	for (ii = 0; ii < REG_NUM; ii++) {
+		err = inv_serial_read(client->adapter,
+				mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->address,
+				ii, 1, &data);
+		bytes_printed += sprintf(buf + bytes_printed, "%#2x: %#2x\n", ii, data);
+	}
+
+	return bytes_printed;
+}
+
 DEVICE_ATTR(compass_raw, S_IRUGO, read_compass_raw, NULL);
 DEVICE_ATTR(accel_raw, S_IRUGO, read_accel_raw, NULL);
 DEVICE_ATTR(compass_status, S_IRUGO, read_compass_status, NULL);
@@ -231,6 +252,7 @@ DEVICE_ATTR(gyro_status, S_IRUGO, read_gyro_status, NULL);
 DEVICE_ATTR(mpu_version, S_IRUGO, read_mpu_chip_version, NULL);
 DEVICE_ATTR(enLoadMagConfig, S_IRUGO, enable_load_mag_config, NULL);
 DEVICE_ATTR(enLoadAccelConfig, S_IRUGO, enable_load_accel_config, NULL);
+DEVICE_ATTR(dumpAccelReg, S_IRUGO, KXTF9_dump_reg, NULL);
 
 static struct attribute *mpu_3050_attr[] = {
 	&dev_attr_gyro_status.attr,
@@ -239,6 +261,7 @@ static struct attribute *mpu_3050_attr[] = {
 	&dev_attr_compass_status.attr,
 	&dev_attr_accel_raw.attr,
 	&dev_attr_compass_raw.attr,
+	&dev_attr_dumpAccelReg.attr,
 	&dev_attr_enLoadMagConfig,
 	&dev_attr_enLoadAccelConfig,
 	NULL
@@ -246,6 +269,8 @@ static struct attribute *mpu_3050_attr[] = {
 
 static struct attribute *mpu_3050_attr_user[] = {
 	&dev_attr_mpu_version.attr,
+	&dev_attr_accel_raw.attr,
+	&dev_attr_compass_raw.attr,
 	NULL
 };
 
@@ -1322,7 +1347,9 @@ int mpu_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 
 	mpu->mpu_ver = "3050";
 	// MPU-IRQ assignment
-	tegra_gpio_enable(MPU_GYRO_IRQ_GPIO);
+
+    // nv hided this
+    // tegra_gpio_enable(MPU_GYRO_IRQ_GPIO);
 	res = gpio_request(MPU_GYRO_IRQ_GPIO, MPU3050_GYRO_NAME);
 	if (res < 0) {
 		pr_err("%s: gpio_request failed %d\n", __func__, res);
@@ -1357,10 +1384,11 @@ int mpu_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 			 "Missing %s IRQ\n", MPU_NAME);
 	}
 
-//	if(factory_mode)
+#ifdef CONFIG_DEBUG_ASUS
 		mpu->attrs.attrs = mpu_3050_attr;
-//	else
-//		mpu->attrs.attrs = mpu_3050_attr_user;
+#else
+		mpu->attrs.attrs = mpu_3050_attr_user;
+#endif
 
 	res = sysfs_create_group(&client->dev.kobj, &mpu->attrs);
 	if (res) {
@@ -1467,7 +1495,8 @@ static int mpu_delay_init(void)
 	u32 project_info = tegra3_get_project_id();
 	if (project_info == TEGRA3_PROJECT_TF201)
 	{
-		tegra_gpio_enable(143);
+        // nv hided this
+		// tegra_gpio_enable(143);
 		gpio_request(143, "gpio_pr7");
 		gpio_direction_output(143, 1);
 		pr_info("gpio 2.85V %d set to %d\n",143, gpio_get_value(143));

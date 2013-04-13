@@ -219,7 +219,6 @@ static int cpufreq_set(struct cpufreq_policy *policy, unsigned int freq)
 
 	if(!stress_test_enable)
 	mutex_lock(&userspace_mutex);
-
 	if (!per_cpu(cpu_is_managed, policy->cpu))
 		goto err;
 
@@ -245,7 +244,6 @@ static int cpufreq_set(struct cpufreq_policy *policy, unsigned int freq)
  err:
 	if(!stress_test_enable)
 	mutex_unlock(&userspace_mutex);
-
 	return ret;
 }
 
