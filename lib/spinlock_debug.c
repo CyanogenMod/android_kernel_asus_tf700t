@@ -68,9 +68,6 @@ static void spin_bug(raw_spinlock_t *lock, const char *msg)
 		owner ? task_pid_nr(owner) : -1,
 		lock->owner_cpu);
 	dump_stack();
-#ifdef CONFIG_DEBUG_ASUS
-	BUG_ON(1);
-#endif
 }
 
 #define SPIN_BUG_ON(cond, lock, msg) if (unlikely(cond)) spin_bug(lock, msg)
@@ -123,9 +120,6 @@ static void __spin_lock_debug(raw_spinlock_t *lock)
 			dump_stack();
 #ifdef CONFIG_SMP
 			trigger_all_cpu_backtrace();
-#endif
-#ifdef CONFIG_DEBUG_ASUS
-			BUG_ON(1);
 #endif
 		}
 	}

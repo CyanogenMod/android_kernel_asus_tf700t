@@ -430,8 +430,6 @@ static int adb_open(struct inode *ip, struct file *fp)
 	static unsigned long last_print;
 	static unsigned long count = 0;
 
-	pr_info("adb_open\n");
-
 	if (!_adb_dev)
 		return -ENODEV;
 
@@ -449,7 +447,7 @@ static int adb_open(struct inode *ip, struct file *fp)
 	}
 
 	if (count < 5)
-		printk(KERN_INFO "adb_open(%s)\n", current->comm);
+		pr_info("adb_open(%s)\n", current->comm);
 
 
 	fp->private_data = _adb_dev;
@@ -467,8 +465,6 @@ static int adb_release(struct inode *ip, struct file *fp)
 	static unsigned long last_print;
 	static unsigned long count = 0;
 
-	pr_info("adb_release\n");
-
 	if (++count == 1)
 		last_print = jiffies;
 	else {
@@ -478,7 +474,7 @@ static int adb_release(struct inode *ip, struct file *fp)
 	}
 
 	if (count < 5)
-		printk(KERN_INFO "adb_release\n");
+		pr_info("adb_release\n");
 
 	adb_closed_callback();
 

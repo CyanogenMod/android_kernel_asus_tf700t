@@ -596,8 +596,26 @@ static int tegra_wm8903_init(struct snd_soc_pcm_runtime *rtd)
 				ARRAY_SIZE(tegra_wm8903_default_dapm_widgets));
 	}
 
+/*
+	snd_soc_jack_new(codec, "Mic Jack", SND_JACK_MICROPHONE,
+			 &tegra_wm8903_mic_jack);
+#ifndef CONFIG_SWITCH
+	snd_soc_jack_add_pins(&tegra_wm8903_mic_jack,
+			      ARRAY_SIZE(tegra_wm8903_mic_jack_pins),
+			      tegra_wm8903_mic_jack_pins);
+#else
+	snd_soc_jack_notifier_register(&tegra_wm8903_mic_jack,
+				&tegra_wm8903_jack_detect_nb);
+#endif
+	wm8903_mic_detect(codec, &tegra_wm8903_mic_jack, SND_JACK_MICROPHONE,
+			  machine_is_cardhu() ? SND_JACK_MICROPHONE : 0);
 
+	ret = tegra_asoc_utils_register_ctls(&machine->util_data);
+	if (ret < 0)
+		return ret;
 
+	snd_soc_dapm_force_enable_pin(dapm, "Mic Bias");
+*/
 		snd_soc_dapm_add_routes(dapm, cardhu_audio_map,
 				ARRAY_SIZE(cardhu_audio_map));
 
@@ -749,7 +767,11 @@ static __devinit int tegra_wm8903_driver_probe(struct platform_device *pdev)
 
 err_unregister_card:
 	snd_soc_unregister_card(card);
+err_unregister_switch:
+#ifdef CONFIG_SWITCH
+	switch_dev_unregister(&tegra_wm8903_headset_switch);
 err_fini_utils:
+#endif
 	tegra_asoc_utils_fini(&machine->util_data);
 err_free_machine:
 	kfree(machine);

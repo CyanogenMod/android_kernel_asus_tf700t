@@ -244,19 +244,19 @@ config MACH_HAS_SND_SOC_TEGRA_RT5642
 	  SND_SOC_TEGRA_RT5642.
 
 config SND_SOC_TEGRA_RT5642
-        tristate "SoC Audio support for Tegra boards using a RT5642 codec"
-        depends on SND_SOC_TEGRA && I2C && TEGRA_DC
-        select SND_SOC_TEGRA20_I2S if ARCH_TEGRA_2x_SOC
-        select SND_SOC_TEGRA30_I2S if ARCH_TEGRA_3x_SOC
-        select SND_SOC_TEGRA20_SPDIF if ARCH_TEGRA_2x_SOC
-        select SND_SOC_TEGRA30_SPDIF if ARCH_TEGRA_3x_SOC
-        select SND_SOC_RT5642
-        select SND_SOC_SPDIF
-        select SND_SOC_TEGRA30_DAM if ARCH_TEGRA_3x_SOC
-	select AUDIO_DOCK
-        help
-          Say Y or M here if you want to add support for SoC audio on Tegra
-          boards using the RT5642 codec.
+	tristate "SoC Audio support for Tegra boards using a RT5642 codec"
+	depends on SND_SOC_TEGRA && I2C && TEGRA_DC
+	select SND_SOC_TEGRA20_I2S if ARCH_TEGRA_2x_SOC
+	select SND_SOC_TEGRA30_I2S if ARCH_TEGRA_3x_SOC
+	select SND_SOC_TEGRA20_SPDIF if ARCH_TEGRA_2x_SOC
+	select SND_SOC_TEGRA30_SPDIF if ARCH_TEGRA_3x_SOC
+	select SND_SOC_RT5642
+	select SND_SOC_SPDIF
+	select SND_SOC_TEGRA30_DAM if ARCH_TEGRA_3x_SOC
+  select AUDIO_DOCK
+	help
+	  Say Y or M here if you want to add support for SoC audio on Tegra
+	  boards using the RT5642 codec.
 
 config MACH_HAS_SND_SOC_TEGRA_MAX98095
 	bool

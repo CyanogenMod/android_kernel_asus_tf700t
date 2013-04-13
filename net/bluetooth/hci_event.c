@@ -49,10 +49,6 @@ static int enable_le;
 
 /* Handle HCI Event packets */
 
-#define DEVICE_NAME_LENGTH 248
-
-static __u8 name_conn[DEVICE_NAME_LENGTH];
-
 static void hci_cc_inquiry_cancel(struct hci_dev *hdev, struct sk_buff *skb)
 {
 	__u8 status = *((__u8 *) skb->data);
@@ -1653,11 +1649,6 @@ static inline void hci_remote_name_evt(struct hci_dev *hdev, struct sk_buff *skb
 
 	BT_DBG("%s", hdev->name);
 
-	//printk("[BT]:Pair Device---->%s\n", ev->name);
-	if((ev->name) != NULL){
-		memcpy(name_conn, ev->name, DEVICE_NAME_LENGTH);
-	}
-
 	hci_conn_check_pending(hdev);
 
 	hci_dev_lock(hdev);
@@ -1716,14 +1707,6 @@ static inline void hci_encrypt_change_evt(struct hci_dev *hdev, struct sk_buff *
 	}
 
 	hci_dev_unlock(hdev);
-	//printk("[BT]:Encrypt Device---->%s\n", name_conn);
-	if( ((strcmp(name_conn, "HBH-DS220"))==0) ){
-		//printk("[BT]:Send HCI OP WRITE LINK POLICY\n");
-		struct hci_cp_write_link_policy cp;
-		cp.handle = ev->handle;
-		cp.policy = 0x3;
-		hci_send_cmd(hdev, HCI_OP_WRITE_LINK_POLICY, sizeof(cp), &cp);
-	}
 }
 
 static inline void hci_change_link_key_complete_evt(struct hci_dev *hdev, struct sk_buff *skb)

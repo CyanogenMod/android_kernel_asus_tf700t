@@ -61,13 +61,6 @@
 #define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
 
-// Terry 2012-04-30
-#define WPS_ADD_PROBE_REQ_IE_CMD "ADD_WPS_PROBE_REQ_IE "
-#define WPS_DEL_PROBE_REQ_IE_CMD "DEL_WPS_PROBE_REQ_IE "
-#define WPS_PROBE_REQ_IE_CMD_LENGTH 21
-// End
-
-
 
 typedef struct wl_iw_extra_params {
 	int 	target_channel;

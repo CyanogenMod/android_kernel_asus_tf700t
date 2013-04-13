@@ -102,7 +102,8 @@ struct android_usb_function {
 	int (*init)(struct android_usb_function *, struct usb_composite_dev *);
 	/* Optional: cleanup during gadget unbind */
 	void (*cleanup)(struct android_usb_function *);
-	/* Optional: called when the function is added the list of enabled functions */
+	/* Optional: called when the function is added the list of
+	 *		enabled functions */
 	void (*enable)(struct android_usb_function *);
 	/* Optional: called when it is removed */
 	void (*disable)(struct android_usb_function *);
@@ -217,7 +218,8 @@ static void android_enable(struct android_dev *dev)
 	BUG_ON(!dev->disable_depth);
 
 	if (--dev->disable_depth == 0) {
-		usb_add_config(cdev, &android_config_driver,android_bind_config);
+		usb_add_config(cdev, &android_config_driver,
+					android_bind_config);
 		usb_gadget_connect(cdev->gadget);
 	}
 }
@@ -326,6 +328,7 @@ static void adb_closed_callback(void)
 
 	mutex_unlock(&dev->mutex);
 }
+
 
 #define MAX_ACM_INSTANCES 4
 struct acm_function_config {

@@ -1081,9 +1081,9 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 		req = mq_rq->req;
 		mmc_queue_bounce_post(mq_rq);
 
-                /*
-                 * SD Workaround: downgrade frequency for seldom specific sdcard
-                 */
+		/*
+		 * SD Workaround: downgrade frequency for seldom specific sdcard
+		 */
                 if (disable_multi == 1) {
                         if (UHS_SDR104_MAX_DTR == card->host->ios.clock) {
                                 MMC_printk("SD freq. down to UHS_SDR50_MAX_DTR");
