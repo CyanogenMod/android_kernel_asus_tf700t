@@ -1,5 +1,4 @@
-#define MMC_DEBUG 1
-#if MMC_DEBUG
+#if 1
 #define MMC_DBG(fmt,args...) \
 	do { printk(KERN_DEBUG "[mmc_debug]:%s:%d "fmt"\n", __func__, __LINE__, ##args); } \
 	while (0)

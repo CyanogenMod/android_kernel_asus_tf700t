@@ -118,4 +118,8 @@ int __init touch_init_synaptics_kai(void);
 
 #define TDIODE_OFFSET	(10000) /* in millicelsius */
 
+enum tegra_bb_type {
+	TEGRA_BB_TANGO = 1,
+};
+
 #endif

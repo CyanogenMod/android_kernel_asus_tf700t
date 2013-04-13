@@ -24,6 +24,7 @@
 #define __LINUX_smb347_CHARGER_H
 
 #include <linux/regulator/machine.h>
+#include <linux/usb/otg.h>
 
 #define SMB_DEBUG			0
 #if SMB_DEBUG
@@ -68,8 +69,7 @@ struct smb347_charger {
 	struct i2c_client	*client;
 	struct device	*dev;
 	struct delayed_work	inok_isr_work;
-	struct delayed_work	stat_isr_work;
-	struct delayed_work	regs_dump_work;
+	struct delayed_work	cable_det_work;
 	struct mutex		cable_lock;
 	void	*charger_cb_data;
 	enum charging_states state;
@@ -86,6 +86,7 @@ struct smb347_charger {
 };
 
 int smb347_battery_online(void);
+int cable_detect_callback(unsigned cable_state);
 typedef void (*callback_t)(enum usb_otg_state otg_state, void *args);
 /*
  * Register callback function for the client.

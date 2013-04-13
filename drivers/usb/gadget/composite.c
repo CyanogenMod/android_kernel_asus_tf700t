@@ -74,6 +74,7 @@ MODULE_PARM_DESC(iSerialNumber, "SerialNumber string");
 
 static char composite_manufacturer[50];
 static struct wake_lock usb_config_wake_lock;
+
 /*-------------------------------------------------------------------------*/
 /**
  * next_ep_desc() - advance to the next EP descriptor

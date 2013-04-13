@@ -345,10 +345,8 @@ static const uint firstread = DHD_FIRSTREAD;
 #define HDATLEN (firstread - (SDPCM_HDRLEN))
 
 /* Retry count for register access failures */
-static const uint retry_limit = 20;
+static const uint retry_limit = 2;
 
-static int sdio_error_cnt = 0;
-extern char iface_name[IFNAMSIZ];
 /* Force even SD lengths (some host controllers mess up on odd bytes) */
 static bool forcealign;
 
@@ -393,8 +391,6 @@ do { \
 	do { \
 		regvar = R_REG(bus->dhd->osh, regaddr); \
 	} while (bcmsdh_regfail(bus->sdh) && (++retryvar <= retry_limit)); \
-	if(retryvar > 1)  \
-		DHD_ERROR(("%s: regvar[ %d ], retryvar[ %d ], regfails[ %d ], bcmsdh_regfail[ %d ] \n",__FUNCTION__,regvar, retryvar ,bus->regfails, bcmsdh_regfail(bus->sdh))); \
 	if (retryvar) { \
 		bus->regfails += (retryvar-1); \
 		if (retryvar > retry_limit) { \
@@ -496,29 +492,6 @@ dhdsdio_set_siaddr_window(dhd_bus_t *bus, uint32 address)
 	return err;
 }
 
-/* Check SDIO status */
-static void
-dhdsdio_htclk_check(int ret)
-{
-	struct net_device *ndev;
-
-	if (ret == BCME_ERROR) {
-		if (sdio_error_cnt < 10) {
-			sdio_error_cnt++ ;
-			printf("%s: ret = %d, sdio_error_cnt = %d\n", __FUNCTION__, ret, sdio_error_cnt);
-		} else {
-			if ((ndev = dev_get_by_name (&init_net, iface_name)) != NULL) {
-				sdio_error_cnt = 0;
-				printf("%s: Event HANG send up\n", __FUNCTION__);
-				net_os_send_hang_message(ndev);
-			}
-		}
-
-	} else if (sdio_error_cnt > 0) {
-		sdio_error_cnt-- ;
-		printf("%s: ret = %d, sdio_error_cnt = %d\n", __FUNCTION__, ret, sdio_error_cnt);
-	}
-}
 
 /* Turn backplane clock on or off */
 static int
@@ -596,7 +569,7 @@ dhdsdio_htclk(dhd_bus_t *bus, bool on, bool pendok)
 			          !SBSDIO_CLKAV(clkctl, bus->alp_only)), PMU_MAX_TRANSITION_DLY);
 		}
 		if (err) {
-			DHD_ERROR(("%s: HT Avail request error2: %d\n", __FUNCTION__, err));
+			DHD_ERROR(("%s: HT Avail request error: %d\n", __FUNCTION__, err));
 			return BCME_ERROR;
 		}
 		if (!SBSDIO_CLKAV(clkctl, bus->alp_only)) {
@@ -760,7 +733,6 @@ dhdsdio_clkctl(dhd_bus_t *bus, uint target, bool pendok)
 			dhdsdio_sdclk(bus, TRUE);
 		/* Now request HT Avail on the backplane */
 		ret = dhdsdio_htclk(bus, TRUE, pendok);
-		dhdsdio_htclk_check(ret);
 		if (ret == BCME_OK) {
 			dhd_os_wd_timer(bus->dhd, dhd_watchdog_ms);
 			bus->activity = TRUE;
@@ -769,25 +741,21 @@ dhdsdio_clkctl(dhd_bus_t *bus, uint target, bool pendok)
 
 	case CLK_SDONLY:
 		/* Remove HT request, or bring up SD clock */
-		if (bus->clkstate == CLK_NONE) {
+		if (bus->clkstate == CLK_NONE)
 			ret = dhdsdio_sdclk(bus, TRUE);
-		} else if (bus->clkstate == CLK_AVAIL) {
+		else if (bus->clkstate == CLK_AVAIL)
 			ret = dhdsdio_htclk(bus, FALSE, FALSE);
-			dhdsdio_htclk_check(ret);
-		} else {
+		else
 			DHD_ERROR(("dhdsdio_clkctl: request for %d -> %d\n",
 			           bus->clkstate, target));
-		}
 		if (ret == BCME_OK)
 			dhd_os_wd_timer(bus->dhd, dhd_watchdog_ms);
 		break;
 
 	case CLK_NONE:
 		/* Make sure to remove HT request */
-		if (bus->clkstate == CLK_AVAIL) {
+		if (bus->clkstate == CLK_AVAIL)
 			ret = dhdsdio_htclk(bus, FALSE, FALSE);
-			dhdsdio_htclk_check(ret);
-		}
 		/* Now remove the SD clock */
 		ret = dhdsdio_sdclk(bus, FALSE);
 		dhd_os_wd_timer(bus->dhd, 0);

@@ -35,6 +35,7 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/regmap.h>
+#include <mach/board-cardhu-misc.h>
 
 //=================stree test=================
 #include <linux/miscdevice.h>
@@ -86,6 +87,9 @@ struct tps62360_chip {
 	struct miscdevice tps62360_misc;
 	//=================stree test end=================
 };
+
+static int force_pwm_mode_flag = 0;
+static int recording_voltage = 0;
 
 /*
  * find_voltage_set_register: Find new voltage configuration register
@@ -154,6 +158,10 @@ static int tps62360_dcdc_set_voltage(struct regulator_dev *dev,
 	int ret;
 	bool found = false;
 	int new_vset_id = tps->curr_vset_id;
+	unsigned int project_info = tegra3_get_project_id();
+
+	if(force_pwm_mode_flag && min_uV < ((recording_voltage * 10) + 500) * 1000 && TEGRA3_PROJECT_ME301T == project_info)
+		return 0;
 
 	if ((max_uV < min_uV) || (max_uV < tps->voltage_base))
 		return -EINVAL;
@@ -334,9 +342,15 @@ static int __devinit tps62360_init_dcdc(struct tps62360_chip *tps,
 	return ret;
 }
 
+static bool is_volatile_reg(struct device *dev, unsigned int reg)
+{
+	return false;
+}
+
 static const struct regmap_config tps62360_regmap_config = {
 	.reg_bits		= 8,
 	.val_bits		= 8,
+	.volatile_reg		= is_volatile_reg,
 	.max_register		= REG_CHIPID,
 	.cache_type		= REGCACHE_RBTREE,
 };
@@ -420,6 +434,69 @@ struct file_operations tps62360_fops = {
 };
 //=================stree test end=================
 
+int tps62360_set_force_pwm_mode(void)
+{
+	struct tps62360_chip *tps = temp_tps62360;
+	u8 ral = 0;
+	int ret = 0;
+
+	if(!force_pwm_mode_flag)
+		force_pwm_mode_flag = 1;
+
+	recording_voltage = tps62360_dcdc_get_voltage_sel(tps->rdev);
+
+	ral = i2c_smbus_read_byte_data(to_i2c_client(tps->dev), 0x03);
+
+	if(ral < 0)
+		goto error;
+	else
+		ral |= 0x80;
+
+	ret = i2c_smbus_write_byte_data(to_i2c_client(tps->dev), 0x03, ral);
+
+	if(ret < 0)
+		goto error;
+	else
+		return 0;
+
+error:
+	printk("%s : error\n", __func__);
+	if(force_pwm_mode_flag)
+		force_pwm_mode_flag = 0;
+	recording_voltage = 0;
+	return -1;
+}
+
+int tps62360_set_normal_mode(void)
+{
+	struct tps62360_chip *tps = temp_tps62360;
+	u8 ral = 0;
+	int ret = 0;
+
+	if(force_pwm_mode_flag)
+		force_pwm_mode_flag = 0;
+
+	ral = i2c_smbus_read_byte_data(to_i2c_client(tps->dev), 0x03);
+
+	if(ral < 0)
+		goto error;
+	else
+		ral &= 0x7F;
+
+	ret = i2c_smbus_write_byte_data(to_i2c_client(tps->dev), 0x03, ral);
+
+	if(ret < 0)
+		goto error;
+	else
+		return 0;
+
+error:
+	printk("%s : error\n", __func__);
+	if(!force_pwm_mode_flag)
+		force_pwm_mode_flag = 1;
+	recording_voltage = 0;
+	return -1;
+}
 static int __devinit tps62360_probe(struct i2c_client *client,
 				     const struct i2c_device_id *id)
 {
@@ -544,6 +621,8 @@ static int __devinit tps62360_probe(struct i2c_client *client,
 	}
 
 	tps->rdev = rdev;
+
+	tps62360_set_mode(tps->rdev, REGULATOR_MODE_NORMAL);
 
 	//=================stree test=================
 	temp_tps62360=tps;

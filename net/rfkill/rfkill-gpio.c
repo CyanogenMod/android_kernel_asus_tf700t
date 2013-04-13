@@ -83,8 +83,6 @@ static int rfkill_gpio_probe(struct platform_device *pdev)
 	struct rfkill_gpio_platform_data *pdata = pdev->dev.platform_data;
 	int ret = 0;
 	int len = 0;
-	int enable = false;
-	bool default_sw_block_state;
 
 	if (!pdata) {
 		pr_warn("%s: No platform data specified\n", __func__);
@@ -135,7 +133,6 @@ static int rfkill_gpio_probe(struct platform_device *pdev)
 			pr_warn("%s: failed to get reset gpio.\n", __func__);
 			goto fail_clock;
 		}
-		gpio_direction_output(pdata->reset_gpio, enable);
 	}
 
 	if (gpio_is_valid(pdata->shutdown_gpio)) {
@@ -144,16 +141,12 @@ static int rfkill_gpio_probe(struct platform_device *pdev)
 			pr_warn("%s: failed to get shutdown gpio.\n", __func__);
 			goto fail_reset;
 		}
-		gpio_direction_output(pdata->shutdown_gpio, enable);
 	}
 
 	rfkill->rfkill_dev = rfkill_alloc(pdata->name, &pdev->dev, pdata->type,
 				&rfkill_gpio_ops, rfkill);
 	if (!rfkill->rfkill_dev)
 		goto fail_shutdown;
-
-	default_sw_block_state = !enable;
-	rfkill_set_states(rfkill->rfkill_dev, default_sw_block_state, false);
 
 	ret = rfkill_register(rfkill->rfkill_dev);
 	if (ret < 0)

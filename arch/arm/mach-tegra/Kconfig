@@ -39,6 +39,8 @@ config ARCH_TEGRA_2x_SOC
 	select ARM_ERRATA_764369 if SMP
 	select ARCH_HAS_SUSPEND_PAGETABLE
 	select NVMAP_CACHE_MAINT_BY_SET_WAYS
+	select NVMAP_OUTER_CACHE_MAINT_BY_SET_WAYS
+	select SOC_BUS
 	help
 	  Support for NVIDIA Tegra AP20 and T20 processors, based on the
 	  ARM CortexA9MP CPU and the ARM PL310 L2 cache controller
@@ -66,7 +68,10 @@ config ARCH_TEGRA_3x_SOC
 	select TEGRA_LP2_ARM_TWD if HAVE_ARM_TWD && !TEGRA_RAIL_OFF_MULTIPLE_CPUS
 	select CPA
 	select ARCH_HAS_SUSPEND_PAGETABLE
+	select PL310_ERRATA_727915
 	select NVMAP_CACHE_MAINT_BY_SET_WAYS
+	select NVMAP_OUTER_CACHE_MAINT_BY_SET_WAYS
+	select SOC_BUS
 	help
 	  Support for NVIDIA Tegra 3 family of SoCs, based upon the
 	  ARM CortexA9MP CPU and the ARM PL310 L2 cache controller
@@ -178,6 +183,7 @@ config MACH_CARDHU
        select MACH_HAS_SND_SOC_TEGRA_RT5631 if SND_SOC
        select MACH_HAS_SND_SOC_TEGRA_WM8903 if SND_SOC
        select MACH_HAS_SND_SOC_TEGRA_RT5642 if SND_SOC
+       select MACH_HAS_SND_SOC_TEGRA_TLV320AIC326X if SND_SOC
        select MACH_HAS_SND_SOC_TEGRA_MAX98095 if SND_SOC
        help
          Support for NVIDIA Cardhu development platform
@@ -188,6 +194,12 @@ config MACH_P1852
        help
          Support for NVIDIA P1852 development platform
 
+config MACH_E1853
+       bool "E1853 board"
+       depends on ARCH_TEGRA_3x_SOC
+       help
+         Support for NVIDIA E1853 development platform
+
 config MACH_TEGRA_ENTERPRISE
        bool "Enterprise board"
        depends on ARCH_TEGRA_3x_SOC
@@ -196,6 +208,12 @@ config MACH_TEGRA_ENTERPRISE
        select TEGRA_SLOW_CSITE
        help
          Support for NVIDIA Enterprise development platform
+
+config MACH_TAI
+       bool "Tai board"
+       depends on MACH_TEGRA_ENTERPRISE
+       help
+         Support for NVIDIA Tai development platform
 
 config MACH_KAI
        bool "Kai board"
@@ -312,6 +330,13 @@ config TEGRA_P1852_TDM
 		Enables TDM mode driver for P1852 SKUs. If this
 		is not defined then I2S mode is selected by default.
 
+config TEGRA_TDM
+	bool "Enable TDM mode for Automotive SKUs"
+	depends on MACH_E1853
+	help
+		Enables TDM mode driver for Automotive SKUs. If this
+		is not defined then I2S mode is selected by default.
+
 config TEGRA_CARDHU_DSI
 	bool "Support DSI panel on Cardhu"
 	depends on MACH_CARDHU
@@ -402,9 +427,10 @@ config TEGRA_THERMAL_THROTTLE
 	  Also requires enabling a temperature sensor such as NCT1008.
 
 config DEBUG_ASUS
-	bool "For ASUS user-debug build"
-	help
-	  Say Y here for user-debug build.
+       bool "For ASUS user-debug build"
+       help
+         Say Y here for user-debug build.
+
 config WIFI_CONTROL_FUNC
 	bool "Enable WiFi control function abstraction"
 	help
@@ -478,13 +504,6 @@ config TEGRA_CONVSERVATIVE_GOV_ON_EARLYSUPSEND
 	default n
 	help
 	 Also will restore to original cpu frequency governor when device is resumed
-
-config TEGRA_RUNNABLE_THREAD
-	bool "Tegra3 runnable thread hotplug"
-	depends on ARCH_TEGRA_3x_SOC
-	default n
-	help
-	  Tegra3 Runnable Thread calculations for CPU hotplug
 
 config TEGRA_STAT_MON
         bool "Enable H/W statistics monitor"
@@ -600,4 +619,20 @@ config TEGRA_SKIN_THROTTLE
 	help
 	  Enable throttling to control the temperature of the skin/case
 	  of the device.
+
+config TEGRA_LP1_950
+	bool "LP1 low core voltage"
+	default n
+	depends on ARCH_TEGRA_3x_SOC
+	help
+		Enable support for LP1 Core voltage to set to lowest
 endif
+
+config TEGRA_DC_USE_HW_BPP
+	bool "Default Bits Per Pixel value from tegra DC hardware"
+	depends on TEGRA_DC
+	default n
+        help
+	  Programs platform data to inform DC driver to use current
+	  hardware value for bits per pixel setting.  Useful for
+          preserving and displaying framebuffer content from bootloader.

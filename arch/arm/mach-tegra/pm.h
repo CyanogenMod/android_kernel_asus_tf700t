@@ -33,6 +33,16 @@
 #define PMC_SCRATCH1		0x54
 #define PMC_SCRATCH4		0x60
 
+/* The following two constants are for setting the CPU freq
+ * floor when display is on. 204000Khz is for tablet and
+ * 102000KHz is for phones. The reason for different values
+ * for tablet and phone is due to phones usually have smart
+ * displays that requires less CPU activity for refreshing
+ * the screen
+ */
+
+#define CPU_WAKE_FREQ_HIGH	204000
+#define CPU_WAKE_FREQ_LOW	102000
 enum tegra_suspend_mode {
 	TEGRA_SUSPEND_NONE = 0,
 	TEGRA_SUSPEND_LP2,	/* CPU voltage off */
@@ -65,6 +75,15 @@ struct tegra_suspend_platform_data {
 	/* lp_state = 0 for LP0 state, 1 for LP1 state, 2 for LP2 state */
 	void (*board_resume)(int lp_state, enum resume_stage stg);
 	unsigned int cpu_resume_boost;	/* CPU frequency resume boost in kHz */
+#ifdef CONFIG_TEGRA_LP1_950
+	bool lp1_lowvolt_support;
+	unsigned int i2c_base_addr;
+	unsigned int pmuslave_addr;
+	unsigned int core_reg_addr;
+	unsigned int lp1_core_volt_low;
+	unsigned int lp1_core_volt_high;
+#endif
+	int cpu_wake_freq;
 };
 
 /* clears io dpd settings before kernel code */
