@@ -833,6 +833,7 @@ static int usb_stor_scan_thread(void * __us)
 	wake_lock_init(&us->scsi_scan_wake_lock, WAKE_LOCK_SUSPEND, us->scsi_name);
 	wake_lock(&us->scsi_scan_wake_lock);
 	printk("%s wake_lock_init +\n", us->scsi_name);
+
 	set_freezable_with_signal();
 	/*
 	 * Wait for the timeout to expire or for a disconnect

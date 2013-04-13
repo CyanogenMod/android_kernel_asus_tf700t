@@ -47,7 +47,6 @@
 #include <asm/mach/arch.h>
 #include <mach/usb_phy.h>
 #include <mach/nand.h>
-#include <mach/tegra_fiq_debugger.h>
 #include "board.h"
 #include "clock.h"
 #include "board-aruba.h"
@@ -503,6 +502,7 @@ static void __init tegra_aruba_init(void)
 {
 	tegra_clk_init_from_table(aruba_clk_init_table);
 	aruba_pinmux_init();
+	tegra_soc_device_init("aruba");
 
 	platform_add_devices(aruba_devices, ARRAY_SIZE(aruba_devices));
 
@@ -516,7 +516,6 @@ static void __init tegra_aruba_init(void)
 	aruba_bt_rfkill();
 	aruba_sata_init();
 	tegra_release_bootloader_fb();
-	tegra_serial_debug_init(TEGRA_UARTD_BASE, INT_WDT_CPU, NULL, -1, -1);
 }
 
 static void __init tegra_aruba_reserve(void)

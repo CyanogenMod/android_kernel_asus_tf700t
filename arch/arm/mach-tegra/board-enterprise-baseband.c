@@ -88,7 +88,6 @@ static void baseband_pre_phy_off(void)
 {
 	/* set AP2MDM_ACK2 high */
 	gpio_set_value(AP2MDM_ACK2, 1);
-	ap2mdm_ack_gpio_off = true;
 }
 
 static void baseband_start(void)

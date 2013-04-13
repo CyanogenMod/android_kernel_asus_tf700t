@@ -314,6 +314,7 @@ enum {
 	TF201_PAD,
 	TF300TG,
 	TF700T,
+	TF300TL,
 };
 
 struct hw_eq_preset {
@@ -366,6 +367,10 @@ struct hw_eq_preset hweq_preset[] = {
 	{TF700T ,{0x0264, 0xFE43, 0xC0E5, 0x1F2C, 0x0C73,0xC19B,
 		0x1EB2, 0xFA19, 0xC5FC, 0x1C10, 0x095B, 0x1561,
 		0x0699,0xC18B,0x1E7F,0x1F3D},0x402A, 0x8003, 0x0005},
+	{TF300TL ,{0x1CD0,0x1D18,0xC21C,0x1E30,0xF900,0xC2C8,0x1EC4,
+                0x095B,0xCA22,0x1C10,0x1830,0xF76D,0x0FEC,0xC130,
+                0x1ED6,0x1F69},0x403F, 0x8004, 0x0005},
+
 };
 
 static int rt5631_reg_init(struct snd_soc_codec *codec)
@@ -736,19 +741,30 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 		#if ENABLE_ALC
 			printk("spk_event --ALC_SND_SOC_DAPM_POST_PMU\n");
 			spk_out_flag = true;
-			//Enable ALC
-			if(project_id == TEGRA3_PROJECT_TF201){
+			/* Enable ALC */
+			switch (project_id) {
+			case TEGRA3_PROJECT_TF201:
+				rt5631_write(codec,
+					RT5631_GEN_PUR_CTRL_REG, 0x6e00);
 				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0B00);
 				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0000);
 				rt5631_write(codec, RT5631_ALC_CTRL_3, 0x6410);
-			}else if(project_id == TEGRA3_PROJECT_TF300TG){
+				break;
+			case TEGRA3_PROJECT_TF300TG:
+			case TEGRA3_PROJECT_TF300TL:
+				rt5631_write(codec,
+					RT5631_GEN_PUR_CTRL_REG, 0x6e00);
 				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0B00);
 				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0000);
 				rt5631_write(codec, RT5631_ALC_CTRL_3, 0x6510);
-			}else if(project_id == TEGRA3_PROJECT_TF700T){
+				break;
+			case TEGRA3_PROJECT_TF700T:
+				rt5631_write(codec,
+					RT5631_GEN_PUR_CTRL_REG, 0x7e00);
 				rt5631_write(codec, RT5631_ALC_CTRL_1, 0x0307);
 				rt5631_write(codec, RT5631_ALC_CTRL_2, 0x0000);
 				rt5631_write(codec, RT5631_ALC_CTRL_3, 0x6510);
+				break;
 			}
 		#endif
 		#if ENABLE_EQ
@@ -760,6 +776,8 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 						rt5631_update_eqmode(codec,TF300TG);
 				  }else if(project_id == TEGRA3_PROJECT_TF700T){
 						rt5631_update_eqmode(codec,TF700T);
+				  }else if(project_id == TEGRA3_PROJECT_TF300TL){
+						rt5631_update_eqmode(codec,TF300TL);
 				  }else{
 						rt5631_update_eqmode(codec,TF201_PAD);
 				  }//enable EQ after power on DAC power
@@ -878,7 +896,9 @@ static int spk_event(struct snd_soc_dapm_widget *w,
 		return 0;
 	}
 
-	if(project_id == TEGRA3_PROJECT_TF700T){
+	if(project_id == TEGRA3_PROJECT_TF700T ||
+		project_id == TEGRA3_PROJECT_TF300TG ||
+		project_id == TEGRA3_PROJECT_TF300TL){
 		rt5631_write_index(codec, 0x48, 0xF73C);
 		reg_val = rt5631_read_index(codec, 0x48);
 		printk("%s -codec index 0x48=0x%04X\n", __FUNCTION__, reg_val);
@@ -1075,7 +1095,7 @@ static int dac_to_hp_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMD:
-		
+
 		if (hp_en) {
 			if (rt5631->codec_version) {
 				hp_mute_unmute_depop_onebit(codec, 0);
@@ -1886,7 +1906,7 @@ static int rt5631_hifi_pcm_params(struct snd_pcm_substream *substream,
 	if (SNDRV_PCM_STREAM_CAPTURE == stream) {
 		if (rt5631->dmic_used_flag)
 			rt5631_set_dmic_params(codec, params);
-		if(headset_alive)
+		if(headset_alive && !rt5631->dmic_used_flag)
 			rt5631_close_dmic(codec);
 	}
 
@@ -2642,6 +2662,7 @@ static int rt56xx_hwdep_ioctl(struct snd_hwdep *hw, struct file *file, unsigned 
 
 static int realtek_ce_init_hwdep(struct snd_soc_codec *codec)
 {
+
 	struct snd_hwdep *hw;
 	struct snd_card *card = codec->card->snd_card;
 	int err;
@@ -2665,7 +2686,6 @@ static int rt5631_probe(struct snd_soc_codec *codec)
 	unsigned int val;
 	int ret;
 
-	tegra_gpio_enable(CODEC_SPKVDD_POWER_5V0_EN_GPIO);
 	ret = gpio_request(CODEC_SPKVDD_POWER_5V0_EN_GPIO, "RT5631_5V");
 	if (ret) {
 		printk("gpio_request failed for input %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO);
@@ -2933,7 +2953,6 @@ static int codec_3v3_power_switch_init(void)
 	int ret = 0;
 
 	if(project_info == TEGRA3_PROJECT_TF700T){
-		tegra_gpio_enable(RT5631_3V3_POWER_EN);
 		ret = gpio_request(RT5631_3V3_POWER_EN, "rt5631_3v3_power_control");
 		if(ret < 0){
 			printk("rt5631_3v3_power_control: request rt5631_3v3_power_control fail! : %d\n", ret);

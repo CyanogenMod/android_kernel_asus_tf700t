@@ -28,7 +28,6 @@
 #include <mach/irqs.h>
 #include <mach/iomap.h>
 #include <mach/sdhci.h>
-#include <mach/board-cardhu-misc.h>
 #include <mach/io_dpd.h>
 
 #include "gpio-names.h"
@@ -38,7 +37,6 @@
 #define CARDHU_WLAN_PWR	TEGRA_GPIO_PD4
 #define CARDHU_WLAN_RST	TEGRA_GPIO_PD3
 #define CARDHU_WLAN_WOW	TEGRA_GPIO_PO4
-#define CARDHU_SDIO_WOW	TEGRA_GPIO_PB6
 #define CARDHU_SD_CD TEGRA_GPIO_PI5
 #define CARDHU_SD_WP TEGRA_GPIO_PT3
 #define PM269_SD_WP -1
@@ -147,13 +145,12 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data2 = {
 #ifdef CONFIG_MMC_EMBEDDED_SDIO
 		.embedded_sdio = &embedded_sdio_data2,
 #endif
-		.built_in = -1,
+		.built_in = 1,
 		.ocr_mask = MMC_OCR_1V8_MASK,
 	},
 #ifndef CONFIG_MMC_EMBEDDED_SDIO
 	.pm_flags = MMC_PM_KEEP_POWER,
 #endif
-	.wow_gpio = -1,
 	.cd_gpio = -1,
 	.wp_gpio = -1,
 	.power_gpio = -1,
@@ -168,7 +165,6 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data2 = {
 };
 
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data0 = {
-	.wow_gpio = -1,
 	.cd_gpio = CARDHU_SD_CD,
 	.wp_gpio = CARDHU_SD_WP,
 	.power_gpio = -1,
@@ -183,7 +179,6 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data0 = {
 };
 
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data3 = {
-	.wow_gpio = -1,
 	.cd_gpio = -1,
 	.wp_gpio = -1,
 	.power_gpio = -1,
@@ -192,8 +187,7 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data3 = {
 	.mmc_data = {
 		.built_in = 1,
 	}
-/*	.tap_delay = 6,
-	.is_voltage_switch_supported = false,
+/*	.is_voltage_switch_supported = false,
 	.vdd_rail_name = NULL,
 	.slot_rail_name = NULL,
 	.vdd_max_uv = -1,
@@ -255,7 +249,7 @@ static int cardhu_wifi_set_carddetect(int val)
 
 static int cardhu_wifi_power(int on)
 {
-	//struct tegra_io_dpd *sd_dpd;
+	struct tegra_io_dpd *sd_dpd;
 
 	pr_debug("%s: %d\n", __func__, on);
 
@@ -265,21 +259,21 @@ static int cardhu_wifi_power(int on)
 	 *
 	 * cardhu GPIO WLAN enable is part of SDMMC3 pin group
 	 */
-	//sd_dpd = tegra_io_dpd_get(&tegra_sdhci_device2.dev);
-	//if (sd_dpd) {
-	//	mutex_lock(&sd_dpd->delay_lock);
-	//	tegra_io_dpd_disable(sd_dpd);
-	//	mutex_unlock(&sd_dpd->delay_lock);
-	//}
+	sd_dpd = tegra_io_dpd_get(&tegra_sdhci_device2.dev);
+	if (sd_dpd) {
+		mutex_lock(&sd_dpd->delay_lock);
+		tegra_io_dpd_disable(sd_dpd);
+		mutex_unlock(&sd_dpd->delay_lock);
+	}
 	gpio_set_value(CARDHU_WLAN_PWR, on);
 	mdelay(100);
 	gpio_set_value(CARDHU_WLAN_RST, on);
 	mdelay(200);
-	//if (sd_dpd) {
-	//	mutex_lock(&sd_dpd->delay_lock);
-	//	tegra_io_dpd_enable(sd_dpd);
-	//	mutex_unlock(&sd_dpd->delay_lock);
-	//}
+	if (sd_dpd) {
+		mutex_lock(&sd_dpd->delay_lock);
+		tegra_io_dpd_enable(sd_dpd);
+		mutex_unlock(&sd_dpd->delay_lock);
+	}
 
 	return 0;
 }
@@ -346,27 +340,6 @@ int __init cardhu_sdhci_init(void)
 		(board_info.board_id == BOARD_PM305) ||
 		(board_info.board_id == BOARD_PM311)) {
 			tegra_sdhci_platform_data0.wp_gpio = PM269_SD_WP;
-	}
-
-	if ((tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) ||
-		(tegra3_get_project_id() == TEGRA3_PROJECT_P1801)) {
-		tegra_sdhci_platform_data2.mmc_data.built_in = 1;
-	} else {
-		// Get Wi-Fi PCB_ID
-		switch (tegra3_query_wifi_module_pcbid()){
-
-		case 0: // AW-NH660
-		case 2: // AW-NH665
-			tegra_sdhci_platform_data2.mmc_data.built_in = 1;
-			break;
-
-		case 1: // AW-NH615
-		case 3: // Murata
-		default:
-			tegra_sdhci_platform_data2.mmc_data.built_in = 0;
-			tegra_sdhci_platform_data2.wow_gpio = CARDHU_SDIO_WOW;
-			break;
-		}
 	}
 
 	platform_device_register(&tegra_sdhci_device3);

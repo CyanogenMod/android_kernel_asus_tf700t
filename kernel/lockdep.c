@@ -2911,11 +2911,8 @@ void lockdep_init_map(struct lockdep_map *lock, const char *name,
 	if (subclass)
 		register_lock_class(lock, subclass, 1);
 }
-#ifdef CONFIG_DEBUG_SPINLOCK
-EXPORT_SYMBOL(lockdep_init_map);
-#else
 EXPORT_SYMBOL_GPL(lockdep_init_map);
-#endif
+
 struct lock_class_key __lockdep_no_validate__;
 
 /*

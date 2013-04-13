@@ -17,26 +17,36 @@ else
 DHDCFLAGS += -DCUSTOM_OOB_GPIO_NUM=2
 endif
 
-# Use HW_OOB as default. HW_OOB is level-trigger
 ifeq ($(CONFIG_BCMDHD_HW_OOB),y)
 DHDCFLAGS += -DHW_OOB -DOOB_INTR_ONLY
 else
 DHDCFLAGS += -DSDIO_ISR_THREAD
 endif
+
+ifeq ($(BCMDHD_DYNAMIC_DTIM_SKIP),y)
+DHDCFLAGS += -DDYNAMIC_DTIM_SKIP
+else
+DHDCFLAGS += -DSUPPORT_PM2_ONLY
+endif
+
 DHDOFILES = aiutils.o bcmsdh_sdmmc_linux.o dhd_linux.o siutils.o bcmutils.o   \
 	dhd_linux_sched.o bcmwifi.o dhd_sdio.o bcmevent.o dhd_bta.o hndpmu.o  \
 	bcmsdh.o dhd_cdc.o bcmsdh_linux.o dhd_common.o linux_osl.o            \
 	bcmsdh_sdmmc.o dhd_custom_gpio.o sbutils.o wldev_common.o wl_android.o dhd_cfg80211.o
 
-obj-$(CONFIG_BCM4330) += bcmdhd.o
+obj-$(CONFIG_BCMDHD) += bcmdhd.o
 bcmdhd-objs += $(DHDOFILES)
-ifneq ($(CONFIG_BCMDHD_WEXT),)
+
+ifeq ($(CONFIG_BCMDHD_WEXT),y)
 bcmdhd-objs += wl_iw.o
 DHDCFLAGS += -DSOFTAP -DWL_WIRELESS_EXT
 endif
+
 ifneq ($(CONFIG_CFG80211),)
 bcmdhd-objs += wl_cfg80211.o wl_cfgp2p.o wl_linux_mon.o
 DHDCFLAGS += -DWL_CFG80211
+DHDCFLAGS += -DCUSTOM_ROAM_TRIGGER_SETTING=-85
+DHDCFLAGS += -DCUSTOM_ROAM_DELTA_SETTING=15
 endif
 ifneq ($(CONFIG_DHD_USE_SCHED_SCAN),)
 DHDCFLAGS += -DWL_SCHED_SCAN
@@ -45,6 +55,6 @@ ifneq ($(CONFIG_DHD_ENABLE_P2P),)
 DHDCFLAGS += -DWL_ENABLE_P2P_IF
 endif
 EXTRA_CFLAGS = $(DHDCFLAGS)
-ifeq ($(CONFIG_BCM4330),m)
+ifeq ($(CONFIG_BCMDHD),m)
 EXTRA_LDFLAGS += --strip-debug
 endif

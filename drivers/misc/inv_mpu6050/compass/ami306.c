@@ -48,6 +48,9 @@
 #include <linux/mpu.h>
 #include "mlsl.h"
 #include "mldl_cfg.h"
+
+#include <mach/board-cardhu-misc.h>
+
 #undef MPL_LOG_TAG
 #define MPL_LOG_TAG "MPL-compass"
 
@@ -75,13 +78,14 @@
 #define AMI_GAIN_COR_DEFAULT		(1000)
 
 #define AMI30X_CALIBRATION_PATH "/data/sensors/AMI304_Config.ini"
+#define AMI306_CALIBRATION_PATH "/data/sensors/AMI306_Config.ini"
 bool mpu6050_flagLoadConfig = false;
 EXPORT_SYMBOL(mpu6050_flagLoadConfig);
 
 struct cali_check_data {
 	short ori[3];
 	short post[3];
-	short gain[3];
+	int gain[3];
 	int file_exist;
 };
 struct cali_check_data mpu6050_cali_chk;
@@ -105,7 +109,7 @@ static inline unsigned short little_u8_to_u16(unsigned char *p_u8)
 	return p_u8[0] | (p_u8[1] << 8);
 }
 
-static int access_calibration_file(short *gain)
+static int access_calibration_file(int *gain)
 {
 	char buf[256];
 	int ret = 0, ii = 0;
@@ -118,6 +122,12 @@ static int access_calibration_file(short *gain)
 	memset(buf, 0, sizeof(u8)*256);
 
 	fp=filp_open(AMI30X_CALIBRATION_PATH, O_RDONLY, 0);
+	if (IS_ERR(fp))
+	{
+		printk("read ami306.ini\n");
+		fp=filp_open(AMI306_CALIBRATION_PATH, O_RDONLY, 0);
+	}
+
 	if (!IS_ERR(fp)) {
 		printk("ami306 open config file success\n");
 		ret = fp->f_op->read(fp, buf, sizeof(buf), &fp->f_pos);
@@ -178,7 +188,10 @@ static ssize_t compass_cali_test(struct device *dev, struct device_attribute *de
 	//check the calculation form raw data and gain is correct or not
 	for (ii =0; ii <COMPASS_NUM_AXES; ii++)
 	{
-		val[ii] = (short)(mpu6050_cali_chk.ori[ii]*mpu6050_cali_chk.gain[ii]/100);
+		if (mpu6050_cali_chk.gain[ii] <= 0)
+			mpu6050_cali_chk.gain[ii] = 100;
+
+		val[ii] = (short)(mpu6050_cali_chk.ori[ii]*100/mpu6050_cali_chk.gain[ii]);
 		if (val[ii] != mpu6050_cali_chk.post[ii])
 			bufcnt += sprintf(localbuf,"axis-%d data compensation (%d) is NOT matched to the gain %d !\n",ii,val[ii],mpu6050_cali_chk.post[ii]);
 		else
@@ -198,10 +211,45 @@ static ssize_t compass_cali_test(struct device *dev, struct device_attribute *de
 	return bufcnt;
 }
 
+static ssize_t set_GM_direction(struct device *dev, struct device_attribute *devattr, char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct ami306_mod_private_data *data = i2c_get_clientdata(client);
+	unsigned char Mdir, Gdir;
+
+	u32 project_info = tegra3_get_project_id();
+
+	switch (project_info)
+	{
+		case TEGRA3_PROJECT_TF500T:
+			printk("Project is TF500T\n");
+			Mdir = 14;
+			Gdir = 14;
+			break;
+		case TEGRA3_PROJECT_ME301T:
+			printk("Project is ME301T\n");
+			Mdir = 26;
+			Gdir = 26;
+			break;
+		case TEGRA3_PROJECT_ME301TL:
+			printk("Project is ME301TL\n");
+			Mdir = 26;
+			Gdir = 26;
+			break;
+		default:
+			printk("No Project Info!\n");
+			Mdir = 26;
+			Gdir = 26;
+	};
+	return sprintf(buf,"%d %d\n", Mdir, Gdir);
+}
+
 DEVICE_ATTR(6050_compass_cali_test, S_IRUGO, compass_cali_test, NULL);
+DEVICE_ATTR(6050_set_GM_dir, S_IRUGO, set_GM_direction, NULL);
 
 static struct attribute *ami_306_attr[] = {
 	&dev_attr_6050_compass_cali_test.attr,
+	&dev_attr_6050_set_GM_dir.attr,
 	NULL
 };
 
@@ -795,7 +843,11 @@ static int ami306_read(void *mlsl_handle,
 		val[ii] -= AMI_STANDARD_OFFSET;
 
 		mpu6050_cali_chk.ori[ii] = val[ii];
-		val[ii] = (short)(val[ii]*mpu6050_cali_chk.gain[ii]/100);
+
+		if (mpu6050_cali_chk.gain[ii] <= 0)
+			mpu6050_cali_chk.gain[ii] = 100;
+
+		val[ii] = (short)(val[ii]*100/mpu6050_cali_chk.gain[ii]);
 		mpu6050_cali_chk.post[ii] = val[ii];
 
 		data[2 * ii] = val[ii] & 0xFF;

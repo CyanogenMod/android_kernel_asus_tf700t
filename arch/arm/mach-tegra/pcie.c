@@ -105,6 +105,7 @@
 
 #define AFI_CONFIGURATION						0xac
 #define AFI_CONFIGURATION_EN_FPCI				(1 << 0)
+#define AFI_CONFIGURATION_DFPCI_RSPPASSPW			(1 << 2)
 
 #define AFI_FPCI_ERROR_MASKS						0xb0
 
@@ -154,6 +155,12 @@
 
 #define RP_VEND_XP						0x00000F00
 #define RP_VEND_XP_DL_UP					(1 << 30)
+
+#define  RP_TXBA1						0x00000E1C
+#define  RP_TXBA1_CM_OVER_PW_BURST_MASK			(0xF << 4)
+#define  RP_TXBA1_CM_OVER_PW_BURST_INIT_VAL			(0x4 << 4)
+#define  RP_TXBA1_PW_OVER_CM_BURST_MASK			(0xF)
+#define  RP_TXBA1_PW_OVER_CM_BURST_INIT_VAL			(0x4)
 
 #define RP_LINK_CONTROL_STATUS					0x00000090
 #define RP_LINK_CONTROL_STATUS_LINKSTAT_MASK			0x3fff0000
@@ -870,8 +877,11 @@ static void tegra_pcie_enable_controller(void)
 	/* Take the PCIe interface module out of reset */
 	tegra_periph_reset_deassert(tegra_pcie.pcie_xclk);
 
+	/* WAR avoid hang on CPU read/write while gpu transfers in progress */
+	val = afi_readl(AFI_CONFIGURATION) | AFI_CONFIGURATION_DFPCI_RSPPASSPW;
+
 	/* Finally enable PCIe */
-	val = afi_readl(AFI_CONFIGURATION) | AFI_CONFIGURATION_EN_FPCI;
+	val |=  AFI_CONFIGURATION_EN_FPCI;
 	afi_writel(val, AFI_CONFIGURATION);
 
 	val = (AFI_INTR_EN_INI_SLVERR | AFI_INTR_EN_INI_DECERR |
@@ -1223,6 +1233,7 @@ static void tegra_pcie_enable_aspm_l1_support(int index)
 static void tegra_pcie_add_port(int index, u32 offset, u32 reset_reg)
 {
 	struct tegra_pcie_port *pp;
+	unsigned int data;
 
 	pp = tegra_pcie.port + tegra_pcie.num_ports;
 
@@ -1237,6 +1248,18 @@ static void tegra_pcie_add_port(int index, u32 offset, u32 reset_reg)
 	}
 	tegra_pcie_enable_clock_clamp(index);
 	tegra_pcie_enable_aspm_l1_support(index);
+
+	/*
+	 * Initialize TXBA1 register to fix the unfair arbitration
+	 * between downstream reads and completions to upstream reads
+	 */
+	data = rp_readl(RP_TXBA1, index);
+	data &= ~(RP_TXBA1_PW_OVER_CM_BURST_MASK);
+	data |= RP_TXBA1_PW_OVER_CM_BURST_INIT_VAL;
+	data &= ~(RP_TXBA1_CM_OVER_PW_BURST_MASK);
+	data |= RP_TXBA1_CM_OVER_PW_BURST_INIT_VAL;
+	rp_writel(data, RP_TXBA1, index);
+
 	tegra_pcie.num_ports++;
 	pp->index = index;
 	memset(pp->res, 0, sizeof(pp->res));
