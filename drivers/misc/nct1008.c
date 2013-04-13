@@ -132,7 +132,6 @@ static int nct1008_get_temp(struct device *dev, long *etemp, long *itemp)
 		*etemp = temp_ext_milli;
 	}
 
-	//printk("%s: ret temp=%dC \n", __func__, *pTemp);
 	return 0;
 error:
 	dev_err(&client->dev, "\n error in file=: %s %s() line=%d: "

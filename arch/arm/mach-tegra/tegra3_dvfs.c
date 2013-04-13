@@ -679,6 +679,7 @@ void __init tegra_soc_init_dvfs(void)
 	int soc_speedo_id = tegra_soc_speedo_id();
 	int cpu_process_id = tegra_cpu_process_id();
 	int core_process_id = tegra_core_process_id();
+	unsigned int project_id = tegra3_get_project_id();
 
 	int i;
 	int core_nominal_mv_index;
@@ -690,6 +691,13 @@ void __init tegra_soc_init_dvfs(void)
 #ifndef CONFIG_TEGRA_CPU_DVFS
 	tegra_dvfs_cpu_disabled = true;
 #endif
+
+	if(TEGRA3_PROJECT_P1801 == project_id && cpu_speedo_id == 7)
+	{
+		cpu_speedo_id = 5;
+		cpu_process_id = 3;
+		soc_speedo_id = 2;
+	}
 
 	/*
 	 * Find nominal voltages for core (1st) and cpu rails before rail
@@ -818,7 +826,6 @@ struct core_cap {
 	int level;
 };
 static struct core_cap tegra3_core_cap;
-static struct core_cap kdvfs_core_cap;
 static struct core_cap user_core_cap;
 
 static struct core_cap user_cbus_cap;
@@ -867,8 +874,6 @@ static void core_cap_update(void)
 {
 	int new_level = tegra3_dvfs_rail_vdd_core.max_millivolts;
 
-	if (kdvfs_core_cap.refcnt)
-		new_level = min(new_level, kdvfs_core_cap.level);
 	if (user_core_cap.refcnt)
 		new_level = min(new_level, user_core_cap.level);
 
@@ -1042,30 +1047,6 @@ const struct attribute *cap_attributes[] = {
 	NULL,
 };
 
-void tegra_dvfs_core_cap_enable(bool enable)
-{
-	mutex_lock(&core_cap_lock);
-
-	if (enable) {
-		kdvfs_core_cap.refcnt++;
-		if (kdvfs_core_cap.refcnt == 1)
-			core_cap_enable(true);
-	} else if (kdvfs_core_cap.refcnt) {
-		kdvfs_core_cap.refcnt--;
-		if (kdvfs_core_cap.refcnt == 0)
-			core_cap_enable(false);
-	}
-	mutex_unlock(&core_cap_lock);
-}
-
-void tegra_dvfs_core_cap_level_set(int level)
-{
-	mutex_lock(&core_cap_lock);
-	kdvfs_core_cap.level = level;
-	core_cap_update();
-	mutex_unlock(&core_cap_lock);
-}
-
 static int __init init_core_cap_one(struct clk *c, unsigned long *freqs)
 {
 	int i, v, next_v = 0;
@@ -1114,7 +1095,7 @@ static int __init tegra_dvfs_init_core_cap(void)
 	int i;
 	struct clk *c = NULL;
 
-	tegra3_core_cap.level = kdvfs_core_cap.level = user_core_cap.level =
+	tegra3_core_cap.level = user_core_cap.level =
 		tegra3_dvfs_rail_vdd_core.max_millivolts;
 
 	for (i = 0; i < ARRAY_SIZE(core_cap_table); i++) {

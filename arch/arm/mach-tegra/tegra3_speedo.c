@@ -25,6 +25,7 @@
 #include <mach/tegra_fuse.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <mach/board-cardhu-misc.h>
 
 #include "fuse.h"
 
@@ -356,6 +357,7 @@ void tegra_init_speedo_data(void)
 	int fuse_sku = tegra_sku_id();
 	int sku_override = tegra_get_sku_override();
 	int new_sku = fuse_sku;
+	unsigned int project_id = tegra3_get_project_id();
 
 	/* Package info: 4 bits - 0,3:reserved 1:MID 2:DSC */
 	package_id = tegra_fuse_readl(FUSE_PACKAGE_INFO) & 0x0F;
@@ -426,6 +428,11 @@ void tegra_init_speedo_data(void)
 	rev_sku_to_speedo_ids(tegra_get_revision(), new_sku);
 	BUG_ON(threshold_index >= ARRAY_SIZE(cpu_process_speedos));
 
+	if(TEGRA3_PROJECT_P1801 == project_id && cpu_speedo_id == 7)
+	{
+		threshold_index = 8;
+	}
+
 	fuse_speedo_calib(&cpu_speedo_val, &core_speedo_val);
 	pr_debug("%s CPU speedo value %u\n", __func__, cpu_speedo_val);
 	pr_debug("%s Core speedo value %u\n", __func__, core_speedo_val);
@@ -495,6 +502,13 @@ void tegra_init_speedo_data(void)
 				break;
 			}
 		}
+	}
+
+	if(TEGRA3_PROJECT_P1801 == project_id && cpu_speedo_id == 7)
+	{
+		cpu_speedo_id = 5;
+		cpu_process_id = 3;
+		soc_speedo_id = 2;
 	}
 	pr_info("Tegra3: CPU Speedo ID %d, Soc Speedo ID %d",
 		 cpu_speedo_id, soc_speedo_id);

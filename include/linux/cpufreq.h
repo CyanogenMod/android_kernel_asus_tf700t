@@ -315,6 +315,7 @@ __ATTR(_name, 0644, show_##_name, store_##_name)
 int cpufreq_get_policy(struct cpufreq_policy *policy, unsigned int cpu);
 int cpufreq_update_policy(unsigned int cpu);
 int cpufreq_set_gov(char *target_gov, unsigned int cpu);
+ssize_t cpufreq_current_gov(char *buf, unsigned int cpu);
 
 #ifdef CONFIG_CPU_FREQ
 /* query the current CPU frequency (in kHz). If zero, cpufreq couldn't detect it */

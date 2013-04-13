@@ -1214,7 +1214,6 @@ axusbnet_probe (struct usb_interface *udev, const struct usb_device_id *prod)
 		printk (KERN_ERR "blacklisted by %s\n", name);
 		return -ENODEV;
 	}
-
 	xdev = interface_to_usbdev (udev);
 	interface = udev->cur_altsetting;
 

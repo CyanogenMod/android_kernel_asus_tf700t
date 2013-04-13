@@ -748,7 +748,8 @@ FIXED_REG(13, en_1v8_cam,	en_1v8_cam,	tps6591x_rails(VIO),		0,      0,      TEGR
 FIXED_REG(14, dis_5v_switch_e118x,	dis_5v_switch,	FIXED_SUPPLY(en_5v0), 	0,      0,      TEGRA_GPIO_PX2,		false,	0, 5000);
 
 /* E1291-A04/A05 specific */
-FIXED_REG(1, en_5v0_a04,	en_5v0,		NULL,				0,      0,      TPS6591X_GPIO_8,	true,	0, 5000);
+FIXED_REG(1, en_5v0_a04,	en_5v0,		NULL,				1,      0,      TPS6591X_GPIO_8,	true,	1, 5000);
+FIXED_REG(1, en_5v0_me301,	en_5v0,		NULL,				1,      0,      TPS6591X_GPIO_8,	true,	1, 5000);
 FIXED_REG(2, en_ddr_a04,	en_ddr,		NULL,				1,      0,      TPS6591X_GPIO_7,	true,	1, 1500);
 FIXED_REG(3, en_3v3_sys_a04,	en_3v3_sys,	NULL,				0,      0,      TPS6591X_GPIO_6,	true,	1, 3300);
 
@@ -843,9 +844,21 @@ FIXED_REG_OD(17, en_vddio_vid_oc,	en_vddio_vid_oc,	FIXED_SUPPLY(en_5v0), 		0,   
 	ADD_FIXED_REG(en_3v3_fuse_pm269),	\
 	ADD_FIXED_REG(en_3v3_emmc),		\
 	ADD_FIXED_REG(en_1v8_cam),		\
-	ADD_FIXED_REG(dis_5v_switch_e118x),	\
-	ADD_FIXED_REG(en_usb1_vbus_oc_e118x),	\
-	ADD_FIXED_REG(en_vddio_vid_oc_pm269),
+	ADD_FIXED_REG(en_vbrtr),		
+
+#define PM269_FIXED_REG_ME301				\
+	ADD_FIXED_REG(en_5v_cp),		\
+	ADD_FIXED_REG(en_5v0_me301),		\
+	ADD_FIXED_REG(en_ddr_a04),		\
+	ADD_FIXED_REG(en_3v3_sys_a04),		\
+	ADD_FIXED_REG(en_3v3_modem),		\
+	ADD_FIXED_REG(cam1_ldo_en),		\
+	ADD_FIXED_REG(cam3_ldo_en),		\
+	ADD_FIXED_REG(en_vdd_com),		\
+	ADD_FIXED_REG(en_3v3_fuse_pm269),	\
+	ADD_FIXED_REG(en_3v3_emmc),		\
+	ADD_FIXED_REG(en_1v8_cam),		\
+	ADD_FIXED_REG(en_usb1_vbus_oc_e118x),
 
 #define PM311_FIXED_REG				\
 	ADD_FIXED_REG(en_5v_cp),		\
@@ -861,8 +874,7 @@ FIXED_REG_OD(17, en_vddio_vid_oc,	en_vddio_vid_oc,	FIXED_SUPPLY(en_5v0), 		0,   
 	ADD_FIXED_REG(en_1v8_cam),		\
 	ADD_FIXED_REG(dis_5v_switch_e118x),	\
 	ADD_FIXED_REG(en_usb1_vbus_oc_pm311),	\
-	ADD_FIXED_REG(en_usb3_vbus_oc_pm311),	\
-	ADD_FIXED_REG(en_vddio_vid_oc_pm269),
+	ADD_FIXED_REG(en_usb3_vbus_oc_pm311),	
 
 
 #define E1247_DISPLAY_FIXED_REG			\
@@ -960,6 +972,11 @@ static struct platform_device *fixed_reg_devs_pm269[] = {
 	E1247_DISPLAY_FIXED_REG
 };
 
+static struct platform_device *fixed_reg_devs_pm269_me301[] = {
+	PM269_FIXED_REG_ME301
+	E1247_DISPLAY_FIXED_REG
+};
+
 static struct platform_device *fixed_reg_devs_pm269_dsi[] = {
 	PM269_FIXED_REG
 	E1247_DSI_DISPLAY_FIXED_REG
@@ -1016,6 +1033,7 @@ int __init cardhu_fixed_regulator_init(void)
 	struct board_info display_board_info;
 	struct platform_device **fixed_reg_devs;
 	int    nfixreg_devs;
+	unsigned int project_id = tegra3_get_project_id();
 
 	if (!machine_is_cardhu())
 		return 0;
@@ -1080,8 +1098,18 @@ int __init cardhu_fixed_regulator_init(void)
 			nfixreg_devs = ARRAY_SIZE(fixed_reg_devs_pm269_dsi);
 			fixed_reg_devs = fixed_reg_devs_pm269_dsi;
 		} else {
-			nfixreg_devs = ARRAY_SIZE(fixed_reg_devs_pm269);
-			fixed_reg_devs = fixed_reg_devs_pm269;
+
+			if(TEGRA3_PROJECT_ME301T != project_id)
+			{
+				nfixreg_devs = ARRAY_SIZE(fixed_reg_devs_pm269);
+				fixed_reg_devs = fixed_reg_devs_pm269;
+			}
+			else
+			{
+				nfixreg_devs = ARRAY_SIZE(fixed_reg_devs_pm269_me301);
+				fixed_reg_devs = fixed_reg_devs_pm269_me301;
+			}
+
 		}
 		break;
 
@@ -1126,15 +1154,25 @@ static struct tegra_suspend_platform_data cardhu_suspend_data = {
 	.cpu_lp2_min_residency = 2000,
 	.board_suspend = cardhu_board_suspend,
 	.board_resume = cardhu_board_resume,
+#ifdef CONFIG_TEGRA_LP1_950
+	.lp1_lowvolt_support = false,
+	.i2c_base_addr = 0,
+	.pmuslave_addr = 0,
+	.core_reg_addr = 0,
+	.lp1_core_volt_low = 0,
+	.lp1_core_volt_high = 0,
+#endif
 };
 
 int __init cardhu_suspend_init(void)
 {
 	struct board_info board_info;
 	struct board_info pmu_board_info;
+	struct board_info display_board_info;
 
 	tegra_get_board_info(&board_info);
 	tegra_get_pmu_board_info(&pmu_board_info);
+	tegra_get_display_board_info(&display_board_info);
 
 	/* For PMU Fab A03, A04 and A05 make core_pwr_req to high */
 	if ((pmu_board_info.fab == BOARD_FAB_A03) ||
@@ -1162,6 +1200,19 @@ int __init cardhu_suspend_init(void)
 			tegra_disable_wake_source(TEGRA_WAKE_USB1_VBUS);
 		break;
 	case BOARD_PM269:
+#ifdef CONFIG_TEGRA_LP1_950
+		/* AP37 board supports the LP1_950mV feature */
+		if (is_display_board_dsi(display_board_info.board_id)) {
+			cardhu_suspend_data.lp1_lowvolt_support = true;
+			cardhu_suspend_data.i2c_base_addr = TEGRA_I2C5_BASE;
+			cardhu_suspend_data.pmuslave_addr = 0xC0;
+			cardhu_suspend_data.core_reg_addr = 0x03;
+			cardhu_suspend_data.lp1_core_volt_low = 0x2D;
+			cardhu_suspend_data.lp1_core_volt_high = 0x50;
+		}
+#endif
+		if (is_display_board_dsi(display_board_info.board_id))
+			cardhu_suspend_data.cpu_wake_freq = CPU_WAKE_FREQ_LOW;
 	case BOARD_PM305:
 	case BOARD_PM311:
 		break;
@@ -1191,21 +1242,42 @@ int __init cardhu_edp_init(void)
 {
 
 	unsigned int project_id = tegra3_get_project_id();
+	unsigned int current_mA = 0;
 
-	pr_info("%s : use asus edp policy\n", __func__);
+	switch (project_id) {
+	case TEGRA3_PROJECT_TF201:
+		current_mA = 5000;
+		break;
+	case TEGRA3_PROJECT_TF300T:
+	case TEGRA3_PROJECT_TF300TG:
+	case TEGRA3_PROJECT_TF300TL:
+	case TEGRA3_PROJECT_TF500T:
+	case TEGRA3_PROJECT_ME301T:
+	case TEGRA3_PROJECT_ME301TL:
+		current_mA = 6000;
+		break;
+	case TEGRA3_PROJECT_ME570T:
+		current_mA = 8200;
+		break;
+	case TEGRA3_PROJECT_TF700T:
+	case TEGRA3_PROJECT_P1801:
+		current_mA = 10000;
+		break;
+	default:
+		pr_info("%s: cannot match edp limit\n", __func__);
+		break;
 
-	if(TEGRA3_PROJECT_TF201 == project_id)
-		tegra_init_cpu_edp_limits(5000);
-	else if(TEGRA3_PROJECT_TF300T == project_id || TEGRA3_PROJECT_TF300TG == project_id || TEGRA3_PROJECT_TF300TL == project_id || TEGRA3_PROJECT_TF500T == project_id)
-		tegra_init_cpu_edp_limits(6000);
-	else if(TEGRA3_PROJECT_TF700T == project_id || TEGRA3_PROJECT_P1801 == project_id)
-		tegra_init_cpu_edp_limits(10000);
+	}
+
+	pr_info("%s : use asus edp policy with %u mA\n", __func__, current_mA);
+
+	tegra_init_cpu_edp_limits(current_mA);
 
 	return 0;
 }
 #endif
 
-static char *cardhu_battery[] = {
+/*static char *cardhu_battery[] = {
 	"bq27510-0",
 };
 
@@ -1230,11 +1302,11 @@ static int __init cardhu_charger_late_init(void)
 	if (!machine_is_cardhu())
 		return 0;
 
-	/* platform_device_register(&cardhu_charger_device); */
+	platform_device_register(&cardhu_charger_device);
 	return 0;
 }
 
-late_initcall(cardhu_charger_late_init);
+late_initcall(cardhu_charger_late_init);*/
 
 unsigned int boot_reason=0;
 void tegra_booting_info(void )

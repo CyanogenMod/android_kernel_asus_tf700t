@@ -516,6 +516,14 @@ static int kxtf9_init(void *mlsl_handle,
 		return INV_ERROR_MEMORY_EXAUSTED;
 
 	/* RAM reset */
+	/* Reset */
+	result = inv_serial_single_write(mlsl_handle, pdata->address,
+					 KXTF9_CTRL_REG3, 0xcd);
+	if (result) {
+		LOG_RESULT_LOCATION(result);
+		return result;
+	}
+	msleep(20);
 	/* Fastest Reset */
 	result = inv_serial_single_write(mlsl_handle, pdata->address,
 					 KXTF9_CTRL_REG1, 0x40);
@@ -526,13 +534,6 @@ static int kxtf9_init(void *mlsl_handle,
 	/* Fastest Reset */
 	result = inv_serial_single_write(mlsl_handle, pdata->address,
 					 KXTF9_DATA_CTRL_REG, 0x36);
-	if (result) {
-		LOG_RESULT_LOCATION(result);
-		return result;
-	}
-	/* Reset */
-	result = inv_serial_single_write(mlsl_handle, pdata->address,
-					 KXTF9_CTRL_REG3, 0xcd);
 	if (result) {
 		LOG_RESULT_LOCATION(result);
 		return result;

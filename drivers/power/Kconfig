@@ -295,13 +295,13 @@ config BATTERY_BQ27541
 	tristate "bq27541 battery driver"
 	depends on I2C
 	help
-	  Say Y here to enable support for batteries with BQ27541 chip.
+	Say Y here to enable support for batteries with BQ27541 chip.
 
 config CHARGER_SMB347
 	tristate "SMB347 battery charger driver"
 	depends on I2C
 	help
-	  Say Y here to enable support for battery charging with SMB347 chips.
+	Say Y here to enable support for battery charging with SMB347 chips.
 
 endif # POWER_SUPPLY
 

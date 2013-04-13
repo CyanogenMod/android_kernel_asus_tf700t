@@ -147,6 +147,41 @@ static tegra_dc_bl_output enterprise_bl_output_measured_a03 = {
 	250, 251, 251, 252, 253, 254, 254, 255,
 };
 
+static tegra_dc_bl_output tai_bl_output_measured = {
+	0, 1, 2, 4, 5, 6, 8, 9,
+	10, 12, 13, 14, 15, 16, 16, 17,
+	18, 19, 20, 20, 21, 22, 24, 25,
+	26, 27, 28, 29, 30, 31, 33, 34,
+	35, 36, 37, 38, 39, 41, 42, 43,
+	44, 45, 46, 46, 47, 48, 49, 50,
+	50, 51, 52, 53, 53, 54, 55, 55,
+	56, 57, 57, 58, 58, 59, 60, 61,
+	62, 63, 64, 65, 65, 66, 67, 68,
+	68, 69, 70, 70, 71, 72, 73, 73,
+	74, 75, 76, 77, 77, 78, 79, 80,
+	81, 82, 83, 84, 85, 86, 87, 87,
+	88, 89, 90, 91, 92, 93, 94, 94,
+	95, 95, 96, 97, 97, 98, 99, 99,
+	100, 101, 101, 102, 103, 103, 104, 105,
+	105, 106, 107, 108, 108, 109, 110, 111,
+	111, 112, 113, 114, 115, 115, 116, 117,
+	118, 119, 120, 121, 121, 122, 123, 124,
+	125, 126, 126, 127, 128, 129, 130, 131,
+	132, 133, 134, 134, 135, 136, 137, 138,
+	139, 140, 141, 143, 144, 145, 146, 147,
+	148, 149, 151, 152, 153, 154, 155, 156,
+	157, 158, 159, 160, 161, 163, 164, 165,
+	166, 167, 169, 170, 171, 172, 173, 175,
+	176, 177, 179, 180, 182, 183, 185, 186,
+	187, 189, 190, 191, 193, 194, 195, 197,
+	198, 199, 200, 202, 203, 204, 205, 207,
+	208, 209, 210, 212, 213, 214, 215, 216,
+	218, 219, 220, 221, 222, 223, 225, 226,
+	227, 228, 229, 231, 232, 233, 234, 235,
+	237, 238, 239, 241, 242, 244, 245, 246,
+	248, 249, 250, 251, 252, 253, 254, 255,
+};
+
 static p_tegra_dc_bl_output bl_output;
 
 static bool kernel_1st_panel_init = true;
@@ -168,6 +203,16 @@ static int enterprise_backlight_notify(struct device *unused, int brightness)
 }
 
 static int enterprise_disp1_check_fb(struct device *dev, struct fb_info *info);
+
+static struct platform_pwm_backlight_data external_pwm_disp1_backlight_data = {
+	.pwm_id		= 3,
+	.max_brightness	= 255,
+	.dft_brightness	= 224,
+	.pwm_period_ns	= 1000000,
+	.notify		= enterprise_backlight_notify,
+	/* Only toggle backlight on fb blank notifications for disp1 */
+	.check_fb	= enterprise_disp1_check_fb,
+};
 
 #if IS_EXTERNAL_PWM
 static struct platform_pwm_backlight_data enterprise_disp1_backlight_data = {
@@ -214,10 +259,21 @@ static struct platform_device enterprise_disp1_backlight_device = {
 	},
 };
 
+static struct platform_device external_pwm_disp1_backlight_device = {
+	.name	= "pwm-backlight",
+	.id	= -1,
+	.dev	= {
+		.platform_data = &external_pwm_disp1_backlight_data,
+	},
+};
 #ifdef CONFIG_TEGRA_DC
 static int enterprise_hdmi_vddio_enable(void)
 {
 	int ret;
+	struct board_info board_info;
+
+	tegra_get_board_info(&board_info);
+
 	if (!enterprise_hdmi_vddio) {
 		enterprise_hdmi_vddio = regulator_get(NULL, "hdmi_5v0");
 		if (IS_ERR_OR_NULL(enterprise_hdmi_vddio)) {
@@ -234,15 +290,39 @@ static int enterprise_hdmi_vddio_enable(void)
 		enterprise_hdmi_vddio = NULL;
 		return ret;
 	}
+	if (board_info.board_id == BOARD_E1239) {
+		ret = gpio_request(TEGRA_GPIO_PM4, "en_hdmi_buffers");
+		if (ret < 0) {
+			pr_err("%s: gpio_request failed %d\n", __func__, ret);
+			return ret;
+		}
+
+		ret = gpio_direction_output(TEGRA_GPIO_PM4, 1);
+		if (ret < 0) {
+			pr_err("%s: gpio_direction_ouput failed %d\n",
+				__func__, ret);
+			gpio_free(TEGRA_GPIO_PM4);
+			return ret;
+		}
+	}
+
 	return ret;
 }
 
 static int enterprise_hdmi_vddio_disable(void)
 {
+	struct board_info board_info;
+
+	tegra_get_board_info(&board_info);
+
 	if (enterprise_hdmi_vddio) {
 		regulator_disable(enterprise_hdmi_vddio);
 		regulator_put(enterprise_hdmi_vddio);
 		enterprise_hdmi_vddio = NULL;
+	}
+	if (board_info.board_id == BOARD_E1239) {
+		gpio_set_value(TEGRA_GPIO_PM4, 0);
+		gpio_free(TEGRA_GPIO_PM4);
 	}
 	return 0;
 }
@@ -530,12 +610,10 @@ static int enterprise_dsi_panel_enable(void)
 	if (ret)
 		return ret;
 
-#if IS_EXTERNAL_PWM
-	tegra_gpio_disable(enterprise_bl_pwm);
-#endif
 
 #if DSI_PANEL_RESET
-	if (board_info.fab >= BOARD_FAB_A03) {
+	if ((board_info.fab >= BOARD_FAB_A03) ||
+		(board_info.board_id == BOARD_E1239)) {
 		if (enterprise_lcd_reg == NULL) {
 			enterprise_lcd_reg = regulator_get(NULL, "lcd_vddio_en");
 			if (IS_ERR_OR_NULL(enterprise_lcd_reg)) {
@@ -818,6 +896,13 @@ static struct platform_device *enterprise_gfx_devices[] __initdata = {
 #endif
 };
 
+static struct platform_device *external_pwm_gfx_devices[] __initdata = {
+#if defined(CONFIG_TEGRA_NVMAP)
+	&enterprise_nvmap_device,
+#endif
+	&tegra_pwfm3_device,
+};
+
 static struct platform_device *enterprise_bl_devices[]  = {
 	&enterprise_disp1_backlight_device,
 };
@@ -865,14 +950,20 @@ int __init enterprise_panel_init(void)
 	BUILD_BUG_ON(ARRAY_SIZE(enterprise_bl_output_measured_a03) != 256);
 	BUILD_BUG_ON(ARRAY_SIZE(enterprise_bl_output_measured_a02) != 256);
 
-	if (board_info.fab >= BOARD_FAB_A03) {
+	if (board_info.board_id != BOARD_E1239) {
+		if (board_info.fab >= BOARD_FAB_A03) {
 #if !(IS_EXTERNAL_PWM)
-		enterprise_disp1_backlight_data.clk_div = 0x1D;
+			enterprise_disp1_backlight_data.clk_div = 0x1D;
 #endif
-		bl_output = enterprise_bl_output_measured_a03;
-	} else
-		bl_output = enterprise_bl_output_measured_a02;
-
+			bl_output = enterprise_bl_output_measured_a03;
+		} else
+			bl_output = enterprise_bl_output_measured_a02;
+	} else {
+		enterprise_sd_settings.bl_device =
+			&external_pwm_disp1_backlight_device;
+		enterprise_bl_devices[0] = &external_pwm_disp1_backlight_device;
+		bl_output = tai_bl_output_measured;
+	}
 	enterprise_dsi.chip_id = tegra_get_chipid();
 	enterprise_dsi.chip_rev = tegra_get_revision();
 
@@ -884,13 +975,25 @@ int __init enterprise_panel_init(void)
 	gpio_request(enterprise_hdmi_hpd, "hdmi_hpd");
 	gpio_direction_input(enterprise_hdmi_hpd);
 
-	gpio_request(enterprise_lcd_2d_3d, "lcd_2d_3d");
-	gpio_direction_output(enterprise_lcd_2d_3d, 0);
-	enterprise_stereo_set_mode(enterprise_stereo.mode_2d_3d);
+	if (board_info.board_id != BOARD_E1239) {
+		gpio_request(enterprise_lcd_2d_3d, "lcd_2d_3d");
+		gpio_direction_output(enterprise_lcd_2d_3d, 0);
+		enterprise_stereo_set_mode(enterprise_stereo.mode_2d_3d);
 
-	gpio_request(enterprise_lcd_swp_pl, "lcd_swp_pl");
-	gpio_direction_output(enterprise_lcd_swp_pl, 0);
-	enterprise_stereo_set_orientation(enterprise_stereo.orientation);
+		gpio_request(enterprise_lcd_swp_pl, "lcd_swp_pl");
+		gpio_direction_output(enterprise_lcd_swp_pl, 0);
+		enterprise_stereo_set_orientation(
+						enterprise_stereo.orientation);
+#if IS_EXTERNAL_PWM
+		gpio_request(enterprise_bl_pwm, "bl_pwm");
+		gpio_free(enterprise_bl_pwm);
+#endif
+	} else {
+		/* External pwm is used but do not use IS_EXTERNAL_PWM
+		compiler switch for TAI */
+		gpio_request(enterprise_bl_pwm, "bl_pwm");
+		gpio_free(enterprise_bl_pwm);
+	}
 
 #if !(DC_CTRL_MODE & TEGRA_DC_OUT_ONE_SHOT_MODE)
 	gpio_request(enterprise_lcd_swp_pl, "lcd_te");
@@ -910,9 +1013,13 @@ int __init enterprise_panel_init(void)
 		return err;
 #endif
 
-	err = platform_add_devices(enterprise_gfx_devices,
-				ARRAY_SIZE(enterprise_gfx_devices));
-
+	if (board_info.board_id != BOARD_E1239) {
+		err = platform_add_devices(enterprise_gfx_devices,
+					ARRAY_SIZE(enterprise_gfx_devices));
+	} else {
+		err = platform_add_devices(external_pwm_gfx_devices,
+					ARRAY_SIZE(external_pwm_gfx_devices));
+	}
 #if defined(CONFIG_TEGRA_GRHOST) && defined(CONFIG_TEGRA_DC)
 	res = nvhost_get_resource_byname(&enterprise_disp1_device,
 					 IORESOURCE_MEM, "fbmem");

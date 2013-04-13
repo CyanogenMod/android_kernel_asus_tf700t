@@ -73,7 +73,11 @@ static void tegra_pcm_queue_dma(struct tegra_runtime_data *prtd)
 	if (++prtd->dma_req_idx >= prtd->dma_req_count)
 		prtd->dma_req_idx -= prtd->dma_req_count;
 
-	addr = buf->addr + prtd->dma_pos;
+	if (prtd->avp_dma_addr)
+		addr = prtd->avp_dma_addr + prtd->dma_pos;
+	else
+		addr = buf->addr + prtd->dma_pos;
+
 	prtd->dma_pos += dma_req->size;
 	if (prtd->dma_pos >= prtd->dma_pos_end)
 		prtd->dma_pos = 0;
@@ -438,8 +442,10 @@ void tegra_pcm_free(struct snd_pcm *pcm)
 
 static int tegra_pcm_probe(struct snd_soc_platform *platform)
 {
-	if(machine_is_kai() || machine_is_tegra_enterprise() ||
-		machine_is_cardhu())
+	if (machine_is_kai() ||
+			machine_is_tegra_enterprise() ||
+			machine_is_tai() ||
+			machine_is_cardhu())
 		platform->dapm.idle_bias_off = 1;
 
 	return 0;

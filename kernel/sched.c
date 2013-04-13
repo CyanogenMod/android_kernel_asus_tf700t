@@ -3322,18 +3322,6 @@ unsigned long avg_nr_running(void)
 	return sum;
 }
 
-unsigned long get_avg_nr_running(unsigned int cpu)
-{
-	struct rq *q;
-
-	if (cpu >= nr_cpu_ids)
-		return 0;
-
-	q = cpu_rq(cpu);
-
-	return q->ave_nr_running;
-}
-
 unsigned long nr_iowait_cpu(int cpu)
 {
 	struct rq *this = cpu_rq(cpu);
@@ -4279,10 +4267,6 @@ static noinline void __schedule_bug(struct task_struct *prev)
 		show_regs(regs);
 	else
 		dump_stack();
-#ifdef CONFIG_DEBUG_ASUS
-	//Force system hang for debugging under SMP
-	BUG_ON(1);
-#endif
 }
 
 /*

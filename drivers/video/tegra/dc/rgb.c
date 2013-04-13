@@ -116,12 +116,12 @@ void tegra_dc_rgb_enable(struct tegra_dc *dc)
 	tegra_dc_writel(dc, DISP_CTRL_MODE_C_DISPLAY, DC_CMD_DISPLAY_COMMAND);
 
 	if (tegra3_get_project_id()==0x4){
-		printk("Check tegra_dc_rgb_enable \n");
+		//printk("Check tegra_dc_rgb_enable \n");
 		dc->out->out_pins = cardhu_dc_out_pins;
 		dc->out->n_out_pins = ARRAY_SIZE(cardhu_dc_out_pins);
 	}
 	if (dc->out->out_pins) {
-		printk("Check set polarity \n");
+		//printk("Check set polarity \n");
 		tegra_dc_set_out_pin_polars(dc, dc->out->out_pins,
 			dc->out->n_out_pins);
 		tegra_dc_write_table(dc, tegra_dc_rgb_enable_partial_pintable);

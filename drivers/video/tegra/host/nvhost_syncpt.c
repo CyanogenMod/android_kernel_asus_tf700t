@@ -235,7 +235,7 @@ int nvhost_syncpt_wait_timeout(struct nvhost_syncpt *sp, u32 id,
 			check_count++;
 		}
 	}
-	nvhost_intr_put_ref(&(syncpt_to_dev(sp)->intr), ref);
+	nvhost_intr_put_ref(&(syncpt_to_dev(sp)->intr), id, ref);
 
 done:
 	nvhost_module_idle(syncpt_to_dev(sp)->dev);
@@ -344,7 +344,7 @@ static ssize_t syncpt_min_show(struct kobject *kobj,
 	struct nvhost_syncpt_attr *syncpt_attr =
 		container_of(attr, struct nvhost_syncpt_attr, attr);
 
-	return snprintf(buf, PAGE_SIZE, "%d",
+	return snprintf(buf, PAGE_SIZE, "%u",
 			nvhost_syncpt_read(&syncpt_attr->host->syncpt,
 				syncpt_attr->id));
 }
@@ -355,7 +355,7 @@ static ssize_t syncpt_max_show(struct kobject *kobj,
 	struct nvhost_syncpt_attr *syncpt_attr =
 		container_of(attr, struct nvhost_syncpt_attr, attr);
 
-	return snprintf(buf, PAGE_SIZE, "%d",
+	return snprintf(buf, PAGE_SIZE, "%u",
 			nvhost_syncpt_read_max(&syncpt_attr->host->syncpt,
 				syncpt_attr->id));
 }
@@ -412,6 +412,11 @@ int nvhost_syncpt_init(struct nvhost_device *dev,
 			err = -EIO;
 			goto fail;
 		}
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+		sysfs_attr_init(&min->attr.attr);
+		sysfs_attr_init(&max->attr.attr);
+#endif
 
 		min->id = i;
 		min->host = host;

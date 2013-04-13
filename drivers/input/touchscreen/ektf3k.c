@@ -40,6 +40,7 @@
 
 #define PACKET_SIZE		40 
 #define FINGER_NUM		10
+#define NEW_PACKET_SIZE 55
 		
 #define PWR_STATE_DEEP_SLEEP	0
 #define PWR_STATE_NORMAL		1
@@ -53,6 +54,7 @@
 
 #define HELLO_PKT			0x55
 #define NORMAL_PKT			0x63
+#define NEW_NOMARL_PKT                  0x66
 #define TEN_FINGERS_PKT			0x62
 
 #define RPT_LOCK_PKT		0x56
@@ -67,7 +69,7 @@
 #define ABS_MT_AMPLITUDE        0x2b    /* Group a set of Z and W */
 
 #include <linux/i2c/ektf3k.h>
-
+//#include <mach/board-cardhu-misc.h>
 // For Firmware Update 
 #define ELAN_IOCTLID	0xD0
 #define IOCTL_I2C_SLAVE	_IOW(ELAN_IOCTLID,  1, int)
@@ -103,6 +105,7 @@ static int work_lock=0x00;
 #define USB_CALBE_DETECT_MASK (USB_Cable  | USB_DETECT_CABLE)
 static unsigned now_usb_cable_status=0;
 static unsigned int gPrint_point = 0; 
+//static unsigned int project_id=0;
 
 #define TOUCH_STRESS_TEST 1
 #ifdef TOUCH_STRESS_TEST
@@ -162,6 +165,30 @@ static int elan_ktf3k_ts_resume(struct i2c_client *client);
 static void update_power_source();
 static struct semaphore pSem;
 static int mTouchStatus[FINGER_NUM] = {0};
+
+
+
+/* Debug levels */
+#define NO_DEBUG       0
+#define DEBUG_ERROR  1
+#define DEBUG_INFO     2
+#define DEBUG_MESSAGES 5
+#define DEBUG_TRACE   10
+
+static int debug = DEBUG_INFO;
+
+#define touch_debug(level, ...) \
+        do { \
+                if (debug >= (level)) \
+                        printk("[ektf3k]:" __VA_ARGS__); \
+        } while (0)
+
+/* Debug levels */
+#define NO_DEBUG       0
+#define DEBUG_ERROR  1
+#define DEBUG_INFO     2
+#define DEBUG_MESSAGES 5
+#define DEBUG_TRACE   10
 
 // For Firmware Update 
 /* Todo: (1) Need to Add the lock mechanism
@@ -890,6 +917,56 @@ static void elan_ktf3k_ts_report_data(struct i2c_client *client, uint8_t *buf)
 
 	return;
 }
+//For ME570
+static void elan_ktf3k_ts_report_data2(struct i2c_client *client, uint8_t *buf)
+{
+        struct elan_ktf3k_ts_data *ts = i2c_get_clientdata(client);
+        struct input_dev *idev = ts->input_dev;
+        uint16_t x, y, touch_size, pressure_size;
+        uint16_t fbits=0, checksum=0;
+        uint8_t i, num;
+        uint16_t active = 0;
+        uint8_t idx=IDX_FINGER;
+
+      num = buf[2] & 0xf;
+        for (i=0; i<34;i++)
+                checksum +=buf[i];
+
+        if ( (num < 3) || ((checksum & 0x00ff) == buf[34])) {
+          fbits = buf[2] & 0x30;
+            fbits = (fbits << 4) | buf[1];
+            //input_report_key(idev, BTN_TOUCH, 1);
+          for(i = 0; i < FINGER_NUM; i++){
+              active = fbits & 0x1;
+              if(active || mTouchStatus[i]){
+                     input_mt_slot(ts->input_dev, i);
+                  input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, active);
+                  if(active){
+                         elan_ktf3k_ts_parse_xy(&buf[idx], &x, &y);
+                      x = x > ts->abs_x_max ? 0 : ts->abs_x_max - x;
+                           y = y > ts->abs_y_max ? ts->abs_y_max : y;
+                           touch_size = buf[35 + i];
+                           pressure_size = buf[45 + i];
+                           input_report_abs(idev, ABS_MT_TOUCH_MAJOR, touch_size);
+                           input_report_abs(idev, ABS_MT_PRESSURE, pressure_size);
+                           input_report_abs(idev, ABS_MT_POSITION_X, y);
+                           input_report_abs(idev, ABS_MT_POSITION_Y, x);
+                           if(unlikely(gPrint_point)) touch_debug(DEBUG_INFO, "[elan] finger id=%d X=%d y=%d size=%d pressure=%d\n", i, x, y, touch_size, pressure_size);
+                     }
+                 }
+                 mTouchStatus[i] = active;
+              fbits = fbits >> 1;
+              idx += 3;
+            }
+          input_sync(idev);
+        } // checksum
+        else {
+                checksum_err +=1;
+                touch_debug(DEBUG_ERROR, "[elan] Checksum Error %d byte[2]=%X\n", checksum_err, buf[2]);
+        }
+
+        return;
+}
 
 static void process_resp_message(struct elan_ktf3k_ts_data *ts, const unsigned char *buf,
 	                                                      unsigned int size){
@@ -927,67 +1004,96 @@ static void process_resp_message(struct elan_ktf3k_ts_data *ts, const unsigned c
 
 static void elan_ktf3k_ts_work_func(struct work_struct *work)
 {
-	int rc;
-	struct elan_ktf3k_ts_data *ts =
-		container_of(work, struct elan_ktf3k_ts_data, work);
-	uint8_t buf[44] = { 0 };
-	uint8_t buf1[PACKET_SIZE] = { 0 };
-	uint8_t buf2[PACKET_SIZE] = { 0 };
+        int rc;
+        struct elan_ktf3k_ts_data *ts =
+                container_of(work, struct elan_ktf3k_ts_data, work);
+        uint8_t buf[NEW_PACKET_SIZE + 4] = { 0 };
+        uint8_t buf1[NEW_PACKET_SIZE] = { 0 };
+        uint8_t buf2[NEW_PACKET_SIZE] = { 0 };
 
-      if(work_lock == 0){      
+        if(work_lock==0) {
+
 #ifndef ELAN_BUFFER_MODE
-		rc = elan_ktf3k_ts_recv_data(ts->client, buf, 40);
+                rc = elan_ktf3k_ts_recv_data(ts->client, buf, 40);
 #else
              down(&pSem);
-		rc = elan_ktf3k_ts_recv_data(ts->client, buf, 4); // read the first four bytes
-#endif 
-		if (rc < 0)
-		{
+                rc = elan_ktf3k_ts_recv_data(ts->client, buf, 4); // read the first four bytes
+#endif
+                if (rc < 0)
+                {
                    up(&pSem);
-			enable_irq(ts->client->irq);
-			return;
-		}
+                        enable_irq(ts->client->irq);
+                        return;
+                }
 #ifndef ELAN_BUFFER_MODE
-		elan_ktf3k_ts_report_data(ts->client, buf);
+                elan_ktf3k_ts_report_data2(ts->client, buf);
 #else
              switch(buf[0]){
              case NORMAL_PKT:
-		    rc = elan_ktf3k_ts_recv_data(ts->client, buf+4, 40); // read the finger report packet.
-		    up(&pSem);
-		    elan_ktf3k_ts_report_data(ts->client, buf+4);
-	           // Second package
-	 	    if ((buf[1] == 2) || (buf[1] == 3)) {
-		        rc = elan_ktf3k_ts_recv_data(ts->client, buf1,PACKET_SIZE);
+                    rc = elan_ktf3k_ts_recv_data(ts->client, buf+4, 40); // read the finger report packet.
+                    up(&pSem);
+                    elan_ktf3k_ts_report_data(ts->client, buf+4);
+                   // Second package
+                    if ((buf[1] == 2) || (buf[1] == 3)) {
+                        rc = elan_ktf3k_ts_recv_data(ts->client, buf1,PACKET_SIZE);
                      if (rc < 0){
-			      enable_irq(ts->client->irq);
-				return;
-			  }
-			  elan_ktf3k_ts_report_data(ts->client, buf1);
-		    }
-		
-	           // Final package
-		    if (buf[1] == 3) {
-		        rc = elan_ktf3k_ts_recv_data(ts->client, buf2, PACKET_SIZE);
-		        if (rc < 0){
-		            enable_irq(ts->client->irq);
+                              enable_irq(ts->client->irq);
+                                return;
+                          }
+                          elan_ktf3k_ts_report_data(ts->client, buf1);
+                    }
+
+                   // Final package
+                    if (buf[1] == 3) {
+                        rc = elan_ktf3k_ts_recv_data(ts->client, buf2, PACKET_SIZE);
+                        if (rc < 0){
+                            enable_irq(ts->client->irq);
                          return;
                      }
                      elan_ktf3k_ts_report_data(ts->client, buf2);
                  }
-		    break;
+                    break;
+                case NEW_NOMARL_PKT:
+                    rc = elan_ktf3k_ts_recv_data(ts->client, buf+4, NEW_PACKET_SIZE); // read the finger report packet.
+                    up(&pSem);
+                    elan_ktf3k_ts_report_data2(ts->client, buf+4);
+                   // Second package
+                    if ((buf[1] == 2) || (buf[1] == 3)) {
+                        rc = elan_ktf3k_ts_recv_data(ts->client, buf1,NEW_PACKET_SIZE);
+                     if (rc < 0){
+                              enable_irq(ts->client->irq);
+                                return;
+                          }
+                          elan_ktf3k_ts_report_data2(ts->client, buf1);
+                    }
+
+                   // Final package
+                    if (buf[1] == 3) {
+                        rc = elan_ktf3k_ts_recv_data(ts->client, buf2, NEW_PACKET_SIZE);
+                        if (rc < 0){
+                            enable_irq(ts->client->irq);
+                         return;
+                     }
+                     elan_ktf3k_ts_report_data2(ts->client, buf2);
+                 }
+                    break;
              case CMD_S_PKT:
-		    up(&pSem);
+                    up(&pSem);
                  process_resp_message(ts, buf, 4);
-		    break;
-		default:
-		    up(&pSem);	
-		    dev_info(&ts->client->dev, "[elan] Get unknow packet {0x%02X, 0x%02X, 0x%02X, 0x%02X}\n", buf[0], buf[1], buf[2], buf[3]);
-	       }		 
+                    break;
+                default:
+                    up(&pSem);
+                    touch_debug(DEBUG_INFO, "[elan] Get unknow packet {0x%02X, 0x%02X, 0x%02X, 0x%02X}\n", buf[0], buf[1], buf[2], buf[3]);
+               }
 #endif
-		enable_irq(ts->client->irq);
-      	}
-	return;
+                enable_irq(ts->client->irq);
+	}
 }
+
+
+
+
+
 
 static irqreturn_t elan_ktf3k_ts_irq_handler(int irq, void *dev_id)
 {
@@ -1179,7 +1285,6 @@ static int elan_ktf3k_ts_probe(struct i2c_client *client,
 	int err = 0;
 	struct elan_ktf3k_i2c_platform_data *pdata;
 	struct elan_ktf3k_ts_data *ts;
-
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		printk(KERN_ERR "[elan] %s: i2c check functionality error\n", __func__);
 		err = -ENODEV;
@@ -1239,8 +1344,17 @@ static int elan_ktf3k_ts_probe(struct i2c_client *client,
 	dev_info(&client->dev, "[Elan] Max X=%d, Max Y=%d\n", ts->abs_x_max, ts->abs_y_max);
 
 	input_mt_init_slots(ts->input_dev, FINGER_NUM);
-	input_set_abs_params(ts->input_dev, ABS_MT_POSITION_X, pdata->abs_x_min,  pdata->abs_x_max, 0, 0);
-	input_set_abs_params(ts->input_dev, ABS_MT_POSITION_Y, pdata->abs_y_min,  pdata->abs_y_max, 0, 0);
+        
+        //project_id = tegra3_get_project_id(); 
+        
+       // if(project_id==TEGRA3_PROJECT_ME570T){
+//		input_set_abs_params(ts->input_dev, ABS_MT_POSITION_X, pdata->abs_y_min,  pdata->abs_y_max, 0, 0);
+//		input_set_abs_params(ts->input_dev, ABS_MT_POSITION_Y, pdata->abs_x_min,  pdata->abs_x_max, 0, 0);
+//	}
+//	else{
+                input_set_abs_params(ts->input_dev, ABS_MT_POSITION_X, pdata->abs_x_min,  pdata->abs_x_max, 0, 0);
+                input_set_abs_params(ts->input_dev, ABS_MT_POSITION_Y, pdata->abs_y_min,  pdata->abs_y_max, 0, 0);
+//	}
 	input_set_abs_params(ts->input_dev, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
 	input_set_abs_params(ts->input_dev, ABS_MT_PRESSURE, 0, 255, 0, 0);
 	
@@ -1393,7 +1507,6 @@ static int elan_ktf3k_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 {
 	struct elan_ktf3k_ts_data *ts = i2c_get_clientdata(client);
 	int rc = 0;
-
 	dev_info(&client->dev, "[elan] %s: enter\n", __func__);
 
 	disable_irq(client->irq);
@@ -1404,7 +1517,6 @@ static int elan_ktf3k_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 
 	if(work_lock == 0)
 	    rc = elan_ktf3k_ts_set_power_state(client, PWR_STATE_DEEP_SLEEP);
-
 	return 0;
 }
 
@@ -1413,8 +1525,7 @@ static int elan_ktf3k_ts_resume(struct i2c_client *client)
 
 	int rc = 0, retry = 5;
       struct elan_ktf3k_ts_data *ts = i2c_get_clientdata(client);
-      int delay_time;
-	  
+      int delay_time;  
 	dev_info(&client->dev, "[elan] %s: enter\n", __func__);
 	if(work_lock == 0){
 	    do {

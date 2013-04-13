@@ -58,8 +58,11 @@
 #define SENSOR_ID_MI1040	0x2481
 #define SENSOR_ID_OV2720	0x2720
 #define SENSOR_ID_IMX175	0x175
+#define SENSOR_ID_OV5650	0x5650
+#define SENSOR_ID_OV5651	0x5651
 
-extern unsigned int factory_mode;
+//extern unsigned int factory_mode;
+static unsigned int factory_mode=0;
 
 struct switch_dev i7002a_sdev;
 static unsigned int version_num_in_isp = 0xffffff;
@@ -67,15 +70,6 @@ static unsigned int fw_front_type_in_isp = 0x0;
 static unsigned int front_chip_id = 0xABCD;
 
 static u16 coloreffect;
-static u16 g_Streaming_type = 0;
-
-/* force_capture_mode
- * 0: Single
- * 1: HDR
- * 4: Burst Capture
- */
-static unsigned int force_capture_mode = 0xabcdef;
-
 /* mi1040 format:
  * 0: YUV
  * 1: RGB
@@ -84,6 +78,8 @@ static unsigned int force_capture_mode = 0xabcdef;
 static unsigned int mi1040_output_format = 0xFF;
 
 static int dbg_i7002a_page_index = 2047;
+/* The unit of force firmware size is KB */
+static int dbg_i7002a_force_fw_size = 0;
 
 /* iCatch Camera Firmware Header
  * It locates on the end of the bin file.
@@ -105,6 +101,7 @@ static int dbg_i7002a_page_index = 2047;
 #define ICATCH7002A_DELAY_TEST
 #ifdef ICATCH7002A_DELAY_TEST
 static u32 iCatch7002a_init_delay= 5;
+static u32 iCatch7002a_init_long_delay= 10;
 static u32 iCatch7002a_preview_delay=100;
 static u32 touch_focus_enable=0;
 #endif
@@ -125,6 +122,8 @@ static int g_initialized_1080p=0;
 #endif
 static bool sensor_opened = false;
 static bool first_open = true;
+static bool af_start = false;
+static bool capture_mode = false;
 /* Used for calculating the iCatch fw update progress */
 static int page_count = -1;
 static int total_page_count = -1;
@@ -191,6 +190,15 @@ enum {
 };
 
 int tegra_camera_mclk_on_off(int on);
+
+bool IsTF300(void){
+	if( tegra3_get_project_id() == TEGRA3_PROJECT_TF300T  ||
+		tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG ||
+		tegra3_get_project_id() == TEGRA3_PROJECT_TF300TL)
+		return 1;
+	else
+		return 0;
+}
 
 void i7002a_isp_on(int power_on)
 {
@@ -971,7 +979,7 @@ void writeUpdateProgresstoFile(int page_left, int total_page_num)
 
 	if(page_left % 64 == 1){
 		printk("%s: page:0x%x; percentage= %d;\n", __FUNCTION__, page_left, percentage);
-		fp_progress = filp_open("/data/isp_fw_update_progress", O_RDWR | O_CREAT, S_IRUGO | S_IWUGO);
+		fp_progress = filp_open("/data/isp_fw_update_progress", O_RDWR | O_CREAT | O_TRUNC, S_IRUGO | S_IWUGO);
 		if ( IS_ERR_OR_NULL(fp_progress) ){
 			filp_close(fp_progress, NULL);
 			printk("%s: open %s fail\n", __FUNCTION__, "/data/isp_fw_update_progress");
@@ -1376,7 +1384,7 @@ u32 I2C_SPIFlashRead_DMA(
 		I2C_SPIFlashPortWrite((u8)(addr));
 
 		if((pages%0x40) == 0x00) {
-			printk("RE:0x%x\n",pages);
+			printk("RE:0x%x addr:0x%x\n",pages, addr);
 		}
 		dmemBank = pages % 2;
 		I2CDataWrite(0x1081,dmemBank*0x20);
@@ -1441,7 +1449,13 @@ unsigned int get_fw_version_in_isp(void)
 		int j =0;
 		b_ok = true;
 
-		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+		if(dbg_i7002a_force_fw_size == 512) {
+			get_one_page_from_i7002a(2047, tmp_page);
+		} else if (dbg_i7002a_force_fw_size == 1024) {
+			get_one_page_from_i7002a(4095, tmp_page);
+		} else if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL) {
 			/* The fw veriosn is in the page with the index, 4095.*/
 			get_one_page_from_i7002a(4095, tmp_page);
 		}
@@ -1828,35 +1842,16 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_mode *mode)
 
 	if (mode->xres == 3264 && mode->yres == 2448) {
 		sensor_table = SENSOR_MODE_3264x2448;
-
-		if(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
-			if((force_capture_mode==0) ||
-				(force_capture_mode==1) ||
-				(force_capture_mode==4)) {
-				printk("%s: Force capture mode: %s.\n", __func__,
-					(force_capture_mode==0)?("Single"):((force_capture_mode==1)?("HDR"):("BurstCapture")));
-				sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//AE/AWB lock
-				sensor_write_reg(info->i2c_client, 0x710f, force_capture_mode);
-				sensor_write_reg(info->i2c_client, 0x7120, 0x01);//capture mode
-			} else if(g_Streaming_type == STREAMING_TYPE_HDR_STREAMING){
-				printk("%s: 8M HDR Capture.\n", __func__);
-				sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//AE/AWB lock
-				sensor_write_reg(info->i2c_client, 0x710f, 0x01);//HDR capture
-				sensor_write_reg(info->i2c_client, 0x7120, 0x01);//capture mode
-			} else {
-				printk("%s: 8M Preview Mode.\n", __func__);
-				sensor_write_reg(info->i2c_client, 0x7106, 0x01);//3264x2448
-				sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
-			}
-		} else {
-			if (factory_mode==2) {
-				sensor_write_reg(info->i2c_client, 0x7106, 0x01);//3264x2448
-				sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
-			}else{
-				sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//AE/AWB lock
-				sensor_write_reg(info->i2c_client, 0x710f, 0x00);//single
-				sensor_write_reg(info->i2c_client, 0x7120, 0x01);//capture mode
-			}
+		//sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
+		//sensor_write_reg(info->i2c_client, 0x7106, 0x01);
+		if (factory_mode==2) {
+			sensor_write_reg(info->i2c_client, 0x7106, 0x01);//preview mode
+			sensor_write_reg(info->i2c_client, 0x7120, 0x00);
+		}
+		else {
+			sensor_write_reg(info->i2c_client, 0x71EB, 0x01);//AE/AWB lock
+			sensor_write_reg(info->i2c_client, 0x710f, 0x00);//capture mode
+			sensor_write_reg(info->i2c_client, 0x7120, 0x01);
 		}
 		printk("%s: resolution supplied to set mode %d %d\n",
 			__func__, mode->xres, mode->yres);
@@ -1875,17 +1870,22 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_mode *mode)
 		}
 	}
 	else if (mode->xres == 2592 && mode->yres == 1944) {
+		capture_mode = true;
 		sensor_table = SENSOR_MODE_2592x1944;
 		printk("%s: resolution supplied to set mode %d %d\n",
 			 __func__, mode->xres, mode->yres);
-	}
-	else if (mode->xres == 1920 && mode->yres == 1080) {
-		sensor_table = SENSOR_MODE_1920x1080;
-		sensor_write_reg(info->i2c_client, 0x7106, 0x02);//1920x1080
-		sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
-		printk("%s: resolution supplied to set mode %d %d\n",
-			__func__, mode->xres, mode->yres);
-		for (i=0;i<200;i++) {
+		if(factory_mode == 2){
+			sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
+			sensor_write_reg(info->i2c_client, 0x7106, 0x0A);//2592x1944
+			sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
+		}
+		else{
+			sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
+			sensor_write_reg(info->i2c_client, 0x710F, 0x03);//Burst mode
+			sensor_write_reg(info->i2c_client, 0x7120, 0x03);//Non-ZSL capture mode
+		}
+		for (i=0;i<200;i++)
+		{
 			sensor_read_reg(info->i2c_client, 0x72f8, &testval);
 			printk("testval=0x%X, i=%d",testval,i);
 			if (testval & 0x04) {
@@ -1897,21 +1897,36 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_mode *mode)
 			printk("testval=0x%X, i=%d",testval,i);
 			msleep(iCatch7002a_init_delay);
 		}
-		if (first_open)
-			first_open=false;
-		msleep(iCatch7002a_preview_delay);
 	}
-	else if (mode->xres == 1280 && mode->yres == 960) {
-		sensor_table = SENSOR_MODE_1280x960;
-		printk("%s: 1.2M Preview Mode\n", __func__);
-		//sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
-		//sensor_write_reg(info->i2c_client, 0x7106, 0x00);
-		sensor_write_reg(info->i2c_client, 0x7106, 0x00);//1280x960
+	else if (mode->xres == 1920 && mode->yres == 1080) {
+		//Stop Burst mode
+		if(capture_mode && (tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+		    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)){
+		    capture_mode = false;
+		    sensor_write_reg(info->i2c_client, 0x7122, 0x01);
+		}
+		sensor_table = SENSOR_MODE_1920x1080;
+		if(tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+		    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)
+			sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
+		sensor_write_reg(info->i2c_client, 0x7106, 0x02);//1920x1080
 		sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
-		//sensor_write_reg(info->i2c_client, 0x7106, 0x00);//workaround for ov2720 output size, not affect IMX175
 		printk("%s: resolution supplied to set mode %d %d\n",
-		__func__, mode->xres, mode->yres);
-		if (!first_open) {
+			__func__, mode->xres, mode->yres);
+		if(first_open && (tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)){
+			for (i=0;i<200;i++) {
+				sensor_read_reg(info->i2c_client, 0x72c3, &testval);
+				printk("testval=0x%X, i=%d",testval,i);
+				if (testval & 0x01)
+					break;
+				msleep(iCatch7002a_init_long_delay);
+			}
+			sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
+			sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+			printk("Clear testval=0x%X, i=%d\n",testval,i);
+		}
+		else{
 			for (i=0;i<200;i++) {
 				sensor_read_reg(info->i2c_client, 0x72f8, &testval);
 				printk("testval=0x%X, i=%d",testval,i);
@@ -1925,14 +1940,66 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_mode *mode)
 				msleep(iCatch7002a_init_delay);
 			}
 		}
-		else
+	        if(first_open)
 			first_open=false;
+		msleep(iCatch7002a_preview_delay);
+	}
+	else if (mode->xres == 1280 && mode->yres == 960) {
+		//Stop Burst mode
+		if(capture_mode && (tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+		    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)){
+		    capture_mode = false;
+		    sensor_write_reg(info->i2c_client, 0x7122, 0x01);
+		}
+		printk("%s: 1.2M Preview Mode\n", __func__);
+		sensor_table = SENSOR_MODE_1280x960;
+		//sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
+		//sensor_write_reg(info->i2c_client, 0x7106, 0x00);
+		if(tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+		    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)
+			sensor_write_reg(info->i2c_client, 0x72f8, 0x04);		
+		sensor_write_reg(info->i2c_client, 0x7106, 0x00);//preview mode
+		sensor_write_reg(info->i2c_client, 0x7120, 0x00);
+		//sensor_write_reg(info->i2c_client, 0x7106, 0x00);//workaround for ov2720 output size, not affect IMX175
+		printk("%s: resolution supplied to set mode %d %d\n",
+		__func__, mode->xres, mode->yres);
+		if (!first_open || (tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)) {
+			for (i=0;i<200;i++) {
+				sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+				printk("testval=0x%X, i=%d",testval,i);
+				if (testval & 0x04) {
+					sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
+					sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+					printk("Clear testval=0x%X, i=%d\n",testval,i);
+					break;
+				}
+				printk("testval=0x%X, i=%d",testval,i);
+				msleep(iCatch7002a_init_delay);
+			}
+		}
+		else{
+			first_open=false;
+			if((tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+				tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)){
+				for (i=0;i<200;i++) {
+					sensor_read_reg(info->i2c_client, 0x72c3, &testval);
+					printk("testval=0x%X, i=%d",testval,i);
+					if (testval & 0x01)
+						break;
+					msleep(iCatch7002a_init_long_delay);
+				}
+				sensor_write_reg(info->i2c_client, 0x72f8, 0x04);
+				sensor_read_reg(info->i2c_client, 0x72f8, &testval);
+				printk("Clear testval=0x%X, i=%d\n",testval,i);
+			}
+		}
 		msleep(iCatch7002a_preview_delay);
 	}
 	else if (mode->xres == 1280 && mode->yres == 720) {
 		sensor_table = SENSOR_MODE_1280x720;
 		sensor_write_reg(info->i2c_client, 0x7120, 0x00);//preview mode
-		sensor_write_reg(info->i2c_client, 0x7106, 0x04);//1280x720
+		sensor_write_reg(info->i2c_client, 0x7106, 0x02);//1280x720
 		printk("%s: resolution supplied to set mode %d %d\n",
 			__func__, mode->xres, mode->yres);
 	}
@@ -1951,7 +2018,6 @@ static long sensor_ioctl(struct file *file,
 	struct sensor_info *info = file->private_data;
 	int err=0;
 
-	pr_info("yuv %s\n",__func__);
 	switch (cmd) {
 	case SENSOR_IOCTL_SET_MODE:
 	{
@@ -1975,42 +2041,60 @@ static long sensor_ioctl(struct file *file,
 			return -EFAULT;
 		}
 		printk("SET_CAMERA as 0x%X\n", is_front_camera);
-		msleep(100);
+		if(IsTF300())
+			msleep(100);
+		else
+			msleep(10);
 		//sensor_read_reg(info->i2c_client, 0x002c, &testval);
 		//printk("%s: test val is %d\n", __func__, testval);
 		if (is_calibration) {
 			sensor_write_reg(info->i2c_client, 0x1011, 0x01);//cpu reset
-			sensor_write_reg(info->i2c_client, 0x941C, 0x04);
-			sensor_write_reg(info->i2c_client, 0x9010, 0x01);
-			sensor_write_reg(info->i2c_client, 0x9010, 0x00);
+			if(IsTF300()){
+				sensor_write_reg(info->i2c_client, 0x941C, 0x04);
+				sensor_write_reg(info->i2c_client, 0x9010, 0x01);
+				sensor_write_reg(info->i2c_client, 0x9010, 0x00);
+			}
+			else{
+				sensor_write_reg(info->i2c_client, 0x001C, 0x08);
+				sensor_write_reg(info->i2c_client, 0x001C, 0x00);
+				sensor_write_reg(info->i2c_client, 0x1010, 0x02);
+				sensor_write_reg(info->i2c_client, 0x1010, 0x00);
+			}
 			sensor_write_reg(info->i2c_client, 0x1306, 0x02);//calibration
 			sensor_write_reg(info->i2c_client, 0x1011, 0x00);
-			msleep(100);
+			if(IsTF300())
+				msleep(100);
+			else
+				msleep(10);
 			//sensor_write_reg(info->i2c_client, 0x7188, 0x01);//let AF windows work
 			break;
 		}
-		if (is_front_camera) {
-			sensor_write_reg(info->i2c_client, 0x1011, 0x01);//cpu reset
+		sensor_write_reg(info->i2c_client, 0x1011, 0x01);//cpu reset
+		if(IsTF300()){
 			sensor_write_reg(info->i2c_client, 0x941C, 0x04);
 			sensor_write_reg(info->i2c_client, 0x9010, 0x01);
 			sensor_write_reg(info->i2c_client, 0x9010, 0x00);
-			sensor_write_reg(info->i2c_client, 0x1306, 0x01);//front camera
-			sensor_write_reg(info->i2c_client, 0x1011, 0x00);
-		} else {
-			sensor_write_reg(info->i2c_client, 0x1011, 0x01);//cpu reset
-			sensor_write_reg(info->i2c_client, 0x941C, 0x04);
-			sensor_write_reg(info->i2c_client, 0x9010, 0x01);
-			sensor_write_reg(info->i2c_client, 0x9010, 0x00);
-			sensor_write_reg(info->i2c_client, 0x1306, 0x00);//rear camera
-			sensor_write_reg(info->i2c_client, 0x1011, 0x00);
 		}
+		else{
+			sensor_write_reg(info->i2c_client, 0x001C, 0x08);
+			sensor_write_reg(info->i2c_client, 0x001C, 0x00);
+			sensor_write_reg(info->i2c_client, 0x1010, 0x02);
+			sensor_write_reg(info->i2c_client, 0x1010, 0x00);
+		}
+		if (is_front_camera)
+			sensor_write_reg(info->i2c_client, 0x1306, 0x01);//front camera
+		else
+			sensor_write_reg(info->i2c_client, 0x1306, 0x00);//rear camera
+		sensor_write_reg(info->i2c_client, 0x1011, 0x00);
 		msleep(100);
 		sensor_write_reg(info->i2c_client, 0x7188, 0x01);//let AF windows work
 		break;
 	}
 	case SENSOR_IOCTL_SET_COLOR_EFFECT:
 	{
-		if(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+		if( tegra3_get_project_id() == TEGRA3_PROJECT_TF500T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL) {
 			if (copy_from_user(&coloreffect,(const void __user *)arg,
 				sizeof(coloreffect))) {
 				return -EFAULT;
@@ -2210,7 +2294,7 @@ static long sensor_ioctl(struct file *file,
 			case AF_CMD_START:
 			{
 				u16 FW_Status = 1;
-
+				af_start = true;
 				pr_info("AF cmd start!\n");
 				/*
 				err = sensor_read_reg(info->i2c_client, 0x3029, &FW_Status);
@@ -2269,7 +2353,11 @@ static long sensor_ioctl(struct file *file,
 					msleep(10);
 				}
 				*/
-				err = sensor_write_reg(info->i2c_client, 0x714F, 0x00);//release focus
+				if(tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+					tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)
+					err = sensor_write_reg(info->i2c_client, 0x714F, 0x01);//af abort
+				else
+					err = sensor_write_reg(info->i2c_client, 0x714F, 0x00);//release focus
 				//err = sensor_write_reg(info->i2c_client, 0x710E, 0x00);//Seems default AE window size
 				touch_mode = TOUCH_STATUS_OFF;
 				if (err)
@@ -2304,6 +2392,11 @@ static long sensor_ioctl(struct file *file,
 			{
 				u16 AF_status;
 				u16 AF_result;
+				if(af_start && (tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+						tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)){
+					msleep(100);
+					af_start = false;
+				}
 				sensor_read_reg(info->i2c_client, 0x72A0, &AF_status);
 				if (AF_status) {
 					pr_info("AF searching... %d\n", AF_status);
@@ -2389,7 +2482,7 @@ static long sensor_ioctl(struct file *file,
 	{
 		int EV;
 		u16 tmp;
-		printk("SENSOR_CUSTOM_IOCTL_GET_EV\n");
+
 		/* [0x72b4] will return a number from 12 to 0.
 		 * It stands for "EV-2 ~ EV+2".
 		 */
@@ -2420,17 +2513,19 @@ static long sensor_ioctl(struct file *file,
 
 		return 0;
 	}
+	case SENSOR_CUSTOM_IOCTL_FETCH_EXIF:
+	{
+		printk("iCatch: FETCH EXIF.\n");
+		sensor_write_reg(info->i2c_client, 0x71EB, 0x01); // Get EXIF
+		return 0;
+	}
 	case SENSOR_CUSTOM_IOCTL_GET_ET:
 	{
-		printk("SENSOR_CUSTOM_IOCTL_GET_ET \n");
-
 		custom_et_value_package ET;
 		u16 et_numerator = 0;
 		u16 et_denominator_byte1 = 1;
 		u16 et_denominator_byte2 = 0;
 		u16 et_denominator_byte3 = 0;
-
-		sensor_write_reg(info->i2c_client, 0x71EB, 0x01); // Get EXIF
 
 		sensor_read_reg(info->i2c_client, 0x72b0, &et_numerator);
 		sensor_read_reg(info->i2c_client, 0x72b1, &et_denominator_byte1);
@@ -2443,17 +2538,10 @@ static long sensor_ioctl(struct file *file,
 		ET.exposure = et_numerator;
 		ET.vts = (et_denominator_byte3 << 16)|(et_denominator_byte2 << 8)|et_denominator_byte1;
 
-		if (err) {
-			printk("GET_ET: err= %d\n", err);
-			return err;
-		}
-
 		if (copy_to_user((const void __user *)arg, &ET, sizeof(ET)))
 		{
 			return -EFAULT;
 		}
-		if (err)
-			return err;
 
 		return 0;
 	}
@@ -2560,6 +2648,18 @@ static long sensor_ioctl(struct file *file,
 		}
 		break;
 	}
+	case SENSOR_CUSTOM_IOCTL_GET_CAF_STATE:
+	{
+		u16 caf_state;
+
+		sensor_read_reg(info->i2c_client, 0x72a0, &caf_state);
+		// printk("GET_CAF_STATE: [0x72a0]:0x%X;\n", caf_state);
+
+		if (copy_to_user((const void __user *)arg, &caf_state, sizeof(caf_state)))
+			return -EFAULT;
+
+		return 0;
+	}
 	case SENSOR_CUSTOM_IOCTL_SET_CONTINUOUS_AF:
 	{
 		u8 continuous_af;
@@ -2599,6 +2699,7 @@ static long sensor_ioctl(struct file *file,
 		else {
 			//AE window
 			err = sensor_write_reg(info->i2c_client, 0x7188, 0x01);//ROI on
+//			err = sensor_write_reg(info->i2c_client, 0x714E, 0x02);//the same with af window
 			err = sensor_write_reg(info->i2c_client, 0x7148, (ae_win.win_w)>>8);
 			err = sensor_write_reg(info->i2c_client, 0x7149, (ae_win.win_w)&0xff);
 			err = sensor_write_reg(info->i2c_client, 0x714A, (ae_win.win_x)>>8);
@@ -2615,7 +2716,9 @@ static long sensor_ioctl(struct file *file,
 	}
 	case SENSOR_CUSTOM_IOCTL_SET_WDR:
 	{
-		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL) {
 			u16 wdr_on;
 			u16 dwdr_control;
 			if (copy_from_user(&wdr_on,(const void __user *)arg,
@@ -2640,7 +2743,8 @@ static long sensor_ioctl(struct file *file,
 	}
 	case SENSOR_CUSTOM_IOCTL_SET_AURA:
 	{
-		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+		if (tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+		    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL) {
 			if (coloreffect == YUV_ColorEffect_Aura) {
 				u16 aura;
 				if (copy_from_user(&aura, (const void __user *)arg,
@@ -2654,21 +2758,6 @@ static long sensor_ioctl(struct file *file,
 				printk("SET_AURA: Coloereffect is not aura. No action.\n");
 		} else
 			printk("AURA is unsupported.\n");
-
-		break;
-	}
-	case SENSOR_CUSTOM_IOCTL_SET_STREAMING_TYPE:
-	{
-		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
-			if (copy_from_user(&g_Streaming_type,(const void __user *)arg,
-				sizeof(g_Streaming_type))) {
-				return -EFAULT;
-			}
-			g_Streaming_type = g_Streaming_type & 0xff;
-			printk("set STREAMING_TYPE as 0x%x\n", g_Streaming_type);
-
-		} else
-			printk("SET_STREAMING_TYPE is unsupported.\n");
 
 		break;
 	}
@@ -2809,6 +2898,7 @@ int iCatch7002a_sensor_release(struct inode *inode, struct file *file)
 		if (info->pdata && info->pdata->power_off && calibrating==0) {
 			info->pdata->power_off();
 			sensor_opened = false;
+			capture_mode = false;
 		}
 	} else
 		printk("%s No action. Power is already off.\n", __FUNCTION__);
@@ -2847,6 +2937,10 @@ static ssize_t i7002a_switch_name(struct switch_dev *sdev, char *buf)
 		return sprintf(buf, "TF300TG-%06X\n", version_num_in_isp);
 	else if (tegra3_get_project_id() == TEGRA3_PROJECT_TF300TL)
 		return sprintf(buf, "TF300TL-%06X\n", version_num_in_isp);
+	else if (tegra3_get_project_id() == TEGRA3_PROJECT_ME301T)
+		return sprintf(buf, "ME301T-%06X\n", version_num_in_isp);
+	else if (tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)
+		return sprintf(buf, "ME301TL-%06X\n", version_num_in_isp);
 	else if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)
 		return sprintf(buf, "TF500T-%06X\n", version_num_in_isp);
 	else
@@ -3027,6 +3121,8 @@ static int __init sensor_init(void)
 	if ((tegra3_get_project_id() == TEGRA3_PROJECT_TF300T) ||
 			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG) ||
 			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TL) ||
+   			(tegra3_get_project_id() == TEGRA3_PROJECT_ME301T)  ||
+			(tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL) ||
 			(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)) {
 		pr_info("i7002a %s\n",__func__);
 		return i2c_add_driver(&sensor_i2c_driver);
@@ -3039,6 +3135,8 @@ static void __exit sensor_exit(void)
 	if ((tegra3_get_project_id() == TEGRA3_PROJECT_TF300T) ||
 			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TG) ||
 			(tegra3_get_project_id() == TEGRA3_PROJECT_TF300TL) ||
+   			(tegra3_get_project_id() == TEGRA3_PROJECT_ME301T)  ||
+			(tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL) ||
 			(tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)) {
 		pr_info("i7002a %s\n",__func__);
 		i2c_del_driver(&sensor_i2c_driver);
@@ -3073,6 +3171,12 @@ static ssize_t i2c_get_open(struct inode *inode, struct file *file)
 }
 
 static ssize_t dbg_iCatch7002a_chip_power_open(struct inode *inode, struct file *file)
+{
+	file->private_data = inode->i_private;
+	return 0;
+}
+
+static ssize_t dbg_iCatch7002a_SPI_open(struct inode *inode, struct file *file)
 {
 	file->private_data = inode->i_private;
 	return 0;
@@ -3212,7 +3316,15 @@ static ssize_t dbg_i7002a_bin_dump_read(struct file *file, char __user *buf, siz
 
 	I2C_SPIFlashReadId();
 
-	if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+	if(dbg_i7002a_force_fw_size == 512) {
+		mybin = kmalloc(512*1024, GFP_KERNEL);
+		I2C_SPIFlashRead_DMA(0, 2048, mybin);
+	} else if(dbg_i7002a_force_fw_size == 1024) {
+		mybin = kmalloc(1024*1024, GFP_KERNEL);
+		I2C_SPIFlashRead_DMA(0, 4096, mybin);
+	} else if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T ||
+		tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+		tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL) {
 		mybin = kmalloc(1024*1024, GFP_KERNEL);
 		I2C_SPIFlashRead_DMA(0, 4096, mybin);
 	}
@@ -3224,7 +3336,7 @@ static ssize_t dbg_i7002a_bin_dump_read(struct file *file, char __user *buf, siz
 	i7002a_isp_on(0);
 
 	/* Dump to /data/bin_dump.bin */
-	fp_bin_dump = filp_open("/data/bin_dump.bin", O_RDWR | O_CREAT, S_IRUGO | S_IWUGO);
+	fp_bin_dump = filp_open("/data/bin_dump.bin", O_RDWR | O_CREAT | O_TRUNC, S_IRUGO | S_IWUGO);
 	if ( IS_ERR_OR_NULL(fp_bin_dump) ){
 		filp_close(fp_bin_dump, NULL);
 		len = snprintf(bp, dlen, "%s: open %s fail\n", __FUNCTION__, "/data/bin_dump.bin");
@@ -3235,7 +3347,13 @@ static ssize_t dbg_i7002a_bin_dump_read(struct file *file, char __user *buf, siz
 	offset = 0;
 
 	if (fp_bin_dump->f_op != NULL && fp_bin_dump->f_op->write != NULL){
-		if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T)
+		if(dbg_i7002a_force_fw_size == 512) {
+			fp_bin_dump->f_op->write(fp_bin_dump, mybin, 512*1024, &offset);
+		} else if(dbg_i7002a_force_fw_size == 1024) {
+			fp_bin_dump->f_op->write(fp_bin_dump, mybin, 1024*1024, &offset);
+		} else if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+			tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL)
 			fp_bin_dump->f_op->write(fp_bin_dump, mybin, 1024*1024, &offset);
 		else
 			fp_bin_dump->f_op->write(fp_bin_dump, mybin, 512*1024, &offset);
@@ -3324,7 +3442,15 @@ static ssize_t dbg_i7002a_fw_header_dump_read(struct file *file, char __user *bu
 	msleep(40);
 
 	/* dump overall header */
-	if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T) {
+	if(dbg_i7002a_force_fw_size == 512) {
+		get_one_page_from_i7002a(2047, overallpage);
+		len = snprintf(bp, dlen, "Overall: page[%d]:\n", 2047);
+	} else if(dbg_i7002a_force_fw_size == 1024) {
+		get_one_page_from_i7002a(4095, overallpage);
+		len = snprintf(bp, dlen, "Overall: page[%d]:\n", 4095);
+	} else if (tegra3_get_project_id() == TEGRA3_PROJECT_TF500T ||
+		tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+		tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL) {
 		get_one_page_from_i7002a(4095, overallpage);
 		len = snprintf(bp, dlen, "Overall: page[%d]:\n", 4095);
 	}
@@ -3682,12 +3808,23 @@ static ssize_t dbg_iCatch7002a_camera_status_read(struct file *file, char __user
 	sensor_write_reg(info->i2c_client, 0x9031, 0x04);
 	sensor_write_reg(info->i2c_client, 0x9034, 0xf2);
 	sensor_write_reg(info->i2c_client, 0x9035, 0x04);
-	sensor_write_reg(info->i2c_client, 0x9032, 0x00);
-	msleep(10);
-	sensor_write_reg(info->i2c_client, 0x9032, 0x20);
-	msleep(10);
-	sensor_write_reg(info->i2c_client, 0x9032, 0x30);
-	msleep(10);
+	if( tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+	    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL ){
+		sensor_write_reg(info->i2c_client, 0x9032, 0x10);
+		msleep(10);
+		sensor_write_reg(info->i2c_client, 0x9032, 0x00);
+		msleep(10);
+		sensor_write_reg(info->i2c_client, 0x9032, 0x20);
+		msleep(10);
+	}
+	else{
+		sensor_write_reg(info->i2c_client, 0x9032, 0x00);
+		msleep(10);
+		sensor_write_reg(info->i2c_client, 0x9032, 0x20);
+		msleep(10);
+		sensor_write_reg(info->i2c_client, 0x9032, 0x30);
+		msleep(10);
+    }
 	/*End - Power on sensor & enable clock */
 	sensor_write_reg(info->i2c_client, 0x9008, 0x00); /* Need to check with vincent */
 	sensor_write_reg(info->i2c_client, 0x9009, 0x00);
@@ -3696,10 +3833,21 @@ static ssize_t dbg_iCatch7002a_camera_status_read(struct file *file, char __user
 
 	/*Start - I2C Read*/
 	sensor_write_reg(info->i2c_client, 0x9238, 0x30); /* Sub address enable */
-	sensor_write_reg(info->i2c_client, 0x9240, 0x20); /* Slave address      */
+	if( tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+	    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL )
+		sensor_write_reg(info->i2c_client, 0x9240, 0x6C); /* Slave address      */
+	else
+		sensor_write_reg(info->i2c_client, 0x9240, 0x20); /* Slave address      */
 	sensor_write_reg(info->i2c_client, 0x9200, 0x03); /* Read mode          */
-	sensor_write_reg(info->i2c_client, 0x9210, 0x00); /* Register addr MSB  */
-	sensor_write_reg(info->i2c_client, 0x9212, 0x00); /* Register addr LSB  */
+	if( tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+	    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL ){
+		sensor_write_reg(info->i2c_client, 0x9210, 0x30); /* Register addr MSB  */
+		sensor_write_reg(info->i2c_client, 0x9212, 0x0A); /* Register addr LSB  */
+	}
+	else{
+		sensor_write_reg(info->i2c_client, 0x9210, 0x00); /* Register addr MSB  */
+		sensor_write_reg(info->i2c_client, 0x9212, 0x00); /* Register addr LSB  */
+	}
 	sensor_write_reg(info->i2c_client, 0x9204, 0x01); /* Trigger I2C read   */
 
 	msleep(10);
@@ -3707,8 +3855,15 @@ static ssize_t dbg_iCatch7002a_camera_status_read(struct file *file, char __user
 	// printk("0x%x\n", tmp);
 	chip_id = (tmp << 8) & 0xFF00;
 
-	sensor_write_reg(info->i2c_client, 0x9210, 0x00); /* Register addr MSB  */
-	sensor_write_reg(info->i2c_client, 0x9212, 0x01); /* Register addr LSB  */
+	if( tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+	    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL ){
+		sensor_write_reg(info->i2c_client, 0x9210, 0x30); /* Register addr MSB  */
+		sensor_write_reg(info->i2c_client, 0x9212, 0x0B); /* Register addr LSB  */
+	}
+    else{
+		sensor_write_reg(info->i2c_client, 0x9210, 0x00); /* Register addr MSB  */
+		sensor_write_reg(info->i2c_client, 0x9212, 0x01); /* Register addr LSB  */
+    }
 	sensor_write_reg(info->i2c_client, 0x9204, 0x01); /* Trigger I2C read   */
 
 	msleep(10);
@@ -3716,16 +3871,32 @@ static ssize_t dbg_iCatch7002a_camera_status_read(struct file *file, char __user
 	// printk("0x%x\n", tmp);
 	chip_id = chip_id | (tmp & 0xFF);
 
-	if (chip_id == SENSOR_ID_IMX175) {
-		len = snprintf(bp, dlen, "1\n");
-		tot += len; bp += len; dlen -= len;
-	} else {
+	if( tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+	    tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL ){
+		if (chip_id == SENSOR_ID_OV5650 || chip_id == SENSOR_ID_OV5651) {
+			len = snprintf(bp, dlen, "1\n");
+			tot += len; bp += len; dlen -= len;
+		} else {
 #if 0
-		len = snprintf(bp, dlen, "back chip_id= 0x%x\n", chip_id);
-		tot += len; bp += len; dlen -= len;
+			len = snprintf(bp, dlen, "back chip_id= 0x%x\n", chip_id);
+			tot += len; bp += len; dlen -= len;
 #endif
-		len = snprintf(bp, dlen, "0\n");
-		tot += len; bp += len; dlen -= len;
+			len = snprintf(bp, dlen, "0\n");
+			tot += len; bp += len; dlen -= len;
+		}
+	}
+	else{
+		if (chip_id == SENSOR_ID_IMX175) {
+			len = snprintf(bp, dlen, "1\n");
+			tot += len; bp += len; dlen -= len;
+		} else {
+#if 0
+			len = snprintf(bp, dlen, "back chip_id= 0x%x\n", chip_id);
+			tot += len; bp += len; dlen -= len;
+#endif
+			len = snprintf(bp, dlen, "0\n");
+			tot += len; bp += len; dlen -= len;
+		}
 	}
 
 	if (sensor_opened == false) {
@@ -3799,6 +3970,265 @@ static int dbg_iCatch7002a_chip_power_write(struct file *file, char __user *buf,
 	return len;	/* the end */
 }
 
+static int dbg_iCatch7002a_read_SPI_for_cal(u8 index)
+{
+    u8 *pTempBuf;
+    u32 spiId, spiType;
+    u32 spiSize, sectorSize = 0x1000, pageSize = 0x100;
+    u32 resStartAddr, resEndAddr;
+    u32 resCALIB_3ACALI_SIZE = 520, resCALIB_LSC_SIZE, resCALIB_LSCDQ_SIZE;
+    u32 resOffset = 0x5000, resSize;
+    u32 startPage, finalPage, pageCount;
+    int i;
+    struct file *fp = NULL;
+    mm_segment_t old_fs;
+    loff_t offset = 0;
+
+    printk("read_SPI");
+
+    sensor_write_reg(info->i2c_client, 0x1011,0x01); /* CPU SW RESET */
+    sensor_write_reg(info->i2c_client, 0x001C,0x08); /* reset FM register */
+    sensor_write_reg(info->i2c_client, 0x001C,0x00);
+    sensor_write_reg(info->i2c_client, 0x108C,0x00); /* DMA select*/
+    sensor_write_reg(info->i2c_client, 0x009A,0x00); /* make sure CPU normal operation*/
+
+    I2C_SPIInit();
+
+    spiId = I2C_SPIFlashReadId();
+    if( spiId == 0 )
+    {
+        printk("read id failed\n");
+        return -ENOMEM;;
+    }
+    /*printf("spiSize:0x%x\n",&spiSize);*/
+    spiType = BB_SerialFlashTypeCheck(spiId, &spiSize);
+
+    if(tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+       tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL ){
+        resCALIB_LSC_SIZE = 1520;
+        resCALIB_LSCDQ_SIZE = 5626;
+    }
+    else{
+        resCALIB_LSC_SIZE = 2292;
+        resCALIB_LSCDQ_SIZE = 8521;
+    }
+
+    if (index ==1){
+        resStartAddr = spiSize - resOffset;
+        resEndAddr = resStartAddr + resCALIB_3ACALI_SIZE;
+        resSize = resCALIB_3ACALI_SIZE;
+    }
+    else if (index==2){
+        resCALIB_3ACALI_SIZE += 8;
+        resStartAddr = spiSize - resOffset + resCALIB_3ACALI_SIZE;
+        resEndAddr = resStartAddr + resCALIB_LSC_SIZE;
+        resSize = resCALIB_LSC_SIZE;
+    }
+    else if (index==3){
+        resCALIB_3ACALI_SIZE += 8;
+        resCALIB_LSC_SIZE = ((resCALIB_LSC_SIZE+15)>>4)<<4;
+        resStartAddr = spiSize -resOffset + resCALIB_3ACALI_SIZE + resCALIB_LSC_SIZE;
+        resEndAddr = resStartAddr + resCALIB_LSCDQ_SIZE;
+        resSize = resCALIB_LSCDQ_SIZE;;
+    }
+
+    printk("read_SPI resStartAddr:0x%x resEndAddr:0x%x resSize:0x%x\n", resStartAddr, resEndAddr, resSize);
+
+    startPage = resStartAddr/pageSize;
+    finalPage = resEndAddr/pageSize+1;
+    pageCount = finalPage - startPage;
+
+    pTempBuf = kmalloc(pageCount * pageSize , GFP_KERNEL);
+    I2C_SPIFlashRead_DMA(startPage, pageCount, pTempBuf);
+
+    /* Dump to /data/SPI_XXX.txt */
+    if (index ==1)
+        fp = filp_open("/data/SPI_3ACALI.txt", O_RDWR | O_CREAT | O_TRUNC, S_IRUGO | S_IWUGO);
+    else if (index==2)
+        fp = filp_open("/data/SPI_LSC.txt", O_RDWR | O_CREAT | O_TRUNC, S_IRUGO | S_IWUGO);
+    else if (index==3)
+        fp = filp_open("/data/SPI_LSC_DQ.txt", O_RDWR | O_CREAT | O_TRUNC, S_IRUGO | S_IWUGO);
+
+    if ( IS_ERR_OR_NULL(fp) )
+        filp_close(fp, NULL);
+
+    old_fs = get_fs();
+    set_fs(KERNEL_DS);
+    offset = 0;
+
+    if (fp->f_op != NULL && fp->f_op->write != NULL)
+        fp->f_op->write(fp, pTempBuf + (resStartAddr % pageSize), resSize, &offset);
+    else
+        printk("%s: data/SPI_XXX.txt: f_op might be null\n", __FUNCTION__);
+
+    set_fs(old_fs);
+    filp_close(fp, NULL);
+    kfree(pTempBuf);
+
+    printk("%s: Dump Complete.\n", __FUNCTION__);
+
+    return 0;
+}
+
+static int dbg_iCatch7002a_write_SPI_for_cal(u8 index)
+{
+    u8 *pTempBuf, *pBuf;
+    u32 file_size, residue;
+    u32 resStartAddr, resEndAddr;
+    u32 resCALIB_3ACALI_SIZE = 520, resCALIB_LSC_SIZE, resCALIB_LSCDQ_SIZE;
+    u32 resOffset = 0x5000;
+    u32 spiId, spiType;
+    u32 spiSize, sectorSize = 0x1000, pageSize = 0x100;
+    u32 startSector, finalSector, sectorCount;
+    mm_segment_t old_fs;
+    struct file *fp = NULL;
+    struct inode *inode;
+    int i;
+
+    pr_info("write_SPI");
+
+    sensor_write_reg(info->i2c_client, 0x1011,0x01); /* CPU SW RESET */
+    sensor_write_reg(info->i2c_client, 0x001C,0x08); /* reset FM register */
+    sensor_write_reg(info->i2c_client, 0x001C,0x00);
+    sensor_write_reg(info->i2c_client, 0x108C,0x00); /* DMA select*/
+    sensor_write_reg(info->i2c_client, 0x009A,0x00); /* make sure CPU normal operation*/
+
+    I2C_SPIInit();
+
+    spiId = I2C_SPIFlashReadId();
+    if( spiId == 0 )
+    {
+        printk("read id failed\n");
+        return -ENOMEM;;
+    }
+    /*printf("spiSize:0x%x\n",&spiSize);*/
+    spiType = BB_SerialFlashTypeCheck(spiId, &spiSize);
+
+    if(tegra3_get_project_id() == TEGRA3_PROJECT_ME301T ||
+       tegra3_get_project_id() == TEGRA3_PROJECT_ME301TL ){
+        resCALIB_LSC_SIZE = 1520;
+        resCALIB_LSCDQ_SIZE = 5626;
+    }
+    else{
+        resCALIB_LSC_SIZE = 2292;
+        resCALIB_LSCDQ_SIZE = 8521;
+    }
+
+    if (index==1) {
+        fp = filp_open("/data/3ACALI.BIN", O_RDONLY, 0);
+        resStartAddr = spiSize - resOffset;
+        resEndAddr = resStartAddr + resCALIB_3ACALI_SIZE;
+    }
+    if (index==2) {
+        fp = filp_open("/data/LSC.BIN", O_RDONLY, 0);
+        resCALIB_3ACALI_SIZE += 8;
+        resStartAddr = spiSize - resOffset + resCALIB_3ACALI_SIZE;
+        resEndAddr = resStartAddr + resCALIB_LSC_SIZE;
+    }
+    if (index==3) {
+        fp = filp_open("/data/LSC_DQ.BIN", O_RDONLY, 0);
+        resCALIB_3ACALI_SIZE += 8;
+        resCALIB_LSC_SIZE = ((resCALIB_LSC_SIZE+15)>>4)<<4;
+        resStartAddr = spiSize -resOffset + resCALIB_3ACALI_SIZE + resCALIB_LSC_SIZE;
+        resEndAddr = resStartAddr + resCALIB_LSCDQ_SIZE;
+    }
+
+    if ( !IS_ERR_OR_NULL(fp) ){
+        pr_info("filp_open success fp:%p\n", fp);
+        inode = fp->f_dentry->d_inode;
+        file_size = inode->i_size;
+        pTempBuf = kmalloc(file_size, GFP_KERNEL);
+        old_fs = get_fs();
+        set_fs(KERNEL_DS);
+        if(fp->f_op != NULL && fp->f_op->read != NULL){
+            int byte_count= 0;
+            byte_count = fp->f_op->read(fp, pTempBuf, file_size, &fp->f_pos);
+
+            if (byte_count <= 0) {
+                printk("iCatch: EOF or error. last byte_count= %d;\n", byte_count);
+                kfree(pTempBuf);
+                return;
+            } else
+                printk("iCatch: BIN file size= %d bytes\n", file_size);
+        }
+        set_fs(old_fs);
+        filp_close(fp, NULL);
+    }
+    else if(PTR_ERR(fp) == -ENOENT){
+        pr_err("file not found error\n");
+        return -ENOMEM;
+    }
+    else{
+        pr_err("file open error\n");
+        return -ENOMEM;
+    }
+
+    startSector = (resStartAddr/sectorSize)*sectorSize;
+    finalSector = (resEndAddr/sectorSize)*sectorSize;
+    sectorCount = ((finalSector - startSector)/sectorSize) + 1;
+    residue = resStartAddr - startSector;
+
+    printk("start:0x%x final:0x%x Count:0x%x residue:0x%x file_size0X%x\n", startSector, finalSector, sectorCount, residue, file_size);
+
+    pBuf = kmalloc(sectorCount * sectorSize, GFP_KERNEL);
+
+    I2C_SPIFlashRead_DMA(startSector/pageSize, (sectorCount*sectorSize)/pageSize, pBuf);
+
+    memcpy((pBuf+residue), pTempBuf, file_size);
+
+    if(spiType == 2)
+    {
+        for(i = 0; i < sectorCount; i++)
+        {
+            I2C_SPISectorErase((startSector+(i*sectorSize)),0);
+        }
+    }
+    else if(spiType == 1 || spiType == 3)
+    {
+        for(i = 0; i < sectorCount; i++)
+        {
+            I2C_SPISectorErase((startSector+(i*sectorSize)),1);
+        }
+    }
+    msleep(100);
+
+    I2C_SPIFlashWrite_DMA(startSector/pageSize, (sectorCount*sectorSize)/pageSize, pBuf);
+    kfree(pTempBuf);
+    kfree(pBuf);
+
+    return 0;
+}
+static int dbg_iCatch7002a_read_write_SPI_for_cal(struct file *file, char __user *buf, size_t count,
+				loff_t *ppos)
+{
+    char *bp = debugTxtBuf;
+    int len, rw, index;
+
+    if (*ppos)
+        return 0;    /* the end */
+
+//+ parsing......
+    len=( count > DBG_TXT_BUF_SIZE-1 ) ? ( DBG_TXT_BUF_SIZE-1 ) : (count);
+    if ( copy_from_user( debugTxtBuf, buf, len ) )
+        return -EFAULT;
+
+    debugTxtBuf[len] = 0; //add string end
+
+    sscanf(debugTxtBuf, "%d %d", &rw, &index);
+
+    pr_info("command is rw=%d cmd=%d\n", rw, index);
+
+    *ppos = len;
+
+    if(rw){
+        dbg_iCatch7002a_write_SPI_for_cal(index);
+    }
+    else{
+        dbg_iCatch7002a_read_SPI_for_cal(index);
+    }
+    return len;	/* the end */
+}
+
 static const struct file_operations dbg_i7002a_fw_in_isp_fops = {
 	.open		= dbg_i7002a_fw_in_isp_open,
 	.read		= dbg_i7002a_fw_in_isp_read,
@@ -3857,7 +4287,14 @@ static const struct file_operations iCatch7002a_power_fops = {
 	//.llseek		= seq_lseek,
 	//.release	= single_release,
 	.write = dbg_iCatch7002a_chip_power_write,
-};static int __init tegra_i2c_debuginit(void)
+};
+
+static const struct file_operations iCatch7002a_read_write_spi_for_cal_fops = {
+	.open		= dbg_iCatch7002a_SPI_open,
+	.write = dbg_iCatch7002a_read_write_SPI_for_cal,
+};
+
+static int __init tegra_i2c_debuginit(void)
 {
 	struct dentry *dent = debugfs_create_dir("i7002a", NULL);
 
@@ -3884,8 +4321,7 @@ static const struct file_operations iCatch7002a_power_fops = {
 	(void) debugfs_create_file("camera_status", S_IRUGO, dent, NULL, &dbg_iCatch7002a_camera_status_fops);
 	(void) debugfs_create_file("vga_status", S_IRUGO, dent, NULL, &dbg_iCatch7002a_vga_status_fops);
 	(void) debugfs_create_file("iCatch_chip_power", S_IRUGO | S_IWUSR, dent, NULL, &iCatch7002a_power_fops);
-
-	debugfs_create_u32("capture_mode",S_IRUGO | S_IWUSR, dent, &force_capture_mode);
+	(void) debugfs_create_file("iCatch_rw_spi_for_cal", S_IRUGO | S_IWUSR, dent, NULL, &iCatch7002a_read_write_spi_for_cal_fops);
 
 #ifdef ICATCH7002A_DELAY_TEST
 	if (debugfs_create_u32("iCatch7002a_delay", S_IRUGO | S_IWUSR, dent, &iCatch7002a_init_delay)
@@ -3922,6 +4358,7 @@ static const struct file_operations iCatch7002a_power_fops = {
 	}
 #endif
 	debugfs_create_u32("page_index",S_IRUGO | S_IWUSR, dent, &dbg_i7002a_page_index);
+	debugfs_create_u32("force_fw_size",S_IRUGO | S_IWUSR, dent, &dbg_i7002a_force_fw_size);
 #ifdef CAM_TWO_MODE
 	debugfs_create_u32("div",S_IRUGO | S_IWUSR, dent, &g_div);
 	return 0;
@@ -3930,4 +4367,5 @@ static const struct file_operations iCatch7002a_power_fops = {
 
 late_initcall(tegra_i2c_debuginit);
 #endif
+
 
