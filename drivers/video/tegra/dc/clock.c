@@ -25,6 +25,9 @@
 
 #include "dc_reg.h"
 #include "dc_priv.h"
+#include <mach/board-cardhu-misc.h>
+
+extern int cn_vf_sku;
 
 unsigned long tegra_dc_pclk_round_rate(struct tegra_dc *dc, int pclk)
 {
@@ -85,8 +88,13 @@ void tegra_dc_setup_clk(struct tegra_dc *dc, struct clk *clk)
 			/* Assuming either pll_d or pll_d2 is used */
 			rate = dc->mode.pclk * 2;
 
-			if (rate != clk_get_rate(base_clk))
-				clk_set_rate(base_clk, rate);
+			// to avoid the ASUS booting logo trembles a little when going from bootloader to kernel
+			// in the condition below, no need to set rate again, the rate is already 83.9MHz (set in bootloader)
+			if ( tegra3_get_project_id() != TEGRA3_PROJECT_TF300TG || !cn_vf_sku)
+			{
+				if (rate != clk_get_rate(base_clk))
+					clk_set_rate(base_clk, rate);
+			}
 		}
 	}
 

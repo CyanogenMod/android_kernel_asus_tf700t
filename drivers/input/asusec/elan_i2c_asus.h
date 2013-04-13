@@ -8,13 +8,13 @@
 #define ELAN_INFO(format, arg...)	\
 	printk(KERN_INFO "elan_i2c_asus: [%s] " format , __FUNCTION__ , ## arg)
 #else
-#define ELAN_INFO(format, arg...)	 
+#define ELAN_INFO(format, arg...)
 #endif
 
 
 #define ELAN_ERR(format, arg...)	\
 	printk(KERN_ERR "elan_i2c_asus: [%s] " format , __FUNCTION__ , ## arg)
-	
+
 #define CONVERSION_TIME_MS		50
 
 #define ELAN_RETRY_COUNT		3
@@ -138,7 +138,3 @@ int elantech_detect(struct asusdec_chip *ec_chip);
 int elantech_init(struct asusdec_chip *ec_chip);
 void elantech_report_absolute_to_related(struct asusdec_chip *ec_chip, int *Null_data_times);
 #endif
-
-
-
-

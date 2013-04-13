@@ -189,6 +189,7 @@ irqreturn_t ril_ipc_sus_req_irq(int irq, void *dev_id)
 irqreturn_t ril_mod_hang_irq(int irq, void *dev_id)
 {
 	int value = gpio_get_value(MOD_HANG);
+
 	if (value) {
 		RIL_INFO("Modem hang!\n");
 		queue_work(workqueue, &hang_work);

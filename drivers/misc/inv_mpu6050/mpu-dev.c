@@ -56,9 +56,9 @@
 
 #include "../../../../arch/arm/mach-tegra/board-cardhu.h"
 #include "../../../../arch/arm/mach-tegra/gpio-names.h"
+#include <mach/board-cardhu-misc.h>
 
 #include "accel/mpu6050.h"
-//extern unsigned int factory_mode;
 extern bool mpu6050_flagLoadConfig;
 
 /* Platform data for the MPU */
@@ -136,71 +136,27 @@ static ssize_t mpu6050_read_accel_raw(struct device *dev, struct device_attribut
 {	struct i2c_client *client = to_i2c_client(dev);
 	struct mpu6050_private_data *mpu = i2c_get_clientdata(client);
 	struct mldl_cfg *mldl_cfg = &mpu->mldl_cfg;
-	struct ext_slave_platform_data *slave_pdata;
-	struct ext_slave_descr *slave_descr;
 	unsigned char data[6];
-	int X = 0, Y = 0, Z = 0;
-	int res = 0;
+	int out[3] = {0};
+	int ii, res = 0;
 
 	if(mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL] ){
-		/*res = inv_serial_read(client->adapter, mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->address,
-				0x0F, 1, data);
-		printk("KXTF9 WHO AM I: %d\n",data[0]);
-
-		res = inv_serial_read(client->adapter, mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->address,
-				0x1B, 1, data);
-		printk("KXTF9 CTRL_REG1: 0x%02lx\n",data[0]);
-		res = inv_serial_read(client->adapter, mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->address,
-				0x1E, 1, data);
-		printk("KXTF9 INT_CTRL_REG1: 0x%02lx\n",data[0]);
-		if ((data[0] & 0x80 ) == 0)
-			{
-				printk("KXTF9 is standing by, change to OP \n");
-				data[0] = 0xE0;
-				inv_serial_single_write(client->adapter, mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->address,0x1B, data[0]);
-			}*/
 
 		res = inv_mpu6050_serial_read(client->adapter, mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->address,
 				0x3B, 6, data);
-	/*	slave_descr = mpu6050_get_slave_descr;
-		slave_pdata = kzalloc(sizeof(*slave_pdata), GFP_KERNEL);
-		/*if (!slave_pdata) {
-			res = -ENOMEM;
-			goto out_slave_pdata_kzalloc_failed;
-		}*/
-/*		slave_pdata->bus = EXT_SLAVE_BUS_PRIMARY;
 
-		int ii;
-		for (ii = 0; ii < 9; ii++)
-			slave_pdata->orientation[ii] = mldl_cfg->pdata->orientation[ii];
-		
-		res = slave_descr->read(client->adapter,
-					slave_descr,
-					slave_pdata, data);*/
+		printk("mpu6050 accel raw data 1~6: %d, %d, %d, %d, %d, %d\n",
+				data[0], data[1], data[2], data[3], data[4], data[5]);
 
-		printk("mpu6050 accel raw data 1~6: %d, %d, %d, %d, %d, %d\n",data[0],data[1],data[2],data[3],data[4],data[5]);
+		for(ii = 0; ii < 3; ii++) {
+			out[ii] = ((data[2*ii] << 8) | data[2*ii+1]);
 
-		if(res)
-			printk("%s: Read accel data register fail\n", __FUNCTION__);
-		else{
-				X = ((data[0] << 4) | (data[1] >> 4));
-				Y = ((data[2] << 4) | (data[3] >> 4));
-				Z = ((data[4] << 4) | (data[5] >> 4));
-
-				if (X & 0x800)
-					X |= 0xFFFFF000;
-				if (Y & 0x800)
-					Y |= 0xFFFFF000;
-				if (Z & 0x800)
-					Z |= 0xFFFFF000;
-
-				X = X*(-1);
-				Y = Y*(1);
-				Z = Z*(-1);
+			if(out[ii] & 0x8000)
+				out[ii] |= 0xFFFF0000;
 		}
 	}
 
-	return sprintf(buf, "%d %d %d\n", X, Y, Z);
+	return sprintf(buf, "%d %d %d\n", out[0], out[1], out[2]);
 }
 
 static ssize_t mpu6050_read_compass_raw(struct device *dev, struct device_attribute *devattr, char *buf)
@@ -234,6 +190,44 @@ static ssize_t mpu6050_read_compass_raw(struct device *dev, struct device_attrib
 	}
 }
 
+struct orient_def {
+	__s8 orient[9];
+	u32 projectID;
+};
+
+static ssize_t mpu6050_accel_orientation_definition
+		(struct device *dev, struct device_attribute *devattr, char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct mpu6050_private_data *mpu = i2c_get_clientdata(client);
+	struct mldl_cfg *mldl_cfg = &mpu->mldl_cfg;
+	u32 project_info = -1;
+
+	project_info = tegra3_get_project_id();
+	if (project_info == TEGRA3_PROJECT_TF500T) {
+		struct orient_def TF500T_orient = {TF500T_GYRO_ORIENTATION, project_info};
+
+		return sprintf(buf, "%d %d %d %d %d %d %d %d %d %d\n",
+			TF500T_orient.orient[0], TF500T_orient.orient[1], TF500T_orient.orient[2],
+			TF500T_orient.orient[3], TF500T_orient.orient[4], TF500T_orient.orient[5],
+			TF500T_orient.orient[6], TF500T_orient.orient[7], TF500T_orient.orient[8],
+			TF500T_orient.projectID);
+	}
+	else if(project_info == TEGRA3_PROJECT_ME301T || project_info == TEGRA3_PROJECT_ME301TL){
+		struct orient_def ME301T_orient = {ME301T_GYRO_ORIENTATION, project_info};
+
+		return sprintf(buf, "%d %d %d %d %d %d %d %d %d %d\n",
+			ME301T_orient.orient[0], ME301T_orient.orient[1], ME301T_orient.orient[2],
+			ME301T_orient.orient[3], ME301T_orient.orient[4], ME301T_orient.orient[5],
+			ME301T_orient.orient[6], ME301T_orient.orient[7], ME301T_orient.orient[8],
+			ME301T_orient.projectID);
+	}
+	else {
+		return sprintf(buf, "Read accel_orientation_definition FAIL!\n");
+	}
+}
+
+DEVICE_ATTR(6050_accel_orien, S_IRUGO, mpu6050_accel_orientation_definition, NULL);
 DEVICE_ATTR(6050_compass_raw, S_IRUGO, mpu6050_read_compass_raw, NULL);
 DEVICE_ATTR(6050_accel_raw, S_IRUGO, mpu6050_read_accel_raw, NULL);
 DEVICE_ATTR(6050_compass_status, S_IRUGO, mpu6050_read_compass_status, NULL);
@@ -249,6 +243,7 @@ static struct attribute *mpu_6050_attr[] = {
 	&dev_attr_6050_compass_status.attr,
 	&dev_attr_6050_accel_raw.attr,
 	&dev_attr_6050_compass_raw.attr,
+	&dev_attr_6050_accel_orien.attr,
 	&dev_attr_6050_enLoadMagConfig,
 	&dev_attr_6050_enLoadAccelConfig,
 	&dev_attr_mpu6050_version.attr,
@@ -257,6 +252,8 @@ static struct attribute *mpu_6050_attr[] = {
 
 static struct attribute *mpu_6050_attr_user[] = {
 	&dev_attr_mpu6050_version.attr,
+	&dev_attr_6050_accel_raw.attr,
+	&dev_attr_6050_compass_raw.attr,
 	NULL
 };
 
@@ -1343,7 +1340,9 @@ int mpu6050_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 
 	mpu->mpu_ver = "6050";
 	// MPU-IRQ assignment 
-	tegra_gpio_enable(MPU_GYRO_IRQ_GPIO);
+
+    // nv hided this
+	// tegra_gpio_enable(MPU_GYRO_IRQ_GPIO);
 	res = gpio_request(MPU_GYRO_IRQ_GPIO, MPU6050_GYRO_NAME);
 	if (res < 0) {
 		pr_err("%s: gpio_request failed %d\n", __func__, res);
@@ -1399,10 +1398,12 @@ int mpu6050_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 			goto out_slave_pdata_kzalloc_failed;
 		}
 	}
-//	if (factory_mode)
+
+#ifdef CONFIG_DEBUG_ASUS
 		mpu->attrs.attrs = mpu_6050_attr;
-//	else
-//		mpu->attrs.attrs = mpu_6050_attr_user;
+#else
+		mpu->attrs.attrs = mpu_6050_attr_user;
+#endif
 	
 	res = sysfs_create_group(&client->dev.kobj, &mpu->attrs);
 	if (res) {

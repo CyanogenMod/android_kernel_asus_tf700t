@@ -105,7 +105,7 @@ static int last_report_lux = -1;
  */
 static void control_als_cam_2v85(int enable){
 	if( tegra3_get_project_id() == TEGRA3_PROJECT_TF201 ){
-		tegra_gpio_enable(ALS_CAM_POWER_2V85_EN_GPIO);
+//		tegra_gpio_enable(ALS_CAM_POWER_2V85_EN_GPIO);
 		int ret=0;
 		ret = gpio_request(ALS_CAM_POWER_2V85_EN_GPIO, "gpio_pr7");
 		if (ret < 0){

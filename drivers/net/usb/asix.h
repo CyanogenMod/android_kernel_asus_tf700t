@@ -1,7 +1,6 @@
 #ifndef	__LINUX_USBNET_ASIX_H
 #define	__LINUX_USBNET_ASIX_H
 
-#include <linux/version.h>
 /*
  * Turn on this flag if the implementation of your USB host controller
  * cannot handle non-double word aligned buffer.
@@ -424,6 +423,7 @@ enum watchdog_state {
 	CHK_CABLE_STATUS,		/* Routine C */
 	WAIT_AUTONEG_COMPLETE,
 	AX_SET_RX_CFG,
+	AX_CHK_AUTODETACH,
 };
 
 struct ax88772b_data {
