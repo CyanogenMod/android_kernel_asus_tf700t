@@ -60,7 +60,8 @@ struct sensor_info {
 struct switch_dev   fjm6mo_sdev;
 static struct sensor_info *info;
 
-extern unsigned int factory_mode;
+//extern unsigned int factory_mode;
+static unsigned int factory_mode=0;
 
 static bool update_mode = false;
 static bool capture_mode = false;
@@ -95,8 +96,8 @@ static u8 fw_chip_erase_pin3[16] = {
 };
 
 int tegra_camera_mclk_on_off(int on);
-int yuv_sensor_power_on_reset_pin();
-int yuv_sensor_power_off_reset_pin();
+int yuv_sensor_power_on_reset_pin(void);
+int yuv_sensor_power_off_reset_pin(void);
 static int sensor_change_status(E_M6MO_Status status);
 
 static int fjm6mo_write_memory(struct i2c_client *client, u8* send_buf, u32 byte_size, u32 addr, u32 write_size)
@@ -1536,6 +1537,21 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
                 case YUV_ColorEffect_WaterColor:
                     err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x0B, 0x03);
                     break;
+                case YUV_ColorEffect_Red:
+                    err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x0B, 0x01);
+                    err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x09, 0x00);
+                    err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x0A, 0x6B);
+                    break;
+                case YUV_ColorEffect_Blue:
+                    err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x0B, 0x01);
+                    err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x09, 0x40);
+                    err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x0A, 0x00);
+                    break;
+                case YUV_ColorEffect_Yellow:
+                    err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x0B, 0x01);
+                    err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x09, 0x80);
+                    err = fjm6mo_write_register(info->i2c_client, 1, 0x02, 0x0A, 0x00);
+                    break;
                 default:
                     break;
             }
@@ -2232,9 +2248,9 @@ static struct miscdevice sensor_device = {
 static ssize_t fjm6mo_switch_name(struct switch_dev *sdev, char *buf)
 {
     if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
-        return sprintf(buf, "TF700T-0x%X\n", version_num);
+        return sprintf(buf, "TF700T-%06X\n", version_num);
     else
-        return sprintf(buf, "TF201-0x%X\n", version_num);
+        return sprintf(buf, "TF201-%06X\n", version_num);
 }
 
 static ssize_t fjm6mo_switch_state(struct switch_dev *sdev, char *buf)

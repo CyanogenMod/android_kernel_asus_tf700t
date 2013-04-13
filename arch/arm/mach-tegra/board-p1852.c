@@ -1,6 +1,4 @@
 /*
- * arch/arm/mach-tegra/board-p1852.c
- *
  * Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -14,6 +12,8 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * arch/arm/mach-tegra/board-p1852.c
  *
  */
 
@@ -52,7 +52,6 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <mach/usb_phy.h>
-#include <mach/tegra_fiq_debugger.h>
 #include <sound/wm8903.h>
 #include <mach/tsensor.h>
 #include "board.h"
@@ -457,9 +456,6 @@ static __initdata struct tegra_clk_init_table spi_clk_init_table[] = {
 
 static int __init p1852_touch_init(void)
 {
-	tegra_gpio_enable(TOUCH_GPIO_IRQ_ATMEL_T9);
-	tegra_gpio_enable(TOUCH_GPIO_RST_ATMEL_T9);
-
 	gpio_request(TOUCH_GPIO_IRQ_ATMEL_T9, "atmel-irq");
 	gpio_direction_input(TOUCH_GPIO_IRQ_ATMEL_T9);
 
@@ -609,6 +605,10 @@ static struct tegra_nor_platform_data p1852_nor_data = {
 		.width = 2,
 	},
 	.chip_parms = {
+		.MuxMode = NorMuxMode_ADNonMux,
+		.ReadMode = NorReadMode_Page,
+		.PageLength = NorPageLength_8Word,
+		.ReadyActive = NorReadyActive_WithData,
 		/* FIXME: Need to use characterized value */
 		.timing_default = {
 			.timing0 = 0x30300263,
@@ -632,6 +632,7 @@ static void __init tegra_p1852_init(void)
 {
 	tegra_init_board_info();
 	tegra_clk_init_from_table(p1852_clk_init_table);
+	tegra_soc_device_init("p1852");
 	p1852_pinmux_init();
 	p1852_i2c_init();
 	p1852_i2s_audio_init();
@@ -648,7 +649,6 @@ static void __init tegra_p1852_init(void)
 	p1852_panel_init();
 	p1852_nor_init();
 	p1852_pcie_init();
-	tegra_serial_debug_init(TEGRA_UARTD_BASE, INT_WDT_CPU, NULL, -1, -1);
 }
 
 static void __init tegra_p1852_reserve(void)

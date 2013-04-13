@@ -323,7 +323,7 @@ static struct switch_dev tegra_rt5640_headset_switch = {
 };
 
 static int tegra_rt5640_jack_notifier(struct notifier_block *self,
-			      unsigned long action, void *dev)
+				  unsigned long action, void *dev)
 {
 	struct snd_soc_jack *jack = dev;
 	struct snd_soc_codec *codec = jack->codec;
@@ -331,7 +331,7 @@ static int tegra_rt5640_jack_notifier(struct notifier_block *self,
 	struct tegra_rt5640 *machine = snd_soc_card_get_drvdata(card);
 	struct tegra_asoc_platform_data *pdata = machine->pdata;
 	enum headset_state state = BIT_NO_HEADSET;
-	unsigned char status_jack;
+	unsigned char status_jack = 0;
 #if 0
 	if (jack == &tegra_rt5640_hp_jack) {
 		if (action) {
@@ -340,13 +340,13 @@ static int tegra_rt5640_jack_notifier(struct notifier_block *self,
 			if (!strncmp(machine->pdata->codec_name, "rt5639", 6))
 				status_jack = rt5639_headset_detect(codec, 1);
 			else if (!strncmp(machine->pdata->codec_name, "rt5640",
-									    6))
+										6))
 				status_jack = rt5640_headset_detect(codec, 1);
 
 			machine->jack_status &= ~SND_JACK_HEADPHONE;
 			machine->jack_status &= ~SND_JACK_MICROPHONE;
 			if (status_jack == RT5639_HEADPHO_DET ||
-			    status_jack == RT5640_HEADPHO_DET)
+				status_jack == RT5640_HEADPHO_DET)
 					machine->jack_status |=
 							SND_JACK_HEADPHONE;
 			else if (status_jack == RT5639_HEADSET_DET ||
@@ -362,7 +362,7 @@ static int tegra_rt5640_jack_notifier(struct notifier_block *self,
 			if (!strncmp(machine->pdata->codec_name, "rt5639", 6))
 				rt5639_headset_detect(codec, 0);
 			else if (!strncmp(machine->pdata->codec_name, "rt5640",
-									    6))
+										6))
 				rt5640_headset_detect(codec, 0);
 
 			machine->jack_status &= ~SND_JACK_HEADPHONE;
@@ -596,6 +596,20 @@ static struct snd_soc_dai_link tegra_rt5640_dai[] = {
 	},
 };
 
+static int tegra_rt5640_resume_pre(struct snd_soc_card *card)
+{
+	int val;
+	struct snd_soc_jack_gpio *gpio = &tegra_rt5640_hp_jack_gpio;
+
+	if (gpio_is_valid(gpio->gpio)) {
+		val = gpio_get_value(gpio->gpio);
+		val = gpio->invert ? !val : val;
+		snd_soc_jack_report(gpio->jack, val, gpio->report);
+	}
+
+	return 0;
+}
+
 static int tegra_rt5640_set_bias_level(struct snd_soc_card *card,
 	struct snd_soc_dapm_context *dapm, enum snd_soc_bias_level level)
 {
@@ -631,6 +645,7 @@ static struct snd_soc_card snd_soc_tegra_rt5640 = {
 	.name = "tegra-codec",
 	.dai_link = tegra_rt5640_dai,
 	.num_links = ARRAY_SIZE(tegra_rt5640_dai),
+	.resume_pre = tegra_rt5640_resume_pre,
 	.set_bias_level = tegra_rt5640_set_bias_level,
 	.set_bias_level_post = tegra_rt5640_set_bias_level_post,
 };
@@ -647,6 +662,11 @@ static __devinit int tegra_rt5640_driver_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "No platform data supplied\n");
 		return -EINVAL;
 	}
+
+	if (pdata->codec_name)
+		card->dai_link->codec_name = pdata->codec_name;
+	if (pdata->codec_dai_name)
+		card->dai_link->codec_dai_name = pdata->codec_dai_name;
 
 	machine = kzalloc(sizeof(struct tegra_rt5640), GFP_KERNEL);
 	if (!machine) {
@@ -760,8 +780,10 @@ static int __init tegra_rt5640_modinit(void)
 	printk(KERN_INFO "%s+ #####\n", __func__);
 	int ret = 0;
 	 u32 project_info = tegra3_get_project_id();
-	if(project_info == TEGRA3_PROJECT_TF500T || project_info == TEGRA3_PROJECT_P1801)
-	{
+	if(project_info == TEGRA3_PROJECT_TF500T || project_info == TEGRA3_PROJECT_P1801 ||
+		project_info == TEGRA3_PROJECT_ME301T ||
+		project_info == TEGRA3_PROJECT_ME301TL ||
+		project_info == TEGRA3_PROJECT_ME570T){
 		printk("%s(): support codec rt5642\n", __func__);
 	}else{
 		printk("%s(): not support codec rt5642\n", __func__);

@@ -444,6 +444,7 @@ config TOUCHSCREEN_ATMEL_MT_T9
 	help
 	  To compile this driver as a module, choose M here: the
 	  module will be called atmel_tsadcc.
+	  
 config TOUCHSCREEN_UCB1400
 	tristate "Philips UCB1400 touchscreen"
 	depends on AC97_BUS
@@ -786,7 +787,6 @@ config TOUCHSCREEN_SYN_RMI4_SPI
 config TOUCHSCREEN_SIS_I2C
 	tristate "SiS 9200 family I2C touchscreen driver"
 	depends on I2C
-	default y
 	help
 	  This enables support for SiS 9200 family over I2C based touchscreens.
 

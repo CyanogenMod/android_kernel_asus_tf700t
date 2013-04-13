@@ -49,6 +49,7 @@ static long edp_thermal_zone_val;
 static int skin_devs_bitmap;
 static struct therm_est_subdevice *skin_devs[THERMAL_DEVICE_MAX];
 static int skin_devs_count;
+static struct therm_estimator *therm_est;
 #endif
 static bool tegra_thermal_suspend;
 
@@ -299,6 +300,118 @@ static void tegra_thermal_alert(void *data)
 #endif
 
 #ifdef CONFIG_TEGRA_SKIN_THROTTLE
+
+#ifdef CONFIG_DEBUG_FS
+static int skin_coeff_table_show(struct seq_file *s, void *data)
+{
+	int i;
+	struct therm_est_subdevice *skin_dev = s->private;
+
+	for (i = 0; i < HIST_LEN; i++)
+		seq_printf(s, "%3ld ", skin_dev->coeffs[i]);
+
+	seq_printf(s, "\n");
+
+	return 0;
+}
+
+static int skin_coeff_table_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, skin_coeff_table_show, inode->i_private);
+}
+
+static ssize_t skin_coeff_table_write(struct file *file,
+	const char __user *userbuf, size_t count, loff_t *ppos)
+{
+	struct therm_est_subdevice *skin_dev =
+		((struct seq_file *)(file->private_data))->private;
+	char buf[80];
+
+	if (sizeof(buf) <= count)
+		return -EINVAL;
+
+	if (copy_from_user(buf, userbuf, count))
+		return -EFAULT;
+
+	/* terminate buffer and trim - white spaces may be appended
+	 *  at the end when invoked from shell command line */
+	buf[count] = '\0';
+	strim(buf);
+
+	if (sscanf(buf, "%ld %ld %ld %ld %ld %ld %ld %ld %ld %ld " \
+			"%ld %ld %ld %ld %ld %ld %ld %ld %ld %ld",
+				&skin_dev->coeffs[0],
+				&skin_dev->coeffs[1],
+				&skin_dev->coeffs[2],
+				&skin_dev->coeffs[3],
+				&skin_dev->coeffs[4],
+				&skin_dev->coeffs[5],
+				&skin_dev->coeffs[6],
+				&skin_dev->coeffs[7],
+				&skin_dev->coeffs[8],
+				&skin_dev->coeffs[9],
+				&skin_dev->coeffs[10],
+				&skin_dev->coeffs[11],
+				&skin_dev->coeffs[12],
+				&skin_dev->coeffs[13],
+				&skin_dev->coeffs[14],
+				&skin_dev->coeffs[15],
+				&skin_dev->coeffs[16],
+				&skin_dev->coeffs[17],
+				&skin_dev->coeffs[18],
+				&skin_dev->coeffs[19]) != HIST_LEN)
+			return -1;
+
+	return count;
+}
+
+static const struct file_operations skin_coeff_table_fops = {
+	.open		= skin_coeff_table_open,
+	.read		= seq_read,
+	.write		= skin_coeff_table_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int hist_temps_show(struct seq_file *s, void *data)
+{
+	struct therm_estimator *est = s->private;
+	int i, j;
+	int index;
+
+	/* This has obvious locking issues but don't worry about it */
+	for (i = 0; i < est->ndevs; i++) {
+		for (j = 0; j < HIST_LEN; j++) {
+			index = (est->ntemp - j + HIST_LEN) % HIST_LEN;
+			seq_printf(s, "%ld ", est->devs[i]->hist[index]);
+		}
+		seq_printf(s, "\n");
+	}
+
+	return 0;
+}
+
+static int hist_temps_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, hist_temps_show, inode->i_private);
+}
+
+static ssize_t hist_temps_write(struct file *file,
+	const char __user *userbuf, size_t count, loff_t *ppos)
+{
+	return count;
+}
+
+static const struct file_operations hist_temps_fops = {
+	.open		= hist_temps_open,
+	.read		= seq_read,
+	.write		= hist_temps_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+#endif /* CONFIG_DEBUG_FS */
+
 static void tegra_skin_thermal_alert(void *data)
 {
 	struct tegra_thermal_device *dev = data;
@@ -337,6 +450,7 @@ static int tegra_skin_device_register(struct tegra_thermal_device *device)
 					skin_devs_count,
 					therm->skin_temp_offset,
 					therm->skin_period);
+		therm_est = skin_estimator;
 		thermal_skin_device = kzalloc(sizeof(struct tegra_thermal_device),
 							GFP_KERNEL);
 		thermal_skin_device->name = "skin_pred";
@@ -351,6 +465,26 @@ static int tegra_skin_device_register(struct tegra_thermal_device *device)
 				therm_est_set_alert;
 
 		tegra_thermal_device_register(thermal_skin_device);
+
+#ifdef CONFIG_DEBUG_FS
+	{
+		int i;
+		char name[32];
+		for (i = 0; i < therm->skin_devs_size; i++) {
+			if (therm->skin_devs[i].name == NULL)
+				sprintf(name, "skin_coeff_%d", i);
+			else
+				sprintf(name, "%s", therm->skin_devs[i].name);
+
+			debugfs_create_file(name, 0644, thermal_debugfs_root,
+				therm_est->devs[i], &skin_coeff_table_fops);
+		}
+
+		debugfs_create_file("hist_temps", 0644, thermal_debugfs_root,
+				therm_est, &hist_temps_fops);
+	}
+#endif
+
 	}
 
 	return 0;
@@ -384,9 +518,9 @@ int tegra_thermal_device_register(struct tegra_thermal_device *device)
 #endif
 #ifdef CONFIG_TEGRA_SKIN_THROTTLE
 	if (device->id == therm->skin_device_id) {
-		t1 = 0;
-		t2 = 1;
-		pdelay = 5000;
+		t1 = therm->tc1_skin;
+		t2 = therm->tc2_skin;
+		pdelay = therm->passive_delay_skin;
 		create_thz = true;
 	}
 #endif
@@ -612,4 +746,33 @@ THERM_DEBUGFS(tc1);
 THERM_DEBUGFS(tc2);
 THERM_DEBUGFS(passive_delay);
 #endif
+
+#ifdef CONFIG_TEGRA_SKIN_THROTTLE
+#define THERM_SKIN_DEBUGFS(_name) \
+	static int tegra_skin_##_name##_set(void *data, u64 val) \
+	{ \
+		therm_est->_name = (long) val; \
+		return 0; \
+	} \
+	static int tegra_skin_##_name##_get(void *data, u64 *val) \
+	{ \
+		*val = (u64)therm_est->_name; \
+		return 0; \
+	} \
+	DEFINE_SIMPLE_ATTRIBUTE(_name##_fops, \
+			tegra_skin_##_name##_get, \
+			tegra_skin_##_name##_set, \
+			"%lld\n"); \
+	static int __init _name##_debug_init(void) \
+	{ \
+		debugfs_create_file(#_name, 0644, thermal_debugfs_root, \
+			NULL, &_name##_fops); \
+		return 0; \
+	} \
+	late_initcall(_name##_debug_init);
+
+
+THERM_SKIN_DEBUGFS(toffset);
+#endif
+
 #endif

@@ -2384,7 +2384,6 @@ static int wm8903_probe(struct snd_soc_codec *codec)
 	wm8903->codec = codec;
 	wm8903_codec = codec;
 
-	tegra_gpio_enable(CODEC_SPKVDD_POWER_5V0_EN_GPIO);
 	ret = gpio_request(CODEC_SPKVDD_POWER_5V0_EN_GPIO, "WM8903_5V");
 	if (ret) {
 		printk("gpio_request failed for input %d\n", CODEC_SPKVDD_POWER_5V0_EN_GPIO);

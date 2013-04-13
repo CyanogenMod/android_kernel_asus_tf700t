@@ -23,7 +23,10 @@
 #include "dc_config.h"
 #include "dc_priv.h"
 
+#include <mach/board-cardhu-misc.h>
+
 static int no_vsync;
+static atomic_t frame_end_ref = ATOMIC_INIT(0);
 
 module_param_named(no_vsync, no_vsync, int, S_IRUGO | S_IWUSR);
 
@@ -38,6 +41,17 @@ static bool tegra_dc_windows_are_clean(struct tegra_dc_win *windows[],
 	}
 
 	return true;
+}
+
+int tegra_dc_config_frame_end_intr(struct tegra_dc *dc, bool enable)
+{
+	tegra_dc_writel(dc, FRAME_END_INT, DC_CMD_INT_STATUS);
+	if (enable) {
+		atomic_inc(&frame_end_ref);
+		tegra_dc_unmask_interrupt(dc, FRAME_END_INT);
+	} else if (!atomic_dec_return(&frame_end_ref))
+		tegra_dc_mask_interrupt(dc, FRAME_END_INT);
+	return 0;
 }
 
 static int get_topmost_window(u32 *depths, unsigned long *wins)
@@ -247,6 +261,15 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 		const bool filter_h = win_use_h_filter(dc, win);
 		const bool filter_v = win_use_v_filter(dc, win);
 
+		if (tegra3_get_project_id() == TEGRA3_PROJECT_ME570T){
+			if (win->dc->ndev->id == 0) {
+				invert_h = !invert_h;
+				invert_v = !invert_v;
+				win->out_x = win->dc->pdata->fb->xres - (win->out_x + win->out_w);
+				win->out_y = win->dc->pdata->fb->yres - (win->out_y + win->out_h);
+			}
+		}
+
 		if (win->z != dc->blend.z[win->idx]) {
 			dc->blend.z[win->idx] = win->z;
 			update_blend = true;
@@ -266,7 +289,12 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 
 		if (!WIN_IS_ENABLED(win)) {
 			dc->windows[i].dirty = 1;
-			tegra_dc_writel(dc, 0, DC_WIN_WIN_OPTIONS);
+			if (tegra3_get_project_id() == TEGRA3_PROJECT_ME570T){
+				tegra_dc_writel(dc, TEGRA_WIN_FLAG_INVERT_H|TEGRA_WIN_FLAG_INVERT_V, DC_WIN_WIN_OPTIONS);
+			}
+			else{
+				tegra_dc_writel(dc, 0, DC_WIN_WIN_OPTIONS);
+			}
 			continue;
 		}
 
@@ -424,8 +452,9 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 			FRAME_END_INT | V_BLANK_INT | ALL_UF_INT);
 	} else {
 		clear_bit(V_BLANK_FLIP, &dc->vblank_ref_count);
-		tegra_dc_mask_interrupt(dc,
-			FRAME_END_INT | V_BLANK_INT | ALL_UF_INT);
+		tegra_dc_mask_interrupt(dc, V_BLANK_INT | ALL_UF_INT);
+		if (!atomic_read(&frame_end_ref))
+			tegra_dc_mask_interrupt(dc, FRAME_END_INT);
 	}
 
 	tegra_dc_release_dc_out(dc);
@@ -461,7 +490,8 @@ void tegra_dc_trigger_windows(struct tegra_dc *dc)
 	}
 
 	if (!dirty) {
-		if (!(dc->out->flags & TEGRA_DC_OUT_ONE_SHOT_MODE))
+		if (!(dc->out->flags & TEGRA_DC_OUT_ONE_SHOT_MODE)
+			&& !atomic_read(&frame_end_ref))
 			tegra_dc_mask_interrupt(dc, FRAME_END_INT);
 	}
 

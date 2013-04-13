@@ -52,4 +52,7 @@ struct tps62360_regulator_platform_data {
 	int vsel1_def_state;
 };
 
+int tps62360_set_force_pwm_mode(void);
+int tps62360_set_normal_mode(void);
+
 #endif /* __LINUX_REGULATOR_TPS62360_H */

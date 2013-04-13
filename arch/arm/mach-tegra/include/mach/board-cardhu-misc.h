@@ -25,7 +25,10 @@
  *	PCB_ID[6] is GMI_CS0_N, and
  *	PCB_ID[7] is GMI_CS1_N, and
  *	PCB_ID[8] is GMI_CS2_N, and
- *	PCB_ID[9] is GMI_WP_N
+ *	PCB_ID[9] is GMI_WP_N, and
+ *	PCB_ID[10] is GMI_A16, and
+ *	PCB_ID[11] is GMI_A17, and
+ *	PCB_ID[12] is KB_ROW07
  *
  *	PROJECT_ID[0], aka PCB_ID[10], is GMI_CS4_N, and
  *	PROJECT_ID[1], aka PCB_ID[11], is GMI_CS6_N, and
@@ -56,17 +59,16 @@
  *	0	  0	    1	      0		ME370TG
  *	0	  0	    1	      1		ME301T
  *	0	  1	    0	      0		ME301TL
- *	0	  1	    0	      1		ME371T
+ *	0	  1	    0	      1		ME570T
  *	====================================================
  *
- * The cardhu_projectid format should be like as follows
+ *		NFC (ME570T)
+ *	==============================
+ *	PCB_ID[10]	description
+ *	0		None
+ *	1		PN65NET1
+ *	==============================
  *
- *	PROJECT[:INFO]*
- *
- *	where
- *		PROJECT field is mandatory.
- *		[:INFO]* field is optional, seperated by a delimiter ':',
- *			and allows to repeat at least 0 times
  */
 #ifndef ASUS_TEGRA_DEVKIT_MISC_HW_H
 #define ASUS_TEGRA_DEVKIT_MISC_HW_H
@@ -106,6 +108,8 @@ extern "C"
 #define HW_DRF_SIZE(d,r,f) \
     (HW_FIELD_SIZE(d##_##r##_0_##f##_RANGE))
 
+/* Start of PCB_ID Bit Definition */
+
 /* WIFI SKU identifications */
 #define TEGRA3_DEVKIT_MISC_HW_0_WIFI_RANGE	1:0
 #define TEGRA3_DEVKIT_MISC_HW_0_WIFI_DEFAULT	0x0UL //NH660
@@ -137,15 +141,6 @@ extern "C"
 #define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_6	0x6UL
 #define TEGRA3_DEVKIT_MISC_HW_0_PROJECT_7	0x7UL
 
-/* Extended project identifications on Tegra3 platform */
-#define TEGRA3_DEVKIT_MISC_HW_0_EXTENDED_PROJECT_RANGE		3:0
-#define TEGRA3_DEVKIT_MISC_HW_0_EXTENDED_PROJECT_DEFAULT	0x0UL
-#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_1		0x1UL
-#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_2		0x2UL
-#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_3		0x3UL
-#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_4		0x4UL
-#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_5		0x5UL
-
 /* Declare maximum length of project identification for strncmp() */
 #define TEGRA3_PROJECT_NAME_MAX_LEN	16
 
@@ -168,6 +163,30 @@ extern "C"
 #define TEGRA3_DEVKIT_MISC_HW_0_MP_DEFAULT	0x0UL //Engineering
 #define TEGRA3_DEVKIT_MISC_HW_0_MP_1		0x1UL //Mass Production
 
+/* End of PCB_ID Bit Definition */
+
+/* Start of Extended PCB_ID Bit Definition */
+
+/* NFC module identification */
+#define TEGRA3_DEVKIT_MISC_HW_0_NFC_RANGE	1:1
+#define TEGRA3_DEVKIT_MISC_HW_0_NFC_DEFAULT	0x0UL //None
+#define TEGRA3_DEVKIT_MISC_HW_0_NFC_1		0x1UL //NFC Available
+
+/* End of Extended PCB_ID Bit Definition */
+
+/* Start of Extended PROJECT_ID Bit Definition */
+
+/* Extended project identifications on Tegra3 platform */
+#define TEGRA3_DEVKIT_MISC_HW_0_EXTENDED_PROJECT_RANGE		3:0
+#define TEGRA3_DEVKIT_MISC_HW_0_EXTENDED_PROJECT_DEFAULT	0x0UL
+#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_1		0x1UL
+#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_2		0x2UL
+#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_3		0x3UL
+#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_4		0x4UL
+#define TEGRA3_DEVKIT_MISC_HW_0_EXTEDNED_PROJECT_5		0x5UL
+
+/* End of Extended PROJECT_ID Bit Definition */
+
 struct pins {
 	/* gpio number */
 	const unsigned gpio;
@@ -180,6 +199,9 @@ struct pins {
 
 	/* Indicates extended pins beyond extended projects */
 	const bool extended_pins;
+
+	/* Indicates pins are not specific to hw identifier */
+	const bool multi_func;
 };
 
 extern unsigned char cardhu_chipid[17];
@@ -196,13 +218,18 @@ enum tegra3_project {
 	TEGRA3_PROJECT_TF500T = 7,
 	TEGRA3_PROJECT_ME301T = 11,
 	TEGRA3_PROJECT_ME301TL = 12,
-	TEGRA3_PROJECT_ME371T = 13,
+	TEGRA3_PROJECT_ME570T = 13,
 	TEGRA3_PROJECT_MAX = 14,
+};
+
+enum tegra3_nfc_module {
+	TEGRA3_NFC_NONE = 0,
+	TEGRA3_NFC_PN65NET1 = 1,
 };
 
 int __init cardhu_misc_init(unsigned long long);
 
-int __init cardhu_misc_reset(void);
+void __init cardhu_misc_reset(void);
 
 /* Acquire project identification in string format
  *   @ret cont char *
@@ -245,6 +272,13 @@ unsigned int tegra3_query_pcba_revision_pcbid(void);
  *      Otherwise -1 (Not supported) will be returned.
  */
 unsigned int tegra3_query_wifi_module_pcbid(void);
+
+/* Query pin status of equipped nfc module defined in PCB pins.
+ *   @ret bool
+ *      Return unsigned integer to reflect enum type tegra3_nfc_module
+ *      Otherwise -1 (Not supported) will be returned.
+ */
+unsigned int tegra3_query_nfc_module(void);
 
 #if defined(__cplusplus)
 }

@@ -67,9 +67,6 @@
 #include <linux/wlan_plat.h>
 static struct wifi_platform_data *wifi_control_data = NULL;
 #endif
-
-static int ioctl_erro_cnt = 0;
-
 struct semaphore wifi_control_sem;
 
 static struct resource *wifi_irqres = NULL;
@@ -89,7 +86,7 @@ int wifi_get_irq_number(unsigned long *irq_flags_ptr)
 
 int wifi_set_carddetect(int on)
 {
-	printf("%s = %d\n", __FUNCTION__, on);
+	printk("%s = %d\n", __FUNCTION__, on);
 #ifdef CONFIG_WIFI_CONTROL_FUNC
 	if (wifi_control_data && wifi_control_data->set_carddetect) {
 		wifi_control_data->set_carddetect(on);
@@ -100,7 +97,7 @@ int wifi_set_carddetect(int on)
 
 int wifi_set_power(int on, unsigned long msec)
 {
-	printf("%s = %d\n", __FUNCTION__, on);
+	printk("%s = %d\n", __FUNCTION__, on);
 #ifdef CONFIG_WIFI_CONTROL_FUNC
 	if (wifi_control_data && wifi_control_data->set_power) {
 		wifi_control_data->set_power(on);
@@ -182,7 +179,6 @@ static int wifi_remove(struct platform_device *pdev)
 	wifi_set_carddetect(0);	/* CardDetect (1->0) */
 
 	up(&wifi_control_sem);
-	mdelay(500);
 	return 0;
 }
 
@@ -296,7 +292,6 @@ typedef struct dhd_info {
 	/* OS/stack specifics */
 	dhd_if_t *iflist[DHD_MAX_IFS];
 
-	struct mutex ioctl_sem;
 	struct mutex proto_sem;
 	wait_queue_head_t ioctl_resp_wait;
 	struct timer_list timer;
@@ -354,7 +349,7 @@ struct semaphore dhd_registration_sem;
 #define DHD_REGISTRATION_TIMEOUT  24000  /* msec : allowed time to finished dhd registration */
 #endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27)) */
 /* load firmware and/or nvram values from the filesystem */
-module_param_string(firmware_path, firmware_path, MOD_PARAM_PATHLEN, 0644);
+module_param_string(firmware_path, firmware_path, MOD_PARAM_PATHLEN, 0);
 module_param_string(nvram_path, nvram_path, MOD_PARAM_PATHLEN, 0);
 
 /* Error bits */
@@ -570,6 +565,7 @@ static void dhd_set_packet_filter(int value, dhd_pub_t *dhd)
 #if defined(CONFIG_HAS_EARLYSUSPEND)
 static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 {
+	int power_mode = PM_MAX;
 	/* wl_pkt_filter_enable_t	enable_parm; */
 	char iovbuf[32];
 	int bcn_li_dtim = 3;
@@ -582,9 +578,12 @@ static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 
 	if (dhd && dhd->up) {
 		if (value && dhd->in_suspend) {
-			printf("Wi-Fi early-suspend+\n");
+
 			/* Kernel suspended */
 			DHD_TRACE(("%s: force extra Suspend setting \n", __FUNCTION__));
+
+			dhdcdc_set_ioctl(dhd, 0, WLC_SET_PM,
+				(char *)&power_mode, sizeof(power_mode));
 
 			/* Enable packet filter, only allow unicast packet to send up */
 			dhd_set_packet_filter(1, dhd);
@@ -602,11 +601,15 @@ static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 			bcm_mkiovar("roam_off", (char *)&roamvar, 4, iovbuf, sizeof(iovbuf));
 			dhdcdc_set_ioctl(dhd, 0, WLC_SET_VAR, iovbuf, sizeof(iovbuf));
 #endif /* CUSTOMER_HW2 */
-			printf("Wi-Fi early-suspend-\n");
+
 		} else {
-			printf("Wi-Fi late-resume+\n");
+
 			/* Kernel resumed  */
 			DHD_TRACE(("%s: Remove extra suspend setting \n", __FUNCTION__));
+
+			power_mode = PM_FAST;
+			dhdcdc_set_ioctl(dhd, 0, WLC_SET_PM, (char *)&power_mode,
+				sizeof(power_mode));
 
 			/* disable pkt filter */
 			dhd_set_packet_filter(0, dhd);
@@ -621,7 +624,6 @@ static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 			bcm_mkiovar("roam_off", (char *)&roamvar, 4, iovbuf, sizeof(iovbuf));
 			dhdcdc_set_ioctl(dhd, 0, WLC_SET_VAR, iovbuf, sizeof(iovbuf));
 #endif /* CUSTOMER_HW2 */
-			printf("Wi-Fi late-resume-\n");
 		}
 	}
 
@@ -735,18 +737,6 @@ dhd_net2idx(dhd_info_t *dhd, struct net_device *net)
 	}
 
 	return DHD_BAD_IF;
-}
-
-struct net_device * dhd_idx2net(struct dhd_pub *dhd_pub, int ifidx)
-{
-	struct dhd_info *dhd_info;
-
-	if (!dhd_pub || ifidx < 0 || ifidx >= DHD_MAX_IFS)
-		return NULL;
-	dhd_info = dhd_pub->info;
-	if (dhd_info && dhd_info->iflist[ifidx])
-		return dhd_info->iflist[ifidx]->net;
-	return NULL;
 }
 
 int
@@ -1774,38 +1764,6 @@ dhd_ethtool(dhd_info_t *dhd, void *uaddr)
 }
 #endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 4, 2) */
 
-static bool dhd_check_hang(struct net_device *net, dhd_pub_t *dhdp, int error)
-{
-	if (!dhdp)
-		return FALSE;
-
-	if ((error == -ETIMEDOUT) || (error == -EIO) || ((dhdp->busstate == DHD_BUS_DOWN) &&
-		(!dhdp->dongle_reset))) {
-		if (ioctl_erro_cnt < 3) {
-			ioctl_erro_cnt++;
-			printf("%s: ioctl error = %d, ioctl_error_cnt = %d\n", __FUNCTION__, error, ioctl_erro_cnt);
-		} else {
-			printf("%s: Event HANG send up, error = %d\n", __FUNCTION__,error);
-			ioctl_erro_cnt = 0;
-			net_os_send_hang_message(net);
-		}
-		return TRUE;
-
-	} else if (ioctl_erro_cnt > 0) {
-		ioctl_erro_cnt --;
-		printf("%s: ioctl success, ioctl_error_cnt = %d\n", __FUNCTION__, ioctl_erro_cnt);
-	}
-	return FALSE;
-}
-
-bool dhd_os_check_hang(dhd_pub_t *dhdp, int ifidx, int ret)
-{
-	struct net_device *net;
-
-	net = dhd_idx2net(dhdp, ifidx);
-	return dhd_check_hang(net, dhdp, ret);
-}
-
 static int
 dhd_ioctl_entry(struct net_device *net, struct ifreq *ifr, int cmd)
 {
@@ -1896,12 +1854,10 @@ dhd_ioctl_entry(struct net_device *net, struct ifreq *ifr, int cmd)
 		goto done;
 	}
 
-#if 0 // Disable Permission Checking for Wi-Fi RF Test Program
 	if (!capable(CAP_NET_ADMIN)) {
 		bcmerror = -BCME_EPERM;
 		goto done;
 	}
-#endif
 
 	/* check for local dhd ioctl and handle it */
 	if (driver == DHD_IOCTL_MAGIC) {
@@ -1938,7 +1894,11 @@ dhd_ioctl_entry(struct net_device *net, struct ifreq *ifr, int cmd)
 	bcmerror = dhd_prot_ioctl(&dhd->pub, ifidx, (wl_ioctl_t *)&ioc, buf, buflen);
 
 done:
-	dhd_check_hang(net, &dhd->pub, bcmerror);
+	if ((bcmerror == -ETIMEDOUT) || ((dhd->pub.busstate == DHD_BUS_DOWN) &&
+			(!dhd->pub.dongle_reset))) {
+		DHD_ERROR(("%s: Event HANG send up\n", __FUNCTION__));
+		net_os_send_hang_message(net);
+	}
 
 	if (!bcmerror && buf && ioc.buf) {
 		if (copy_to_user(ioc.buf, buf, buflen))
@@ -2148,7 +2108,6 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen, void *dev)
 	net->netdev_ops = NULL;
 #endif
 
-	mutex_init(&dhd->ioctl_sem);
 	mutex_init(&dhd->proto_sem);
 	/* Initialize other structure content */
 	init_waitqueue_head(&dhd->ioctl_resp_wait);
@@ -2347,7 +2306,7 @@ dhd_bus_start(dhd_pub_t *dhdp)
 	setbit(dhdp->eventmask, WLC_E_NDIS_LINK);
 	setbit(dhdp->eventmask, WLC_E_MIC_ERROR);
 	setbit(dhdp->eventmask, WLC_E_PMKID_CACHE);
-	//setbit(dhdp->eventmask, WLC_E_TXFAIL);
+	setbit(dhdp->eventmask, WLC_E_TXFAIL);
 	setbit(dhdp->eventmask, WLC_E_JOIN_START);
 	setbit(dhdp->eventmask, WLC_E_SCAN_COMPLETE);
 	setbit(dhdp->eventmask, WLC_E_RELOAD);
@@ -2357,7 +2316,6 @@ dhd_bus_start(dhd_pub_t *dhdp)
 
 /* enable dongle roaming event */
 	setbit(dhdp->eventmask, WLC_E_ROAM);
-	//setbit(dhdp->eventmask, WLC_E_TRACE);
 
 	dhdp->pktfilter_count = 4;
 	/* Setup filter to allow only unicast */
@@ -2790,32 +2748,6 @@ dhd_os_proto_unblock(dhd_pub_t *pub)
 
 	if (dhd) {
 		mutex_unlock(&dhd->proto_sem);
-		return 1;
-	}
-
-	return 0;
-}
-
-int
-dhd_os_ioctl_block(dhd_pub_t *pub)
-{
-	dhd_info_t *dhd = (dhd_info_t *)(pub->info);
-
-	if (dhd) {
-		mutex_lock(&dhd->ioctl_sem);
-		return 1;
-	}
-
-	return 0;
-}
-
-int
-dhd_os_ioctl_unblock(dhd_pub_t *pub)
-{
-	dhd_info_t *dhd = (dhd_info_t *)(pub->info);
-
-	if (dhd) {
-		mutex_unlock(&dhd->ioctl_sem);
 		return 1;
 	}
 
@@ -3398,7 +3330,7 @@ int dhd_os_wake_lock_timeout(dhd_pub_t *pub)
 		dhd->wl_packet = 0;
 		spin_unlock_irqrestore(&dhd->wl_lock, flags);
 	}
-	/* printf("%s: %d\n", __FUNCTION__, ret); */
+	/* printk("%s: %d\n", __FUNCTION__, ret); */
 	return ret;
 }
 
@@ -3422,7 +3354,7 @@ int dhd_os_wake_lock_timeout_enable(dhd_pub_t *pub)
 		dhd->wl_packet = 1;
 		spin_unlock_irqrestore(&dhd->wl_lock, flags);
 	}
-	/* printf("%s\n",__func__); */
+	/* printk("%s\n",__func__); */
 	return 0;
 }
 
@@ -3452,7 +3384,7 @@ int dhd_os_wake_lock(dhd_pub_t *pub)
 		ret = dhd->wl_count;
 		spin_unlock_irqrestore(&dhd->wl_lock, flags);
 	}
-	/* printf("%s: %d\n", __FUNCTION__, ret); */
+	/* printk("%s: %d\n", __FUNCTION__, ret); */
 	return ret;
 }
 
@@ -3485,7 +3417,7 @@ int dhd_os_wake_unlock(dhd_pub_t *pub)
 		}
 		spin_unlock_irqrestore(&dhd->wl_lock, flags);
 	}
-	/* printf("%s: %d\n", __FUNCTION__, ret); */
+	/* printk("%s: %d\n", __FUNCTION__, ret); */
 	return ret;
 }
 

@@ -30,8 +30,6 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/kxt_9.h>
-#include <mach/board-cardhu-misc.h>
-#include "../../../arch/arm/mach-tegra/board-cardhu.h"
 
 #define NAME			"KXT_9"
 #define G_MAX			8000
@@ -73,18 +71,13 @@
 #define RES_TDT_H_THRESH	8
 #define RES_TDT_L_THRESH	9
 #define RES_TAP_TIMER		10
-#define RES_TOTAL_TIMER	11
+#define RES_TOTAL_TIMER		11
 #define RES_LAT_TIMER		12
 #define RES_WIN_TIMER		13
 #define RESUME_ENTRIES		14
 
 #define KXTF9_CALIBRATION_PATH "/data/sensors/Accel_Config.ini"
-
-struct orient_def {
-	__s8 orient[9];
-	u32 projectID;
-};
-
+#define REG_NUM 	96	/* Number of registers about KXTF9*/
 /*
  * The following table lists the maximum appropriate poll interval for each
  * available output data rate.
@@ -121,7 +114,6 @@ struct KXT_9_data {
 	int raw_xyz[3];
 	int offset[3];
 	int sensitivity[3];
-	int status;
 	bool fLoadConfig;
 };
 
@@ -284,7 +276,7 @@ static int KXT_9_hw_init(struct KXT_9_data *tf9)
 	err = KXT_9_i2c_write(tf9, INT_CTRL1, &tf9->resume[RES_INT_CTRL1], 1);
 	if (err < 0)
 		return err;
-	buf[0] = (tf9->resume[RES_CTRL_REG1] | PC1_ON |0x20); // | 0x20 to enable DRDYE
+	buf[0] = (tf9->resume[RES_CTRL_REG1] | PC1_ON);
 	err = KXT_9_i2c_write(tf9, CTRL_REG1, buf, 1);
 	if (err < 0)
 		return err;
@@ -501,7 +493,9 @@ int KXT_9_update_g_range(struct KXT_9_data *tf9, u8 new_g_range)
 			if (err < 0)
 				return err;
 		}
-	}
+	}else
+		buf = tf9->resume[RES_CTRL_REG1];
+
 	tf9->resume[RES_CTRL_REG1] = buf;
 	tf9->pdata->shift_adj = shift;
 
@@ -526,7 +520,11 @@ int KXT_9_update_odr(struct KXT_9_data *tf9, int poll_interval)
 	}
 
 	if (atomic_read(&tf9->enabled)) {
+		tf9->resume[RES_CTRL_REG1] &= (~PC1_ON);
+		KXT_9_i2c_write(tf9, CTRL_REG1, &tf9->resume[RES_CTRL_REG1], 1);
 		err = KXT_9_i2c_write(tf9, DATA_CTRL, &config, 1);
+		tf9->resume[RES_CTRL_REG1] |= PC1_ON;
+		KXT_9_i2c_write(tf9, CTRL_REG1, &tf9->resume[RES_CTRL_REG1], 1);
 		if (err < 0)
 			return err;
 		/*
@@ -553,7 +551,6 @@ static int KXT_9_get_acceleration_data(struct KXT_9_data *tf9, int *xyz)
 	int hw_d[3];
 	int i =0;
 	long tmp_value = 0;
-	//int abc[3] = {0};
 
 	if (!tf9->fLoadConfig)
 	{
@@ -894,69 +891,34 @@ static ssize_t KXT_9_selftest_store(struct device *dev,
 	return count;
 }
 
-static ssize_t KXT_9_read_raw(struct device *dev,
+static ssize_t KXT_9_dump_reg(struct device *dev,
 					struct device_attribute *attr,
 						const char *buf, size_t count)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct KXT_9_data *tf9 = i2c_get_clientdata(client);
+	int ii, err = -1;
+	ssize_t bytes_printed = 0;
+	unsigned char data;
 
-	printk("KXTF9 XYZ raw data: x=%d, y=%d, z=%d\n",
-		tf9->raw_xyz[0], tf9->raw_xyz[1], tf9->raw_xyz[2]);
+	for (ii = 0; ii < REG_NUM; ii++) {
+		err = KXT_9_i2c_read(tf9, ii, &data, 1);
+		bytes_printed += sprintf(buf + bytes_printed, "%#2x: %#2x\n", ii, data);
+	}
 
-	return sprintf(buf,"%d %d %d\n",
-		tf9->raw_xyz[0], tf9->raw_xyz[1], tf9->raw_xyz[2]);
+	return bytes_printed;
 }
-
-static ssize_t KXT_9_read_orientation(struct device *dev,
-					struct device_attribute *attr,
-						const char *buf, size_t count)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	struct KXT_9_data *tf9 = i2c_get_clientdata(client);
-
-	struct orient_def P1801_orient = {P1801_ACCEL_ORIENTATION, tegra3_get_project_id()};
-
-	return sprintf(buf, "%d %d %d %d %d %d %d %d %d %d\n",
-			P1801_orient.orient[0], P1801_orient.orient[1], P1801_orient.orient[2],
-			P1801_orient.orient[3], P1801_orient.orient[4], P1801_orient.orient[5],
-			P1801_orient.orient[6], P1801_orient.orient[7], P1801_orient.orient[8],
-			P1801_orient.projectID);
-}
-
-static ssize_t KXT_9_read_status(struct device *dev,
-					struct device_attribute *attr,
-						const char *buf, size_t count)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	struct KXT_9_data *tf9 = i2c_get_clientdata(client);
-
-	return sprintf(buf,"%d \n",tf9->status);
-}
-
-static ssize_t KXT_9_enable_load_accel_config(struct device *dev,
-					struct device_attribute *attr,
-						const char *buf, size_t count)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	struct KXT_9_data *tf9 = i2c_get_clientdata(client);
-
-	tf9->fLoadConfig = false;
-	return sprintf(buf,"%d \n", tf9->fLoadConfig);
-}
-
 
 static DEVICE_ATTR(delay, S_IRUGO|S_IWUSR, KXT_9_delay_show, KXT_9_delay_store);
-static DEVICE_ATTR(enable, S_IRUGO|S_IWUSR, KXT_9_enable_show, KXT_9_enable_store);
+static DEVICE_ATTR(enable, S_IRUGO|S_IWUSR, KXT_9_enable_show,
+						KXT_9_enable_store);
 static DEVICE_ATTR(tilt, S_IRUGO|S_IWUSR, KXT_9_tilt_show, KXT_9_tilt_store);
 static DEVICE_ATTR(wake, S_IRUGO|S_IWUSR, KXT_9_wake_show, KXT_9_wake_store);
 static DEVICE_ATTR(tap, S_IRUGO|S_IWUSR, KXT_9_tap_show, KXT_9_tap_store);
 static DEVICE_ATTR(selftest, S_IWUSR, NULL, KXT_9_selftest_store);
-static DEVICE_ATTR(accel_raw, S_IRUGO, KXT_9_read_raw, NULL);
-static DEVICE_ATTR(accel_orien, S_IRUGO, KXT_9_read_orientation, NULL);
-static DEVICE_ATTR(accel_status, S_IRUGO, KXT_9_read_status, NULL);
-static DEVICE_ATTR(enLoadAccelConfig, S_IRUGO, KXT_9_enable_load_accel_config, NULL);
+static DEVICE_ATTR(dump_reg, S_IRUGO, KXT_9_dump_reg, NULL);
 
+#ifdef CONFIG_DEBUG_ASUS
 static struct attribute *KXT_9_attributes[] = {
 	&dev_attr_delay.attr,
 	&dev_attr_enable.attr,
@@ -964,12 +926,21 @@ static struct attribute *KXT_9_attributes[] = {
 	&dev_attr_wake.attr,
 	&dev_attr_tap.attr,
 	&dev_attr_selftest.attr,
-	&dev_attr_accel_raw.attr,
-	&dev_attr_accel_orien.attr,
-	&dev_attr_accel_status.attr,
-	&dev_attr_enLoadAccelConfig.attr,
+	&dev_attr_dump_reg.attr,
 	NULL
 };
+
+#else
+static struct attribute *KXT_9_attributes[] = {
+	&dev_attr_delay.attr,
+	&dev_attr_enable.attr,
+	&dev_attr_tilt.attr,
+	&dev_attr_wake.attr,
+	&dev_attr_tap.attr,
+	NULL
+};
+
+#endif
 
 static struct attribute_group KXT_9_attribute_group = {
 	.attrs = KXT_9_attributes
@@ -1004,9 +975,7 @@ static int __devinit KXT_9_probe(struct i2c_client *client,
 	tf9->client = client;
 
 	/* init variables for bias setting */
-	tf9->status = 0;
 	tf9->fLoadConfig = false;
-
 	for(ii = 0; ii < 3; ii++) {
 		tf9->raw_xyz[ii] = 0;
 		tf9->offset[ii] = 0;
@@ -1083,7 +1052,6 @@ static int __devinit KXT_9_probe(struct i2c_client *client,
 	}
 	disable_irq_nosync(tf9->irq);*/
 
-	tf9->status = 1;
 	mutex_unlock(&tf9->lock);
 	printk(KERN_INFO "%s- #####\n", __func__);
 
@@ -1124,18 +1092,32 @@ static int __devexit KXT_9_remove(struct i2c_client *client)
 }
 
 #ifdef CONFIG_PM
-static int KXT_9_resume(struct i2c_client *client)
+static int KXT_9_resume(struct device *dev)
 {
-	struct KXT_9_data *tf9 = i2c_get_clientdata(client);
+	printk(KERN_INFO "%s+ #####\n", __func__);
+	struct i2c_client *client = i2c_verify_client(dev);
+	struct KXT_9_data *tf9;
+	int res;
 
-	return KXT_9_enable(tf9);
+	tf9 = i2c_get_clientdata(client);
+	res = KXT_9_enable(tf9);
+
+	printk(KERN_INFO "%s- #####\n", __func__);
+	return res;
 }
 
-static int KXT_9_suspend(struct i2c_client *client, pm_message_t mesg)
+static int KXT_9_suspend(struct device *dev, pm_message_t mesg)
 {
-	struct KXT_9_data *tf9 = i2c_get_clientdata(client);
+	printk(KERN_INFO "%s+ #####\n", __func__);
+	struct i2c_client *client = i2c_verify_client(dev);
+	struct KXT_9_data *tf9;
+	int res;
 
-	return KXT_9_disable(tf9);
+	tf9 = i2c_get_clientdata(client);
+	res = KXT_9_disable(tf9);
+
+	printk(KERN_INFO "%s- #####\n", __func__);
+	return res;
 }
 #endif
 
@@ -1146,21 +1128,30 @@ static const struct i2c_device_id KXT_9_id[] = {
 
 MODULE_DEVICE_TABLE(i2c, KXT_9_id);
 
+static const struct dev_pm_ops kxt_9_pm_ops={
+	.suspend = KXT_9_suspend,
+	.resume = KXT_9_resume,
+};
+
 static struct i2c_driver KXT_9_driver = {
 	.driver = {
 		   .name = NAME,
+		   .pm = &kxt_9_pm_ops,
 		   },
 	.probe = KXT_9_probe,
 	.remove = __devexit_p(KXT_9_remove),
-	.resume = KXT_9_resume,
-	.suspend = KXT_9_suspend,
 	.id_table = KXT_9_id,
 };
 
 static int __init KXT_9_init(void)
 {
+	int res;
+
 	printk(KERN_INFO "%s+ #####\n", __func__);
-	return i2c_add_driver(&KXT_9_driver);
+	res = i2c_add_driver(&KXT_9_driver);
+	printk(KERN_INFO "%s- #####\n", __func__);
+
+	return res;
 }
 
 static void __exit KXT_9_exit(void)

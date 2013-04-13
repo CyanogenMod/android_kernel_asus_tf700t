@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/baseband-xmm-power.c
  *
- * Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (C) 2011 NVIDIA Corporation
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -51,6 +51,8 @@ EXPORT_SYMBOL(modem_flash);
 unsigned long modem_pm = 1;
 EXPORT_SYMBOL(modem_pm);
 
+unsigned long enum_delay_ms = 1000; /* ignored if !modem_flash */
+
 module_param(modem_ver, ulong, 0644);
 MODULE_PARM_DESC(modem_ver,
 	"baseband xmm power - modem software version");
@@ -60,6 +62,9 @@ MODULE_PARM_DESC(modem_flash,
 module_param(modem_pm, ulong, 0644);
 MODULE_PARM_DESC(modem_pm,
 	"baseband xmm power - modem power management (1 = pm, 0 = no pm)");
+module_param(enum_delay_ms, ulong, 0644);
+MODULE_PARM_DESC(enum_delay_ms,
+	"baseband xmm power - delay in ms between modem on and enumeration");
 
 static struct usb_device_id xmm_pm_ids[] = {
 	{ USB_DEVICE(VENDOR_ID, PRODUCT_ID),
@@ -73,10 +78,11 @@ static struct gpio tegra_baseband_gpios[] = {
 	{ -1, GPIOF_OUT_INIT_LOW,  "BB_ON"   },
 	{ -1, GPIOF_OUT_INIT_LOW,  "IPC_BB_WAKE" },
 	{ -1, GPIOF_IN,            "IPC_AP_WAKE" },
-	{ -1, GPIOF_OUT_INIT_LOW,  "IPC_HSIC_ACTIVE" },
+	{ -1, GPIOF_OUT_INIT_LOW, "IPC_HSIC_ACTIVE" },
 	{ -1, GPIOF_IN,            "IPC_HSIC_SUS_REQ" },
 	{ -1, GPIOF_OUT_INIT_LOW,  "BB_VBAT" },
 	{ -1, GPIOF_IN,            "BB_RESET_IND" },
+	{ -1, GPIOF_OUT_INIT_LOW,  "IPC_BB_FORCE_CRASH" },
 };
 
 static enum {
@@ -96,6 +102,7 @@ static struct work_struct L2_resume_work;
 static struct work_struct autopm_resume_work;
 static bool register_hsic_device;
 static struct wake_lock wakelock;
+static struct wake_lock modem_recovery_wakelock;
 static struct usb_device *usbdev;
 static bool CP_initiated_L2toL0;
 static bool modem_power_on;
@@ -250,22 +257,7 @@ static int baseband_modem_power_on_async(
 
 	return 0;
 }
-
-static void xmm_power_reset_on(struct baseband_power_platform_data *pdata)
-{
-	/* Asus pulls VBAT here */
-	gpio_set_value(pdata->modem.xmm.bb_vbat, 1);
-
-	/* reset / power on sequence */
-	gpio_set_value(pdata->modem.xmm.bb_rst, 0);
-	msleep(40);
-	gpio_set_value(pdata->modem.xmm.bb_rst, 1);
-	usleep_range(1000, 1100);
-	gpio_set_value(pdata->modem.xmm.bb_on, 1);
-	udelay(70);
-	gpio_set_value(pdata->modem.xmm.bb_on, 0);
-}
-
+static void xmm_power_reset_on(struct baseband_power_platform_data *pdata);
 static int xmm_power_on(struct platform_device *device)
 {
 	struct baseband_power_platform_data *pdata =
@@ -329,7 +321,6 @@ static int xmm_power_on(struct platform_device *device)
 
 		xmm_power_reset_on(pdata);
 	}
-
 	ret = enable_irq_wake(gpio_to_irq(pdata->modem.xmm.ipc_ap_wake));
 	if (ret < 0)
 		pr_err("%s: enable_irq_wake error\n", __func__);
@@ -367,9 +358,13 @@ static int xmm_power_off(struct platform_device *device)
 		pr_err("%s: disable_irq_wake error\n", __func__);
 
 	/* unregister usb host controller */
-	if (pdata->hsic_unregister)
-		pdata->hsic_unregister(data->hsic_device);
-	else
+	if (pdata->hsic_unregister) {
+		if (!register_hsic_device) {
+			register_hsic_device = true;
+			pdata->hsic_unregister(data->hsic_device);
+		} else
+			pr_err("%s: hsic contorller was not registered\n", __func__);
+	} else
 		pr_err("%s: hsic_unregister is missing\n", __func__);
 
 
@@ -520,6 +515,39 @@ static ssize_t store_nml_reset_modem(struct device *class, struct device_attribu
 	return count;
 }
 
+static ssize_t store_force_crash_modem(struct device *dev,
+	struct device_attribute *attr,
+	const char *buf, size_t count)
+{
+	int state;
+	struct platform_device *device = to_platform_device(dev);
+	struct baseband_power_platform_data *data;
+
+	sscanf(buf, "%d", &state);
+
+	pr_info("++ force_crash_modem ++\n");
+	/* check for device / platform data */
+	if (!device) {
+		pr_err("%s: !device\n", __func__);
+		return -EINVAL;
+	}
+	data = (struct baseband_power_platform_data *)
+		device->dev.platform_data;
+	if (!data) {
+		pr_err("%s: !data\n", __func__);
+		return -EINVAL;
+	}
+
+	if (state > 0) {
+		gpio_set_value(data->modem.xmm.ipc_bb_force_crash, 1);
+		msleep(50);
+		gpio_set_value(data->modem.xmm.ipc_hsic_active, 0);
+	}
+	pr_info("-- force_crash_modem --\n");
+
+	return count;
+}
+
 /*
 static DEVICE_ATTR(xmm_onoff, S_IRUSR | S_IWUSR | S_IRGRP,
 		NULL, xmm_onoff);
@@ -529,6 +557,7 @@ static struct device_attribute xmm_device_attr[] = {
        __ATTR(xmm_onoff, S_IRUSR | S_IWUSR | S_IRGRP, NULL, xmm_onoff),
        __ATTR(xmm_dwd_reset, S_IRUSR | S_IWUSR | S_IRGRP, NULL, store_dwd_reset_modem),
        __ATTR(xmm_nml_reset, S_IRUSR | S_IWUSR | S_IRGRP, NULL, store_nml_reset_modem),
+       __ATTR(xmm_force_crash, S_IRUSR | S_IWUSR | S_IRGRP, NULL, store_force_crash_modem),
        __ATTR_NULL,
 };
 
@@ -581,7 +610,7 @@ void baseband_xmm_set_power_status(unsigned int status)
 		break;
 	case BBXMM_PS_L3:
 		if (baseband_xmm_powerstate == BBXMM_PS_L2TOL0) {
-			if (!data->modem.xmm.ipc_ap_wake) {
+			if (!gpio_get_value(data->modem.xmm.ipc_ap_wake)) {
 				spin_lock_irqsave(&xmm_lock, flags);
 				wakeup_pending = true;
 				spin_unlock_irqrestore(&xmm_lock, flags);
@@ -603,7 +632,7 @@ void baseband_xmm_set_power_status(unsigned int status)
 				__func__);
 			wake_unlock(&wakelock);
 		}
-		if (register_hsic_device != true) {
+		if (register_hsic_device != true  && wakeup_pending == false) {
 			gpio_set_value(data->modem.xmm.ipc_hsic_active, 0);
 			pr_debug("gpio host active low->\n");
 		}
@@ -618,8 +647,8 @@ void baseband_xmm_set_power_status(unsigned int status)
 			baseband_xmm_powerstate = status;
 			pr_debug("BB XMM POWER STATE = %d\n", status);
 			xmm_power_L2_resume();
-		}
-		baseband_xmm_powerstate = status;
+		} else
+			goto exit_without_state_change;
 		break;
 	case BBXMM_PS_L3TOL0:
 		/* poweron rail for L3 -> L0 (system resume) */
@@ -632,6 +661,12 @@ void baseband_xmm_set_power_status(unsigned int status)
 		break;
 	}
 	pr_debug("BB XMM POWER STATE = %d\n", status);
+	return;
+
+exit_without_state_change:
+	pr_info("BB XMM POWER STATE = %d (not change to %d)\n",
+			baseband_xmm_powerstate, status);
+	return;
 }
 EXPORT_SYMBOL_GPL(baseband_xmm_set_power_status);
 
@@ -835,6 +870,7 @@ static void xmm_power_init2_work(struct work_struct *work)
 			pr_err("%s: hsic_register is missing\n", __func__);
 		register_hsic_device = false;
 	}
+
 }
 
 static void xmm_power_autopm_resume(struct work_struct *work)
@@ -940,6 +976,22 @@ static void xmm_power_L2_resume_work(struct work_struct *work)
 	pr_debug("} %s\n", __func__);
 }
 
+static void xmm_power_reset_on(struct baseband_power_platform_data *pdata)
+{
+	/* Asus pulls VBAT here */
+	gpio_set_value(pdata->modem.xmm.bb_vbat, 1);
+
+	/* reset / power on sequence */
+	gpio_set_value(pdata->modem.xmm.bb_rst, 0);
+	msleep(40);
+	gpio_set_value(pdata->modem.xmm.bb_rst, 1);
+	usleep_range(1000, 2000);
+	gpio_set_value(pdata->modem.xmm.bb_on, 1);
+	udelay(70);
+	gpio_set_value(pdata->modem.xmm.bb_on, 0);
+}
+
+
 static void xmm_power_work_func(struct work_struct *work)
 {
 	struct xmm_power_data *data =
@@ -982,6 +1034,7 @@ static void xmm_power_work_func(struct work_struct *work)
 		xmm_power_reset_on(pdata);
 		/* set power status as on */
 		power_onoff = 1;
+		//gpio_set_value(pdata->modem.xmm.ipc_hsic_active, 0);
 
 		/* expecting init2 performs register hsic to enumerate modem
 		 * software directly.
@@ -1014,12 +1067,14 @@ static void xmm_device_add_handler(struct usb_device *udev)
 		usbdev = udev;
 		usb_enable_autosuspend(udev);
 		pr_info("enable autosuspend\n");
+		wake_unlock(&modem_recovery_wakelock);
 	}
 }
 
 static void xmm_device_remove_handler(struct usb_device *udev)
 {
 	if (usbdev == udev) {
+		wake_lock_timeout(&modem_recovery_wakelock, HZ * 60);
 		pr_info("Remove device %d <%s %s>\n", udev->devnum,
 			udev->manufacturer, udev->product);
 		usbdev = 0;
@@ -1110,6 +1165,7 @@ static int xmm_power_driver_probe(struct platform_device *device)
 	int err,i;
 
 	pr_debug("%s\n", __func__);
+	pr_debug("[XMM] enum_delay_ms=%ld\n", enum_delay_ms);
 
 	/* check for platform data */
 	if (!pdata)
@@ -1137,6 +1193,7 @@ static int xmm_power_driver_probe(struct platform_device *device)
 
 	/* init wake lock */
 	wake_lock_init(&wakelock, WAKE_LOCK_SUSPEND, "baseband_xmm_power");
+	wake_lock_init(&modem_recovery_wakelock, WAKE_LOCK_SUSPEND, "modem_recovery");
 
 	/* init spin lock */
 	spin_lock_init(&xmm_lock);
@@ -1149,6 +1206,7 @@ static int xmm_power_driver_probe(struct platform_device *device)
 	tegra_baseband_gpios[5].gpio = pdata->modem.xmm.ipc_hsic_sus_req;
 	tegra_baseband_gpios[6].gpio = pdata->modem.xmm.bb_vbat;
 	tegra_baseband_gpios[7].gpio = pdata->modem.xmm.bb_rst_ind;
+	tegra_baseband_gpios[8].gpio = pdata->modem.xmm.ipc_bb_force_crash;
 	err = gpio_request_array(tegra_baseband_gpios,
 				ARRAY_SIZE(tegra_baseband_gpios));
 	if (err < 0) {
@@ -1169,13 +1227,12 @@ static int xmm_power_driver_probe(struct platform_device *device)
 	if (!reg_cardhu_hsic) {
 		reg_cardhu_hsic = regulator_get(NULL, "vddio_hsic");
 		if (IS_ERR_OR_NULL(reg_cardhu_hsic)) {
-			pr_err("TF201XG HSIC power on LDO6 failed\n");
+			pr_err("TF300TG HSIC power on LDO6 failed\n");
 			reg_cardhu_hsic = NULL;
 			return PTR_ERR(reg_cardhu_hsic);
 		}
 		regulator_set_voltage(reg_cardhu_hsic, 1200000, 1200000);
 	}
-	baseband_xmm_enable_hsic_power(0);
 
 	gpio_set_value(pdata->modem.xmm.bb_vbat, 0);
 	mdelay(100);
@@ -1280,6 +1337,7 @@ static int xmm_power_driver_remove(struct platform_device *device)
 
 	/* destroy wake lock */
 	wake_lock_destroy(&wakelock);
+	wake_lock_destroy(&modem_recovery_wakelock);
 
 	/* delete device file */
 	//device_remove_file(dev, &dev_attr_xmm_onoff);

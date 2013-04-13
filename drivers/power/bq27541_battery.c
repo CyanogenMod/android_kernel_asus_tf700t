@@ -37,6 +37,7 @@
 #include <mach/gpio.h>
 #include "../../arch/arm/mach-tegra/gpio-names.h"
 #include "../../arch/arm/mach-tegra/wakeups-t3.h"
+#include <mach/board-cardhu-misc.h>
 
 #define SMBUS_RETRY                                     (0)
 #define BAT_IN_DET                                        TEGRA_GPIO_PN4
@@ -45,7 +46,8 @@
 #define BATTERY_POLLING_RATE	(60)
 #define DELAY_FOR_CORRECT_CHARGER_STATUS	(5)
 #define TEMP_KELVIN_TO_CELCIUS		(2731)
-#define MAXIMAL_VALID_BATTERY_TEMP	(200)
+#define MAXIMAL_VALID_BATTERY_TEMP	(1200)
+#define BATTERY_PROTECTED_VOLT	(2800)
 #define USB_NO_Cable	0
 #define USB_DETECT_CABLE	1
 #define USB_SHIFT	0
@@ -59,6 +61,7 @@
 
 /* Battery flags bit definitions */
 #define BATT_STS_DSG		0x0001
+#define BATT_STS_SOCF		0x0002
 #define BATT_STS_FC			0x0200
 
 /* Debug Message */
@@ -106,6 +109,7 @@ enum {
 	REG_STATUS,
 	REG_CAPACITY,
 	REG_SERIAL_NUMBER,
+	REG_REMAINING_CAPACITY,
 	REG_MAX
 };
 
@@ -132,6 +136,7 @@ static struct bq27541_device_data {
 	[REG_TIME_TO_FULL]			= BQ27541_DATA(TIME_TO_FULL_AVG, 0x18, 0, 65535),
 	[REG_STATUS]				= BQ27541_DATA(STATUS, 0x0a, 0, 65535),
 	[REG_CAPACITY]				= BQ27541_DATA(CAPACITY, 0x2c, 0, 100),
+	[REG_REMAINING_CAPACITY]	= BQ27541_DATA(ENERGY_NOW, 0x10, 0, 65535), //RM(mAh)
 };
 
 static enum power_supply_property bq27541_properties[] = {
@@ -242,6 +247,8 @@ static struct bq27541_device_info {
 	int bat_vol;
 	int bat_current;
 	int bat_capacity;
+	int batt_current;
+	int batt_remain_capacity;
 	unsigned int old_capacity;
 	unsigned int cap_err;
 	unsigned int old_temperature;
@@ -332,6 +339,55 @@ static const struct attribute_group battery_smbus_group = {
 	.attrs = battery_smbus_attributes,
 };
 
+static int bq27541_battery_current(void)
+{
+	int ret;
+	int curr = 0;
+
+	ret = bq27541_read_i2c(bq27541_data[REG_CURRENT].addr, &curr, 0);
+	if (ret) {
+		printk("BAT: error reading current ret = %x\n",ret);
+
+		return bq27541_device->batt_current;
+	}
+
+	curr = (int)(s16)curr;
+
+	if (curr >= bq27541_data[REG_CURRENT].min_value &&
+		curr <= bq27541_data[REG_CURRENT].max_value) {
+
+		printk("BATT: battery current = %d mA\n", curr);
+	} else {
+		curr = bq27541_device->batt_current;
+		printk("BATT: battery current old = %d mA\n", curr);
+	}
+	return curr;
+}
+
+static int bq27541_battery_remaining_capacity(void)
+{
+	int ret;
+	int rmcap = 0;
+
+	ret = bq27541_read_i2c(bq27541_data[REG_REMAINING_CAPACITY].addr, &rmcap, 0);
+	if (ret) {
+		printk("BAT: error reading remain capacity ret = %x\n",ret);
+
+		return bq27541_device->batt_remain_capacity;
+	}
+
+	if (rmcap >= bq27541_data[REG_REMAINING_CAPACITY].min_value &&
+		rmcap <= bq27541_data[REG_REMAINING_CAPACITY].max_value) {
+		rmcap = (int)(u16)rmcap;
+
+		printk("BATT: battery remain capacity = %d\n", rmcap);
+	} else {
+		rmcap = bq27541_device->batt_remain_capacity;
+		printk("BATT: battery remain capacity old = %d\n", rmcap);
+	}
+	return rmcap;
+}
+
 static void battery_status_poll(struct work_struct *work)
 {
        struct bq27541_device_info *batt_dev = container_of(work, struct bq27541_device_info, status_poll_work.work);
@@ -373,8 +429,6 @@ static int setup_low_battery_irq(void)
 		BAT_ERR("gpio LL_BAT_T30 request failed\n");
 		goto fail;
 	}
-
-	tegra_gpio_enable(gpio);
 
 	ret = gpio_direction_input(gpio);
 	if (ret < 0) {
@@ -466,36 +520,39 @@ static int bq27541_get_psp(int reg_offset, enum power_supply_property psp,
 
 	bq27541_device->smbus_status = bq27541_smbus_read_data(reg_offset, 0, &rt_value);
 
-	if (bq27541_device->smbus_status < 0) {
-		dev_err(&bq27541_device->client->dev,
-			"%s: i2c read for %d failed\n", __func__, reg_offset);
-		if(psp == POWER_SUPPLY_PROP_TEMP && (++bq27541_device->temp_err<=3) && (bq27541_device->old_temperature!=0xFF)){
-			val->intval = bq27541_device->old_temperature;
-			BAT_NOTICE("temperature read fail, err= %u use old temp=%u\n", bq27541_device->temp_err, val->intval);
-			return 0;
-		}
-		else
-			return -EINVAL;
+	if ((bq27541_device->smbus_status < 0) && (psp != POWER_SUPPLY_PROP_TEMP)) {
+		dev_err(&bq27541_device->client->dev, "%s: i2c read for %d failed\n", __func__, reg_offset);
+		return -EINVAL;
 	}
+
 	if (psp == POWER_SUPPLY_PROP_VOLTAGE_NOW) {
-		val->intval = bq27541_device->bat_vol = rt_value;
-		BAT_NOTICE("voltage_now= %u mV\n", val->intval);
+		if (rt_value >= bq27541_data[REG_VOLTAGE].min_value &&
+			rt_value <= bq27541_data[REG_VOLTAGE].max_value) {
+			if (rt_value > BATTERY_PROTECTED_VOLT) {
+				val->intval = bq27541_device->bat_vol = rt_value*1000;
+			} else {
+				val->intval = bq27541_device->bat_vol;
+			}
+		} else {
+			val->intval = bq27541_device->bat_vol;
+		}
+		BAT_NOTICE("voltage_now= %u uV\n", val->intval);
+		battery_current = bq27541_battery_current();
+		battery_remaining_capacity = bq27541_battery_remaining_capacity();
 	}
 	if (psp == POWER_SUPPLY_PROP_STATUS) {
 		ret = bq27541_device->bat_status = rt_value;
 		static char *status_text[] = {"Unknown", "Charging", "Discharging", "Not charging", "Full"};
 
-		if (ac_on || usb_on) {            /* Charging detected */
-			if (bq27541_device->old_capacity == 100)
+		if (ac_on) {		/* Charging detected */
+			if (bq27541_device->old_capacity == 100) {
 				val->intval = POWER_SUPPLY_STATUS_FULL;
-			else
+			} else {
 				val->intval = POWER_SUPPLY_STATUS_CHARGING;
-		} else if (ret & BATT_STS_FC) {                          /* Full-charged condition reached */
-			if (!ac_on)
-				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-			else
-				val->intval = POWER_SUPPLY_STATUS_FULL;
-		} else if (ret & BATT_STS_DSG) {                       /* Discharging detected */
+			}
+		} else if (ret & BATT_STS_FC) {		/* Fully charged detected */
+			val->intval = POWER_SUPPLY_STATUS_FULL;
+		} else if (ret & BATT_STS_SOCF) {		/* Fully Discharged detected */
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 		} else {
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
@@ -504,20 +561,42 @@ static int bq27541_get_psp(int reg_offset, enum power_supply_property psp,
 
 	} else if (psp == POWER_SUPPLY_PROP_TEMP) {
 		ret = bq27541_device->bat_temp = rt_value;
-		ret -= TEMP_KELVIN_TO_CELCIUS;
 
-		if ((ret/10) >= MAXIMAL_VALID_BATTERY_TEMP && bq27541_device->temp_err == 0) {
-			ret=300;
-			BAT_NOTICE("[Warning] set temp=30 (0.1¢XC)");
-			WARN_ON(1);
+		if (bq27541_device->smbus_status >=0) {
+			if (rt_value >= bq27541_data[REG_TEMPERATURE].min_value &&
+				rt_value <= bq27541_data[REG_TEMPERATURE].max_value) {
+				if (rt_value >=2330  && rt_value <=3730) {
+					ret = rt_value -2730;
+					if(bq27541_device->temp_err)
+						bq27541_device->temp_err--;
+				} else {
+					bq27541_device->temp_err++;
+				}
+			} else {
+				bq27541_device->temp_err++;
+			}
+		} else {
 			bq27541_device->temp_err++;
 		}
-		else {
-			bq27541_device->temp_err = 0;
-		}
 
+		if (bq27541_device->temp_err) {
+			BAT_NOTICE("error: temperature ret=%d, old_temp=%d \n",
+				rt_value, bq27541_device->old_temperature);
+			if (bq27541_device->old_temperature != 0xFF) {
+				ret = bq27541_device->old_temperature;
+			} else {
+				bq27541_device->temp_err--;
+				return -EINVAL;
+			}
+
+			if (bq27541_device->temp_err > 2) {
+				BAT_NOTICE("error: temp_err > 2, shut down system \n");
+				WARN_ON(1);
+				ret = MAXIMAL_VALID_BATTERY_TEMP;
+			}
+		}
 		bq27541_device->old_temperature = val->intval = ret;
-		BAT_NOTICE("temperature= %u (0.1¢XC)\n", val->intval);
+		BAT_NOTICE("temperature= %d (0.1¢XC)\n", val->intval);
 	}
 	return 0;
 }
@@ -750,19 +829,28 @@ static struct i2c_driver bq27541_battery_driver = {
 };
 static int __init bq27541_battery_init(void)
 {
-	int ret;
+	int ret = 0;
+	u32 project_info = tegra3_get_project_id();
 
-	ret = i2c_add_driver(&bq27541_battery_driver);
-	if (ret)
-		dev_err(&bq27541_device->client->dev,
-			"%s: i2c_add_driver failed\n", __func__);
+	if(project_info == TEGRA3_PROJECT_ME301T)
+	{
+		ret = i2c_add_driver(&bq27541_battery_driver);
+		if (ret)
+			dev_err(&bq27541_device->client->dev,
+				"%s: i2c_add_driver failed\n", __func__);
+	}
 	return ret;
 }
 module_init(bq27541_battery_init);
 
 static void __exit bq27541_battery_exit(void)
 {
-	i2c_del_driver(&bq27541_battery_driver);
+	u32 project_info = tegra3_get_project_id();
+
+	if(project_info == TEGRA3_PROJECT_ME301T)
+	{
+		i2c_del_driver(&bq27541_battery_driver);
+	}
 }
 module_exit(bq27541_battery_exit);
 

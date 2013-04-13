@@ -101,8 +101,17 @@ void nvhost_module_reset(struct nvhost_device *dev)
 
 static void to_state_clockgated_locked(struct nvhost_device *dev)
 {
+	struct nvhost_driver *drv = to_nvhost_driver(dev->dev.driver);
+
 	if (dev->powerstate == NVHOST_POWER_STATE_RUNNING) {
-		int i;
+		int i, err;
+		if (drv->prepare_clockoff) {
+			err = drv->prepare_clockoff(dev);
+			if (err) {
+				dev_err(&dev->dev, "error clock gating");
+				return;
+			}
+		}
 		for (i = 0; i < dev->num_clks; i++)
 			clk_disable(dev->clk[i]);
 		if (dev->dev.parent)
@@ -141,6 +150,14 @@ static void to_state_running_locked(struct nvhost_device *dev)
 			}
 		}
 
+		/* Invoke callback after enabling clock. This is used for
+		 * re-enabling host1x interrupts. */
+		if (prev_state == NVHOST_POWER_STATE_CLOCKGATED
+				&& drv->finalize_clockon)
+			drv->finalize_clockon(dev);
+
+		/* Invoke callback after power un-gating. This is used for
+		 * restoring context. */
 		if (prev_state == NVHOST_POWER_STATE_POWERGATED
 				&& drv->finalize_poweron)
 			drv->finalize_poweron(dev);
@@ -299,8 +316,13 @@ int nvhost_module_set_rate(struct nvhost_device *dev, void *priv,
 	mutex_lock(&client_list_lock);
 	list_for_each_entry(m, &dev->client_list, node) {
 		if (m->priv == priv) {
-			for (i = 0; i < dev->num_clks; i++)
-				m->rate[i] = clk_round_rate(dev->clk[i], rate);
+			if (!strcmp(dev->name, "mpe")) {
+				m->rate[0] = clk_round_rate(dev->clk[0], rate);
+			} else {
+				for (i = 0; i < dev->num_clks; i++)
+					m->rate[i] = clk_round_rate(dev->clk[i],
+									rate);
+			}
 			break;
 		}
 	}
@@ -343,15 +365,17 @@ void nvhost_module_remove_client(struct nvhost_device *dev, void *priv)
 {
 	int i;
 	struct nvhost_module_client *m;
+	int found = 0;
 
 	mutex_lock(&client_list_lock);
 	list_for_each_entry(m, &dev->client_list, node) {
 		if (priv == m->priv) {
 			list_del(&m->node);
+			found = 1;
 			break;
 		}
 	}
-	if (m) {
+	if (found) {
 		kfree(m);
 		for (i = 0; i < dev->num_clks; i++)
 			nvhost_module_update_rate(dev, i);
@@ -517,6 +541,9 @@ int nvhost_module_init(struct nvhost_device *dev)
 	attr->attr.mode = S_IWUSR | S_IRUGO;
 	attr->show = clockgate_delay_show;
 	attr->store = clockgate_delay_store;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	sysfs_attr_init(&attr->attr);
+#endif
 	if (sysfs_create_file(dev->power_kobj, &attr->attr)) {
 		dev_err(&dev->dev, "Could not create sysfs attribute clockgate_delay\n");
 		err = -EIO;
@@ -528,6 +555,9 @@ int nvhost_module_init(struct nvhost_device *dev)
 	attr->attr.mode = S_IWUSR | S_IRUGO;
 	attr->show = powergate_delay_show;
 	attr->store = powergate_delay_store;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	sysfs_attr_init(&attr->attr);
+#endif
 	if (sysfs_create_file(dev->power_kobj, &attr->attr)) {
 		dev_err(&dev->dev, "Could not create sysfs attribute powergate_delay\n");
 		err = -EIO;
@@ -538,6 +568,9 @@ int nvhost_module_init(struct nvhost_device *dev)
 	attr->attr.name = "refcount";
 	attr->attr.mode = S_IRUGO;
 	attr->show = refcount_show;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	sysfs_attr_init(&attr->attr);
+#endif
 	if (sysfs_create_file(dev->power_kobj, &attr->attr)) {
 		dev_err(&dev->dev, "Could not create sysfs attribute refcount\n");
 		err = -EIO;

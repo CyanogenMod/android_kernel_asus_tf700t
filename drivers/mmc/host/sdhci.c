@@ -29,8 +29,6 @@
 
 #include "sdhci.h"
 
-#include "../debug_mmc.h"
-
 #define DRIVER_NAME "sdhci"
 
 #define DBG(f, x...) \
@@ -1359,8 +1357,8 @@ static void sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		if (((ios->timing == MMC_TIMING_UHS_SDR50) ||
 		    (ios->timing == MMC_TIMING_UHS_SDR104) ||
 		    (ios->timing == MMC_TIMING_UHS_DDR50) ||
-                    (ios->timing == MMC_TIMING_UHS_SDR25) ||
-                    (ios->timing == MMC_TIMING_UHS_SDR12))
+		    (ios->timing == MMC_TIMING_UHS_SDR25) ||
+		    (ios->timing == MMC_TIMING_UHS_SDR12))
 		    && !(host->quirks & SDHCI_QUIRK_NO_HISPD_BIT))
 			ctrl |= SDHCI_CTRL_HISPD;
 
@@ -1851,7 +1849,6 @@ static void sdhci_enable_preset_value(struct mmc_host *mmc, bool enable)
 int sdhci_enable(struct mmc_host *mmc)
 {
 	struct sdhci_host *host = mmc_priv(mmc);
-	u16 clk;
 
 	if (!mmc->card || mmc->card->type == MMC_TYPE_SDIO)
 		return 0;
@@ -1868,7 +1865,6 @@ int sdhci_enable(struct mmc_host *mmc)
 int sdhci_disable(struct mmc_host *mmc, int lazy)
 {
 	struct sdhci_host *host = mmc_priv(mmc);
-	u16 clk;
 
 	if (!mmc->card || mmc->card->type == MMC_TYPE_SDIO)
 		return 0;
@@ -2236,7 +2232,6 @@ static irqreturn_t sdhci_irq(int irq, void *dev_id)
 		mmc_hostname(host->mmc), intmask);
 
 	if (intmask & (SDHCI_INT_CARD_INSERT | SDHCI_INT_CARD_REMOVE)) {
-		MMC_printk("%s: intmask 0x%08x SDHCI_INT_STATUS 0x%08x", mmc_hostname(host->mmc), intmask, sdhci_readl(host, SDHCI_INT_STATUS));
 		u32 present = sdhci_readl(host, SDHCI_PRESENT_STATE) &
 			      SDHCI_CARD_PRESENT;
 
@@ -2258,6 +2253,11 @@ static irqreturn_t sdhci_irq(int irq, void *dev_id)
 		sdhci_writel(host, intmask & (SDHCI_INT_CARD_INSERT |
 			     SDHCI_INT_CARD_REMOVE), SDHCI_INT_STATUS);
 		intmask &= ~(SDHCI_INT_CARD_INSERT | SDHCI_INT_CARD_REMOVE);
+
+		/*
+		 * Bypass redundant sdhci register detection.
+		 * SD init works only when carddetect pin is varied.
+		 */
 		if (strcmp(mmc_hostname(host->mmc), "mmc2"))
 			tasklet_schedule(&host->card_tasklet);
 	}
@@ -2340,15 +2340,6 @@ int sdhci_suspend_host(struct sdhci_host *host, pm_message_t state)
 	}
 
 	if (mmc->card) {
-		/*
-		 * If eMMC cards are put in sleep state, Vccq can be disabled
-		 * but Vcc would still be powered on. In resume, we only restore
-		 * the controller context. So, set MMC_PM_KEEP_POWER flag.
-		 */
-		if (mmc_card_can_sleep(mmc) &&
-			!(mmc->caps & MMC_CAP2_NO_SLEEP_CMD))
-			mmc->pm_flags = MMC_PM_KEEP_POWER;
-
 		ret = mmc_suspend_host(host->mmc);
 		if (ret) {
 			if (has_tuning_timer) {
@@ -2369,24 +2360,11 @@ int sdhci_suspend_host(struct sdhci_host *host, pm_message_t state)
 
 	sdhci_mask_irqs(host, SDHCI_INT_ALL_MASK);
 
-	if (host->vmmc) {
+	if (host->vmmc)
 		ret = regulator_disable(host->vmmc);
-		if (ret)
-			pr_err("%s: failed to disable regulator\n", __func__);
-	}
 
 	if (host->irq)
 		disable_irq(host->irq);
-
-	return 0;
-
-err_suspend_host:
-	/* Set the re-tuning expiration flag */
-	if ((host->version >= SDHCI_SPEC_300) && host->tuning_count &&
-	    (host->tuning_mode == SDHCI_TUNING_MODE_1))
-		host->flags |= SDHCI_NEEDS_RETUNING;
-
-	sdhci_enable_card_detection(host);
 
 	return ret;
 }

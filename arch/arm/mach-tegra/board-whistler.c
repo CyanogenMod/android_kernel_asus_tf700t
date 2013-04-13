@@ -505,6 +505,7 @@ static void __init tegra_whistler_init(void)
 {
 	int modem_id = tegra_get_modem_id();
 	tegra_clk_init_from_table(whistler_clk_init_table);
+	tegra_soc_device_init("whistler");
 	whistler_pinmux_init();
 	whistler_i2c_init();
 	whistler_uart_init();
@@ -539,12 +540,18 @@ void __init tegra_whistler_reserve(void)
 	tegra_ram_console_debug_reserve(SZ_1M);
 }
 
+static const char *whistler_dt_board_compat[] = {
+	"nvidia,whistler",
+	NULL
+};
+
 MACHINE_START(WHISTLER, "whistler")
 	.boot_params    = 0x00000100,
 	.map_io         = tegra_map_common_io,
-	.reserve        = tegra_whistler_reserve,
 	.init_early	= tegra_init_early,
 	.init_irq       = tegra_init_irq,
+	.reserve        = tegra_whistler_reserve,
 	.timer          = &tegra_timer,
 	.init_machine   = tegra_whistler_init,
+	.dt_compat	= whistler_dt_board_compat,
 MACHINE_END

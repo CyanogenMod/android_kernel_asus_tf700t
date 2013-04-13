@@ -35,6 +35,7 @@ Who am I ID
 #define KXT_9_I2C_ADDR		0x0F
 /* CONTROL REGISTER 1 BITS */
 #define RES_12BIT		0x40
+#define DRDYE			0x20
 #define KXT_9_G_2G 		0x00
 #define KXT_9_G_4G 		0x08
 #define KXT_9_G_8G 		0x10

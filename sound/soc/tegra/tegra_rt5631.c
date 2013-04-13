@@ -333,7 +333,7 @@ static int __init tegra_rt5631_modinit(void)
 	}
 
 	ret = platform_driver_register(&tegra_rt5631_driver);
-	audio_dock_init();	
+	audio_dock_init();
 
 	printk(KERN_INFO "%s- #####\n", __func__);
 	return ret;

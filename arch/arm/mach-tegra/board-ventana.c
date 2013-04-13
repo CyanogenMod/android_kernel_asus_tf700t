@@ -424,9 +424,6 @@ static struct i2c_board_info __initdata i2c_info[] = {
 
 static int __init ventana_touch_init_atmel(void)
 {
-	tegra_gpio_enable(TEGRA_GPIO_PV6);
-	tegra_gpio_enable(TEGRA_GPIO_PQ7);
-
 	gpio_request(TEGRA_GPIO_PV6, "atmel-irq");
 	gpio_direction_input(TEGRA_GPIO_PV6);
 
@@ -455,9 +452,6 @@ static struct i2c_board_info __initdata ventana_i2c_bus1_touch_info[] = {
 
 static int __init ventana_touch_init_panjit(void)
 {
-	tegra_gpio_enable(TEGRA_GPIO_PV6);
-
-	tegra_gpio_enable(TEGRA_GPIO_PQ7);
 	i2c_register_board_info(0, ventana_i2c_bus1_touch_info, 1);
 
 	return 0;
@@ -471,7 +465,6 @@ static int __init ventana_gps_init(void)
 		clk_enable(clk32);
 	}
 
-	tegra_gpio_enable(TEGRA_GPIO_PZ3);
 	return 0;
 }
 
@@ -527,9 +520,6 @@ static void ulpi_link_platform_open(void)
 	int reset_gpio = TEGRA_GPIO_PV1;
 
 	gpio_request(reset_gpio, "ulpi_phy_reset");
-	gpio_direction_output(reset_gpio, 0);
-	tegra_gpio_enable(reset_gpio);
-
 	gpio_direction_output(reset_gpio, 0);
 	msleep(5);
 	gpio_direction_output(reset_gpio, 1);
@@ -611,6 +601,7 @@ static void __init tegra_ventana_init(void)
 	struct board_info BoardInfo;
 
 	tegra_clk_init_from_table(ventana_clk_init_table);
+	tegra_soc_device_init("ventana");
 	ventana_pinmux_init();
 	ventana_i2c_init();
 	ventana_uart_init();
@@ -662,12 +653,18 @@ void __init tegra_ventana_reserve(void)
 	tegra_ram_console_debug_reserve(SZ_1M);
 }
 
+static const char *ventana_dt_board_compat[] = {
+	"nvidia,ventana",
+	NULL
+};
+
 MACHINE_START(VENTANA, "ventana")
 	.boot_params    = 0x00000100,
 	.map_io         = tegra_map_common_io,
-	.reserve        = tegra_ventana_reserve,
 	.init_early	= tegra_init_early,
-	.init_irq	= tegra_init_irq,
+	.init_irq       = tegra_init_irq,
+	.reserve        = tegra_ventana_reserve,
 	.timer          = &tegra_timer,
-	.init_machine	= tegra_ventana_init,
+	.init_machine   = tegra_ventana_init,
+	.dt_compat	= ventana_dt_board_compat,
 MACHINE_END

@@ -19,7 +19,6 @@
 
 #include <linux/kthread.h>
 #include <linux/ktime.h>
-#include <linux/notifier.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
 #include <linux/init.h>
@@ -45,46 +44,39 @@ static void set_throughput_hint(struct work_struct *work)
 	nvhost_scale3d_set_throughput_hint(throughput_hint);
 }
 
-static int throughput_flip_notifier(struct notifier_block *nb,
-					     unsigned long val,
-					     void *data)
+static int throughput_flip_callback(void)
 {
-	/* only register flips when a single display is active */
-	if (val != 1 || multiple_app_disable)
+	long timediff;
+	ktime_t now;
+
+	/* only register flips when a single app is active */
+	if (multiple_app_disable)
 		return NOTIFY_DONE;
-	else {
-		long timediff;
-		ktime_t now;
 
-		now = ktime_get();
-		if (last_flip.tv64 != 0) {
-			timediff = (long) ktime_us_delta(now, last_flip);
-			if (timediff > (long) USHRT_MAX)
-				last_frame_time = USHRT_MAX;
-			else
-				last_frame_time = (unsigned short) timediff;
+	now = ktime_get();
+	if (last_flip.tv64 != 0) {
+		timediff = (long) ktime_us_delta(now, last_flip);
+		if (timediff > (long) USHRT_MAX)
+			last_frame_time = USHRT_MAX;
+		else
+			last_frame_time = (unsigned short) timediff;
 
-			if (last_frame_time == 0) {
-				pr_warn("%s: notifications %lld nsec apart\n",
-					__func__, now.tv64 - last_flip.tv64);
-				return NOTIFY_DONE;
-			}
-
-			throughput_hint =
-				((int) target_frame_time * 100)/last_frame_time;
-
-			if (!work_pending(&work))
-				schedule_work(&work);
+		if (last_frame_time == 0) {
+			pr_warn("%s: flips %lld nsec apart\n",
+				__func__, now.tv64 - last_flip.tv64);
+			return NOTIFY_DONE;
 		}
-		last_flip = now;
+
+		throughput_hint =
+			((int) target_frame_time * 1000) / last_frame_time;
+
+		if (!work_pending(&work))
+			schedule_work(&work);
 	}
+	last_flip = now;
 
 	return NOTIFY_OK;
 }
-
-static struct notifier_block throughput_flip_nb = {
-	.notifier_call = throughput_flip_notifier,
-};
 
 static int sync_rate;
 static int throughput_active_app_count;
@@ -104,17 +96,15 @@ static void reset_target_frame_time(void)
 		__func__, sync_rate, target_frame_time);
 }
 
-static int notifier_initialized;
+static int callback_initialized;
 
 static int throughput_open(struct inode *inode, struct file *file)
 {
-	int need_init = 0;
-
 	spin_lock(&lock);
 
-	if (!notifier_initialized) {
-		notifier_initialized = 1;
-		need_init = 1;
+	if (!callback_initialized) {
+		callback_initialized = 1;
+		tegra_dc_set_flip_callback(throughput_flip_callback);
 	}
 
 	throughput_active_app_count++;
@@ -123,8 +113,6 @@ static int throughput_open(struct inode *inode, struct file *file)
 
 	spin_unlock(&lock);
 
-	if (need_init)
-		tegra_dc_register_flip_notifier(&throughput_flip_nb);
 
 	pr_debug("throughput_open node %p file %p\n", inode, file);
 
@@ -133,22 +121,17 @@ static int throughput_open(struct inode *inode, struct file *file)
 
 static int throughput_release(struct inode *inode, struct file *file)
 {
-	int need_deinit = 0;
-
 	spin_lock(&lock);
 
 	throughput_active_app_count--;
 	if (throughput_active_app_count == 0) {
 		reset_target_frame_time();
 		multiple_app_disable = 0;
-		notifier_initialized = 0;
-		need_deinit = 1;
+		callback_initialized = 0;
+		tegra_dc_unset_flip_callback();
 	}
 
 	spin_unlock(&lock);
-
-	if (need_deinit)
-		tegra_dc_unregister_flip_notifier(&throughput_flip_nb);
 
 	pr_debug("throughput_release node %p file %p\n", inode, file);
 
