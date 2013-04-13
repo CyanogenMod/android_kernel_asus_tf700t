@@ -1245,7 +1245,7 @@ static ssize_t dbg_set_mi1040_reg_write(struct file *file, char __user *buf, siz
 	char debug_buf[256];
 	int cnt, byte_num;
 	char ofst_str[7], reg_val_str[11];
-	unsigned int ofst = 0, reg_val= 0;
+	unsigned int ofst, reg_val= 0;
 
 	printk("%s: buf=%p, count=%d, ppos=%p\n", __FUNCTION__, buf, count, ppos);
 	if (count > sizeof(debug_buf))
@@ -1671,18 +1671,19 @@ static long sensor_ioctl(struct file *file,
 
 static int sensor_open(struct inode *inode, struct file *file)
 {
-	int ret = -EIO;
+	int ret;
 
 	pr_info("yuv %s\n",__func__);
-
 	file->private_data = info;
-
 	if (info->pdata && info->pdata->power_on)
 		ret = info->pdata->power_on();
-
-	sensor_opened = !ret;
-
-	return ret;
+	if (ret == 0)
+		sensor_opened = true;
+	else{
+		sensor_opened = false;
+		return -EBUSY;
+	}
+	return 0;
 }
 
 int mi1040_sensor_release(struct inode *inode, struct file *file)

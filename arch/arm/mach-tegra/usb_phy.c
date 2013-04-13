@@ -286,8 +286,6 @@ struct tegra_usb_phy *tegra_usb_phy_open(struct platform_device *pdev)
 		ERR("inst:[%d] couldn't get regulator avdd_usb: %ld\n",
 			phy->inst, PTR_ERR(phy->vdd_reg));
 		phy->vdd_reg = NULL;
-		err = PTR_ERR(phy->vdd_reg);
-		goto fail_io;
 	}
 
 	err = tegra_usb_phy_get_clocks(phy);
@@ -319,6 +317,7 @@ struct tegra_usb_phy *tegra_usb_phy_open(struct platform_device *pdev)
 				 instance : %d\n", PTR_ERR(phy->vbus_reg),
 								phy->inst);
 				err = PTR_ERR(phy->vbus_reg);
+				phy->vbus_reg = NULL;
 				goto fail_init;
 			}
 		} else {
@@ -329,8 +328,6 @@ struct tegra_usb_phy *tegra_usb_phy_open(struct platform_device *pdev)
 						 req failed\n", phy->inst);
 					goto fail_init;
 				}
-				if (gpio < TEGRA_NR_GPIOS)
-					tegra_gpio_enable(gpio);
 				if (gpio_direction_output(gpio, 1) < 0) {
 					ERR("inst:[%d] host vbus gpio \
 						 dir failed\n", phy->inst);

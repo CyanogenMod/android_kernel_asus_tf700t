@@ -22,8 +22,7 @@ struct mmc_cid {
 	unsigned char		hwrev;
 	unsigned char		fwrev;
 	unsigned char		month;
-	unsigned short          prod_rev;
-	unsigned int		prv;
+	unsigned short		prod_rev;
 };
 
 struct mmc_csd {
@@ -65,7 +64,6 @@ struct mmc_ext_csd {
 	bool			enhanced_area_en;	/* enable bit */
 	unsigned long long	enhanced_area_offset;	/* Units: Byte */
 	unsigned int		enhanced_area_size;	/* Units: KB */
-	unsigned int		sec_count;
 	unsigned int		boot_size;		/* in bytes */
 	u8			raw_partition_support;	/* 160 */
 	u8			raw_erased_mem_count;	/* 181 */
@@ -116,7 +114,7 @@ struct sd_switch_caps {
 #define UHS_DDR50_MAX_DTR	50000000
 #define UHS_DDR41_MAX_DTR	41000000
 #define UHS_SDR25_MAX_DTR	UHS_DDR50_MAX_DTR
-#define UHS_SDR20_5_MAX_DTR     41000000
+#define UHS_SDR20_5_MAX_DTR	41000000
 #define UHS_SDR12_MAX_DTR	25000000
 	unsigned int		sd3_bus_mode;
 #define UHS_SDR12_BUS_SPEED	0
@@ -346,7 +344,6 @@ static inline void __maybe_unused remove_quirk(struct mmc_card *card, int data)
 #define mmc_card_set_present(c)	((c)->state |= MMC_STATE_PRESENT)
 #define mmc_card_set_readonly(c) ((c)->state |= MMC_STATE_READONLY)
 #define mmc_card_set_highspeed(c) ((c)->state |= MMC_STATE_HIGHSPEED)
-#define mmc_card_unset_highspeed(c) ((c)->state &= ~MMC_STATE_HIGHSPEED)
 #define mmc_card_set_blockaddr(c) ((c)->state |= MMC_STATE_BLOCKADDR)
 #define mmc_card_set_ddr_mode(c) ((c)->state |= MMC_STATE_HIGHSPEED_DDR)
 #define mmc_sd_card_set_uhs(c) ((c)->state |= MMC_STATE_ULTRAHIGHSPEED)
@@ -355,6 +352,7 @@ static inline void __maybe_unused remove_quirk(struct mmc_card *card, int data)
 #define mmc_card_set_sleep(c)	((c)->state |= MMC_STATE_SLEEP)
 
 #define mmc_card_clr_sleep(c)	((c)->state &= ~MMC_STATE_SLEEP)
+#define mmc_card_clr_highspeed(c) ((c)->state &= ~MMC_STATE_HIGHSPEED)
 /*
  * Quirk add/remove for MMC products.
  */

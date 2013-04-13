@@ -269,7 +269,8 @@ static int configure_charging_parameter(struct tps80031_charger *charger)
 	}
 
 	/* set Pre Charge current to 400mA */
-	ret = tps80031_write(charger->dev->parent, SLAVE_ID2, 0xDE, 0x3);
+	ret = tps80031_write(charger->dev->parent, SLAVE_ID2,
+			CHARGERUSB_VICHRG_PC, 0x3);
 	if (ret < 0) {
 		dev_err(charger->dev, "%s(): Failed in writing register 0x%02x\n",
 				__func__, 0xDD);
@@ -293,27 +294,41 @@ static int configure_charging_parameter(struct tps80031_charger *charger)
 	return 0;
 }
 
-static irqreturn_t linch_status_isr(int irq, void *dev_id)
+static bool tps80031_check_charging_completed(struct tps80031_charger *charger)
 {
-	struct tps80031_charger *charger = dev_id;
-	uint8_t linch_status;
 	int ret;
-	dev_info(charger->dev, "%s() got called\n", __func__);
+	uint8_t linch_status;
 
 	ret = tps80031_read(charger->dev->parent, SLAVE_ID2,
 			LINEAR_CHRG_STS, &linch_status);
 	if (ret < 0) {
 		dev_err(charger->dev, "%s(): Failed in reading register 0x%02x\n",
 				__func__, LINEAR_CHRG_STS);
+		return false;
+	}
+
+	if (linch_status & 0x20) {
+		charger->state = charging_state_charging_completed;
+		ret = true;
 	} else {
-		dev_info(charger->dev, "%s():The status of LINEAR_CHRG_STS is 0x%02x\n",
-				 __func__, linch_status);
-		if (linch_status & 0x20) {
-			charger->state = charging_state_charging_completed;
-			if (charger->charger_cb)
-				charger->charger_cb(charger->state,
+		charger->state = charging_state_charging_in_progress;
+		ret = false;
+	}
+
+	return ret;
+}
+
+static irqreturn_t linch_status_isr(int irq, void *dev_id)
+{
+	struct tps80031_charger *charger = dev_id;
+
+	dev_info(charger->dev, "%s() got called\n", __func__);
+
+	if (tps80031_check_charging_completed(charger)) {
+		charger->state = charging_state_charging_completed;
+		if (charger->charger_cb)
+			charger->charger_cb(charger->state,
 					charger->charger_cb_data);
-		}
 	}
 
 	return IRQ_HANDLED;
@@ -325,8 +340,22 @@ static irqreturn_t watchdog_expire_isr(int irq, void *dev_id)
 	int ret;
 
 	dev_info(charger->dev, "%s()\n", __func__);
-	if (charger->state != charging_state_charging_in_progress)
-		return IRQ_HANDLED;
+	if (charger->state != charging_state_charging_in_progress) {
+		/*
+		 * After the charge completed, the chip can enable the
+		 * charging again if battery voltage is 120mV below the
+		 * charging voltage (defined by VOREG register).
+		 */
+		if (tps80031_check_charging_completed(charger)) {
+			return IRQ_HANDLED;
+		} else {
+			/* "recharging" after charging completed happened */
+			charger->state = charging_state_charging_in_progress;
+			if (charger->charger_cb)
+				charger->charger_cb(charger->state,
+						charger->charger_cb_data);
+		}
+	}
 
 	/* Enable watchdog timer again*/
 	ret = tps80031_write(charger->dev->parent, SLAVE_ID2, CONTROLLER_WDG,
@@ -352,10 +381,18 @@ static int tps80031_charger_probe(struct platform_device *pdev)
 	int ret = 0;
 	struct device *dev = &pdev->dev;
 	struct tps80031_charger *charger;
-	struct tps80031_charger_platform_data *pdata = pdev->dev.platform_data;
+	struct tps80031_platform_data *tps80031_pdata;
+	struct tps80031_charger_platform_data *pdata;
 
 	dev_info(dev, "%s()\n", __func__);
 
+	tps80031_pdata = dev_get_platdata(pdev->dev.parent);
+	if (!tps80031_pdata) {
+		dev_err(&pdev->dev, "no tps80031 platform_data specified\n");
+		return -EINVAL;
+	}
+
+	pdata = tps80031_pdata->battery_charger_pdata;
 	if (!pdata) {
 		dev_err(dev, "%s() No platform data, exiting..\n", __func__);
 		return -ENODEV;

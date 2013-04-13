@@ -14,7 +14,6 @@ obj-$(CONFIG_WM831X_POWER)	+= wm831x_power.o
 obj-$(CONFIG_WM8350_POWER)	+= wm8350_power.o
 obj-$(CONFIG_TEST_POWER)	+= test_power.o
 
-obj-$(CONFIG_CHARGER_SMB347)	+= smb347-charger.o
 obj-$(CONFIG_BATTERY_DS2760)	+= ds2760_battery.o
 obj-$(CONFIG_BATTERY_DS2780)	+= ds2780_battery.o
 obj-$(CONFIG_BATTERY_DS2782)	+= ds2782_battery.o
@@ -45,5 +44,7 @@ obj-$(CONFIG_CHARGER_MAX8997)	+= max8997_charger.o
 obj-$(CONFIG_CHARGER_MAX8998)	+= max8998_charger.o
 obj-$(CONFIG_MAX8907C_CHARGER)	+= max8907c-charger.o
 obj-$(CONFIG_BATTERY_PAD)	+= pad_battery.o
-obj-$(CONFIG_BATTERY_BQ27541)	+= bq27541_battery.o
+obj-$(CONFIG_CHARGER_SMB347)    += smb347-charger.o
+obj-$(CONFIG_BATTERY_BQ27541)   += bq27541_battery.o
+CFLAGS_tegra_bpc_mgmt.o		= -Werror
 obj-$(CONFIG_TEGRA_BPC_MGMT)	+= tegra_bpc_mgmt.o

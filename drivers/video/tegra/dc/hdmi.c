@@ -1339,7 +1339,8 @@ static bool tegra_dc_hdmi_mode_filter(const struct tegra_dc *dc,
 		return false;
 
 	// since P1801 main display is HDMI, the resolution should fix to 1080p
-	if( tegra3_get_project_id()==TEGRA3_PROJECT_P1801 && (mode->xres < 1920 || mode->yres < 1080))
+        if(tegra3_get_project_id()==TEGRA3_PROJECT_P1801
+                        && (mode->xres < 1920 || mode->yres < 1080))
 		return false;
 
 	/* Check some of DC's constraints */
@@ -1388,14 +1389,14 @@ void tegra_dc_hdmi_detect_config(struct tegra_dc *dc,
 	tegra_fb_update_monspecs(dc->fb, specs, tegra_dc_hdmi_mode_filter);
 #ifdef CONFIG_SWITCH
 	hdmi->hpd_switch.state = 0;
-	if ( tegra3_get_project_id()==TEGRA3_PROJECT_P1801 )
-		switch_set_state(&hdmi->hpd_switch, 0);	// do not tell userspace there is an HDMI plugged in
-	else{
-		if (hdmi->dvi)
-			switch_set_state(&hdmi->hpd_switch, 2);
-		else
-			switch_set_state(&hdmi->hpd_switch, 1);
-	}
+        if ( tegra3_get_project_id()==TEGRA3_PROJECT_P1801 ) {
+                switch_set_state(&hdmi->hpd_switch, 0);	// do not tell userspace there is an HDMI plugged in
+        } else {
+                if (hdmi->dvi)
+                        switch_set_state(&hdmi->hpd_switch, 2);
+                else
+                        switch_set_state(&hdmi->hpd_switch, 1);
+        }
 #endif
 	dev_info(&dc->ndev->dev, "display detected\n");
 
@@ -1450,7 +1451,9 @@ fail:
 #ifdef CONFIG_SWITCH
 	switch_set_state(&hdmi->hpd_switch, 0);
 #endif
-	tegra_nvhdcp_set_plug(hdmi->nvhdcp, 0);
+        if (hdmi->nvhdcp) {
+                tegra_nvhdcp_set_plug(hdmi->nvhdcp, 0);
+        }
 	return false;
 }
 EXPORT_SYMBOL(tegra_dc_hdmi_detect_test);
@@ -1498,7 +1501,9 @@ fail:
 #ifdef CONFIG_SWITCH
 	switch_set_state(&hdmi->hpd_switch, 0);
 #endif
-	tegra_nvhdcp_set_plug(hdmi->nvhdcp, 0);
+        if (hdmi->nvhdcp) {
+                tegra_nvhdcp_set_plug(hdmi->nvhdcp, 0);
+        }
 	return false;
 }
 
@@ -1546,7 +1551,9 @@ static void tegra_dc_hdmi_suspend(struct tegra_dc *dc)
 	struct tegra_dc_hdmi_data *hdmi = tegra_dc_get_outdata(dc);
 	unsigned long flags;
 
-	tegra_nvhdcp_suspend(hdmi->nvhdcp);
+        if (hdmi->nvhdcp) {
+                tegra_nvhdcp_suspend(hdmi->nvhdcp);
+        }
 	spin_lock_irqsave(&hdmi->suspend_lock, flags);
 	hdmi->suspended = true;
 	spin_unlock_irqrestore(&hdmi->suspend_lock, flags);
@@ -1560,15 +1567,23 @@ static void tegra_dc_hdmi_resume(struct tegra_dc *dc)
 	spin_lock_irqsave(&hdmi->suspend_lock, flags);
 	hdmi->suspended = false;
 
-	if (tegra_dc_hdmi_hpd(dc))
-		queue_delayed_work(system_nrt_wq, &hdmi->work,
-				   msecs_to_jiffies(100));
-	else
-		queue_delayed_work(system_nrt_wq, &hdmi->work,
-				   msecs_to_jiffies(30));
+        if ( tegra3_get_project_id()!=TEGRA3_PROJECT_P1801 )
+        {
+                if (tegra_dc_hdmi_hpd(dc))
+                        queue_delayed_work(system_nrt_wq, &hdmi->work,
+                                        msecs_to_jiffies(100));
+                else
+                        queue_delayed_work(system_nrt_wq, &hdmi->work,
+                                        msecs_to_jiffies(30));
+        }
 
 	spin_unlock_irqrestore(&hdmi->suspend_lock, flags);
-	tegra_nvhdcp_resume(hdmi->nvhdcp);
+
+        if ( tegra3_get_project_id()!=TEGRA3_PROJECT_P1801 ) {
+                if (hdmi->nvhdcp) {
+                        tegra_nvhdcp_resume(hdmi->nvhdcp);
+                }
+        }
 }
 
 #ifdef CONFIG_SWITCH
@@ -1688,13 +1703,17 @@ static int tegra_dc_hdmi_init(struct tegra_dc *dc)
 	}
 
 #ifdef CONFIG_TEGRA_NVHDCP
-	hdmi->nvhdcp = tegra_nvhdcp_create(hdmi, dc->ndev->id,
-			dc->out->dcc_bus);
-	if (IS_ERR_OR_NULL(hdmi->nvhdcp)) {
-		dev_err(&dc->ndev->dev, "hdmi: can't create nvhdcp\n");
-		err = PTR_ERR(hdmi->nvhdcp);
-		goto err_edid_destroy;
-	}
+        if (tegra3_get_project_id() != TEGRA3_PROJECT_P1801) {
+                hdmi->nvhdcp = tegra_nvhdcp_create(hdmi, dc->ndev->id,
+                                dc->out->dcc_bus);
+                if (IS_ERR_OR_NULL(hdmi->nvhdcp)) {
+                        dev_err(&dc->ndev->dev, "hdmi: can't create nvhdcp\n");
+                        err = PTR_ERR(hdmi->nvhdcp);
+                        goto err_edid_destroy;
+                }
+        }
+        else
+                hdmi->nvhdcp = NULL;
 #else
 	hdmi->nvhdcp = NULL;
 #endif
@@ -1729,13 +1748,16 @@ static int tegra_dc_hdmi_init(struct tegra_dc *dc)
 	tegra_dc_set_outdata(dc, hdmi);
 
 	dc_hdmi = hdmi;
-	/* boards can select default content protection policy */
-	if (dc->out->flags & TEGRA_DC_OUT_NVHDCP_POLICY_ON_DEMAND)
-		tegra_nvhdcp_set_policy(hdmi->nvhdcp,
-			TEGRA_NVHDCP_POLICY_ON_DEMAND);
-	else
-		tegra_nvhdcp_set_policy(hdmi->nvhdcp,
-			TEGRA_NVHDCP_POLICY_ALWAYS_ON);
+
+        if (hdmi->nvhdcp) {
+                /* boards can select default content protection policy */
+                if (dc->out->flags & TEGRA_DC_OUT_NVHDCP_POLICY_ON_DEMAND)
+                        tegra_nvhdcp_set_policy(hdmi->nvhdcp,
+                                        TEGRA_NVHDCP_POLICY_ON_DEMAND);
+                else
+                        tegra_nvhdcp_set_policy(hdmi->nvhdcp,
+                                        TEGRA_NVHDCP_POLICY_ALWAYS_ON);
+        }
 
 	tegra_dc_hdmi_debug_create(hdmi);
 
@@ -1791,8 +1813,9 @@ static void tegra_dc_hdmi_destroy(struct tegra_dc *dc)
 	clk_put(hdmi->disp1_clk);
 	clk_put(hdmi->disp2_clk);
 	tegra_edid_destroy(hdmi->edid);
-	tegra_nvhdcp_destroy(hdmi->nvhdcp);
-
+        if (hdmi->nvhdcp) {
+                tegra_nvhdcp_destroy(hdmi->nvhdcp);
+        }
 	kfree(hdmi);
 
 }
@@ -2182,9 +2205,12 @@ static void tegra_dc_hdmi_setup_avi_infoframe(struct tegra_dc *dc, bool dvi)
 				avi.vic = 16; /* 60 Hz */
 			else
 				avi.vic = 34; /* 30 Hz */
-		} else if (dc->mode.h_front_porch == 528)
-			avi.vic = 31; /* 50 Hz */
-		else
+		} else if (dc->mode.h_front_porch == 528) {
+			if (dc->mode.pclk > 74250000)
+				avi.vic = 31; /* 50 Hz */
+			else
+				avi.vic = 33; /* 25 Hz */
+		} else
 			avi.vic = 32; /* 24 Hz */
 	} else {
 		avi.m = HDMI_AVI_M_16_9;
@@ -2303,16 +2329,21 @@ static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 #endif
 
 	/* back off multiplier before attaching to parent at new rate. */
-	oldrate = clk_get_rate(hdmi->clk);
-	clk_set_rate(hdmi->clk, oldrate / 2);
+        if(tegra3_get_project_id()!=TEGRA3_PROJECT_P1801) {
+                oldrate = clk_get_rate(hdmi->clk);
+                clk_set_rate(hdmi->clk, oldrate / 2);
+        }
 
 	tegra_dc_setup_clk(dc, hdmi->clk);
 	clk_set_rate(hdmi->clk, dc->mode.pclk);
 
 	clk_enable(hdmi->clk);
-	tegra_periph_reset_assert(hdmi->clk);
-	mdelay(1);
-	tegra_periph_reset_deassert(hdmi->clk);
+
+        if(tegra3_get_project_id()!=TEGRA3_PROJECT_P1801) {
+                tegra_periph_reset_assert(hdmi->clk);
+                mdelay(1);
+                tegra_periph_reset_deassert(hdmi->clk);
+        }
 
 	/* TODO: copy HDCP keys from KFUSE to HDMI */
 
@@ -2321,12 +2352,9 @@ static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 	/* program HDMI registers and SOR sequencer */
 
 	tegra_dc_writel(dc, VSYNC_H_POSITION(1), DC_DISP_DISP_TIMING_OPTIONS);
-	if (tegra3_get_project_id() == TEGRA3_PROJECT_P1801)
-		tegra_dc_writel(dc, DITHER_CONTROL_ORDERED | BASE_COLOR_SIZE666,
+	tegra_dc_writel(dc, DITHER_CONTROL_DISABLE | BASE_COLOR_SIZE888,
 			DC_DISP_DISP_COLOR_CONTROL);
-	else
-		tegra_dc_writel(dc, DITHER_CONTROL_DISABLE | BASE_COLOR_SIZE888,
-			DC_DISP_DISP_COLOR_CONTROL);
+
 	/* video_preamble uses h_pulse2 */
 	pulse_start = dc->mode.h_ref_to_sync + dc->mode.h_sync_width +
 		dc->mode.h_back_porch - 10;
@@ -2367,6 +2395,9 @@ static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 			  HDMI_NV_PDISP_SOR_REFCLK);
 
 	hdmi->clk_enabled = true;
+
+        if(tegra3_get_project_id()==TEGRA3_PROJECT_P1801)
+                hdmi->dvi = 1;
 
 	if (!hdmi->dvi) {
 		err = tegra_dc_hdmi_setup_audio(dc, hdmi->audio_freq,
@@ -2495,14 +2526,18 @@ static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 	tegra_dc_writel(dc, GENERAL_ACT_REQ << 8, DC_CMD_STATE_CONTROL);
 	tegra_dc_writel(dc, GENERAL_ACT_REQ, DC_CMD_STATE_CONTROL);
 
-	tegra_nvhdcp_set_plug(hdmi->nvhdcp, 1);
+        if (hdmi->nvhdcp) {
+                tegra_nvhdcp_set_plug(hdmi->nvhdcp, 1);
+        }
 }
 
 static void tegra_dc_hdmi_disable(struct tegra_dc *dc)
 {
 	struct tegra_dc_hdmi_data *hdmi = tegra_dc_get_outdata(dc);
 
-	tegra_nvhdcp_set_plug(hdmi->nvhdcp, 0);
+        if (hdmi->nvhdcp) {
+                tegra_nvhdcp_set_plug(hdmi->nvhdcp, 0);
+        }
 
 #if !defined(CONFIG_ARCH_TEGRA_2x_SOC)
 	tegra_hdmi_writel(hdmi, 0, HDMI_NV_PDISP_SOR_AUDIO_HDA_PRESENSE_0);

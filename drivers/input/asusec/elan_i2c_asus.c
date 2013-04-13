@@ -23,7 +23,7 @@ MODULE_LICENSE("GPL");
 
 static int elan_i2c_asus_cmd(struct i2c_client *client,unsigned char *param, int command)
 {
-  
+
 	u16 asus_ec_cmd;
 	int ret;
 	int retry = ELAN_RETRY_COUNT;
@@ -40,8 +40,8 @@ static int elan_i2c_asus_cmd(struct i2c_client *client,unsigned char *param, int
 		ELAN_ERR("Wirte to device fails status %x\n",ret);
 		return ret;
 	}
-	msleep(CONVERSION_TIME_MS);	
-	
+	msleep(CONVERSION_TIME_MS);
+
 	while(retry-- > 0){
 		ret = i2c_smbus_read_i2c_block_data(client, 0x6A, 8, i2c_data);
 		if (ret < 0) {
@@ -49,29 +49,29 @@ static int elan_i2c_asus_cmd(struct i2c_client *client,unsigned char *param, int
 			return ret;
 		}
 		ASUSDEC_I2C_DATA(i2c_data, index);
-		if ((i2c_data[1] & ASUSDEC_OBF_MASK) && 
-			(i2c_data[1] & ASUSDEC_AUX_MASK)){ 
+		if ((i2c_data[1] & ASUSDEC_OBF_MASK) &&
+			(i2c_data[1] & ASUSDEC_AUX_MASK)){
 			if (i2c_data[2] == PSMOUSE_RET_ACK){
 				break;
 			}
 			else if (i2c_data[2] == PSMOUSE_RET_NAK){
 				goto fail_elan_touchpad_i2c;
 			}
-		}		
+		}
 		msleep(CONVERSION_TIME_MS/5);
 	}
-	
+
 	retry_data_count = (command & 0x0f00) >> 8;
 	for(i=1; i <= retry_data_count; i++){
-		param[i-1] = i2c_data[i+2];	  
+		param[i-1] = i2c_data[i+2];
 	}
-	  
+
 	return 0;
-	
-fail_elan_touchpad_i2c:	
+
+fail_elan_touchpad_i2c:
 	ELAN_ERR("fail to get touchpad response");
 	return -1;
-  
+
 }
 
 /*
@@ -165,23 +165,23 @@ void elantech_report_absolute_to_related(struct asusdec_chip *ec_chip, int *Null
 		input_report_key(dev, BTN_RIGHT, right_button);
 		etd->right_button = right_button;
 	}
-	
+
 	input_sync(dev);
 }
 
 /*
  * Put the touchpad into absolute mode
  */
- 
+
 static int elantech_set_absolute_mode(struct asusdec_chip *ec_chip)
 {
-	
+
 	struct i2c_client *client;
-	unsigned char reg_10 = 0x03;	
-		
+	unsigned char reg_10 = 0x03;
+
 	ELAN_INFO("elantech_set_absolute_mode 2\n");
 	client = ec_chip->client;
-	
+
 	if ((!elan_i2c_asus_cmd(client, NULL, ETP_PS2_CUSTOM_COMMAND)) &&
 	    (!elan_i2c_asus_cmd(client, NULL, ETP_REGISTER_RW)) &&
 	    (!elan_i2c_asus_cmd(client, NULL, ETP_PS2_CUSTOM_COMMAND)) &&
@@ -189,10 +189,10 @@ static int elantech_set_absolute_mode(struct asusdec_chip *ec_chip)
 	    (!elan_i2c_asus_cmd(client, NULL, ETP_PS2_CUSTOM_COMMAND)) &&
 	    (!elan_i2c_asus_cmd(client, NULL, reg_10)) &&
 	    (!elan_i2c_asus_cmd(client, NULL, PSMOUSE_CMD_SETSCALE11))) {
-		
+
 		return 0;
 	}
-	return -1; 
+	return -1;
 }
 
 
@@ -216,14 +216,14 @@ static int elantech_set_input_rel_params(struct asusdec_chip *ec_chip)
 	if ((!elan_i2c_asus_cmd(ec_chip->client, NULL, ETP_PS2_CUSTOM_COMMAND)) &&
 	    (!elan_i2c_asus_cmd(ec_chip->client, NULL, 0x0000)) &&
 	    (!elan_i2c_asus_cmd(ec_chip->client, param, PSMOUSE_CMD_GETINFO))){
-		
+
 		if(etd->abs_dev){
 			return 0;
 		}
-		
+
 		etd->xmax = (0x0F & param[0]) << 8 | param[1];
-		etd->ymax = (0xF0 & param[0]) << 4 | param[2];		
-		
+		etd->ymax = (0xF0 & param[0]) << 4 | param[2];
+
 		etd->abs_dev = input_allocate_device();
 		ELAN_INFO("1 elantech_touchscreen=%p\n",etd->abs_dev);
 		if (etd->abs_dev != NULL){
@@ -231,7 +231,7 @@ static int elantech_set_input_rel_params(struct asusdec_chip *ec_chip)
 			etd->abs_dev->name = "elantech_touchscreen";
 			etd->abs_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_SYN);
 			etd->abs_dev->keybit[BIT_WORD(BTN_MOUSE)] = BIT_MASK(BTN_LEFT) | BIT_MASK(BTN_RIGHT);
-		
+
 			set_bit(EV_KEY, etd->abs_dev->evbit);
 			set_bit(EV_ABS, etd->abs_dev->evbit);
 
@@ -241,7 +241,7 @@ static int elantech_set_input_rel_params(struct asusdec_chip *ec_chip)
 
 			ret=input_register_device(etd->abs_dev);
 			if (ret) {
-			      ELAN_ERR("Unable to register %s input device\n", etd->abs_dev->name);		  
+			      ELAN_ERR("Unable to register %s input device\n", etd->abs_dev->name);
 			}
 		}
 		return 0;
@@ -249,7 +249,7 @@ static int elantech_set_input_rel_params(struct asusdec_chip *ec_chip)
 
  init_fail:
 	return -1;
-  
+
 }
 
 
@@ -263,7 +263,7 @@ int elantech_detect(struct asusdec_chip *ec_chip)
 	ELAN_INFO("2.6.2X-Elan-touchpad-2010-11-27\n");
 
 	client = ec_chip->client;
-	
+
 	if (elan_i2c_asus_cmd(client,  NULL, PSMOUSE_CMD_DISABLE) ||
 	    elan_i2c_asus_cmd(client,  NULL, PSMOUSE_CMD_SETSCALE11) ||
 	    elan_i2c_asus_cmd(client,  NULL, PSMOUSE_CMD_SETSCALE11) ||
@@ -282,7 +282,7 @@ int elantech_detect(struct asusdec_chip *ec_chip)
 			param[0], param[1],param[2]);
 		return -1;
 	}
-	
+
 	return 0;
 }
 
@@ -290,9 +290,9 @@ int elantech_detect(struct asusdec_chip *ec_chip)
  * Initialize the touchpad and create sysfs entries
  */
 int elantech_init(struct asusdec_chip *ec_chip)
-{  
+{
 	ELAN_INFO("Elan et1059 elantech_init\n");
-	
+
 	if (elantech_set_absolute_mode(ec_chip)){
 		ELAN_ERR("failed to put touchpad into absolute mode.\n");
 		return -1;

@@ -21,7 +21,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: dhd_sdio.c 288105 2011-10-06 01:58:02Z $
+ * $Id: dhd_sdio.c 326662 2012-04-10 06:38:08Z $
  */
 
 #include <typedefs.h>
@@ -805,7 +805,8 @@ dhdsdio_clkctl(dhd_bus_t *bus, uint target, bool pendok)
 #ifdef DHD_DEBUG
 		if (dhd_console_ms == 0)
 #endif /* DHD_DEBUG */
-		dhd_os_wd_timer(bus->dhd, 0);
+		if (bus->poll == 0)
+			dhd_os_wd_timer(bus->dhd, 0);
 		break;
 	}
 #ifdef DHD_DEBUG
@@ -855,8 +856,10 @@ dhdsdio_bussleep(dhd_bus_t *bus, bool sleep)
 		                 SBSDIO_FORCE_HW_CLKREQ_OFF, NULL);
 
 		/* Isolate the bus */
-		bcmsdh_cfg_write(sdh, SDIO_FUNC_1, SBSDIO_DEVICE_CTL,
-		                 SBSDIO_DEVCTL_PADS_ISO, NULL);
+		if (bus->sih->chip != BCM4329_CHIP_ID && bus->sih->chip != BCM4319_CHIP_ID) {
+			bcmsdh_cfg_write(sdh, SDIO_FUNC_1, SBSDIO_DEVICE_CTL,
+				SBSDIO_DEVCTL_PADS_ISO, NULL);
+		}
 
 		/* Change state */
 		bus->sleeping = TRUE;
@@ -1370,9 +1373,7 @@ dhd_bus_txctl(struct dhd_bus *bus, uchar *msg, uint msglen)
 		/* Send from dpc */
 		bus->ctrl_frame_buf = frame;
 		bus->ctrl_frame_len = len;
-
 		dhd_wait_for_event(bus->dhd, &bus->ctrl_frame_stat);
-
 		if (bus->ctrl_frame_stat == FALSE) {
 			DHD_INFO(("%s: ctrl_frame_stat == FALSE\n", __FUNCTION__));
 			ret = 0;
@@ -1457,7 +1458,7 @@ dhd_bus_rxctl(struct dhd_bus *bus, uchar *msg, uint msglen)
 {
 	int timeleft;
 	uint rxlen = 0;
-	bool pending;
+	bool pending = FALSE;
 
 	DHD_TRACE(("%s: Enter\n", __FUNCTION__));
 
@@ -1484,8 +1485,9 @@ dhd_bus_rxctl(struct dhd_bus *bus, uchar *msg, uint msglen)
 		dhd_os_sdunlock(bus->dhd);
 #endif /* DHD_DEBUG */
 	} else if (pending == TRUE) {
-		DHD_CTL(("%s: canceled\n", __FUNCTION__));
-		return -ERESTARTSYS;
+		/* signal pending */
+		DHD_ERROR(("%s: signal pending\n", __FUNCTION__));
+		return -EINTR;
 	} else {
 		DHD_CTL(("%s: resumed for unknown reason?\n", __FUNCTION__));
 #ifdef DHD_DEBUG
@@ -1524,7 +1526,7 @@ enum {
 #ifdef DHD_DEBUG
 	IOV_CHECKDIED,
 	IOV_SERIALCONS,
-#endif
+#endif /* DHD_DEBUG */
 	IOV_DOWNLOAD,
 	IOV_SOCRAM_STATE,
 	IOV_FORCEEVEN,
@@ -2213,7 +2215,7 @@ dhdsdio_doiovar(dhd_bus_t *bus, const bcm_iovar_t *vi, uint32 actionid, const ch
 	int32 int_val = 0;
 	bool bool_val = 0;
 
-	DHD_ERROR(("%s: Enter, action %d name %s params %p plen %d arg %p len %d val_size %d\n",
+	DHD_TRACE(("%s: Enter, action %d name %s params %p plen %d arg %p len %d val_size %d\n",
 	           __FUNCTION__, actionid, name, params, plen, arg, len, val_size));
 
 	if ((bcmerror = bcm_iovar_lencheck(vi, arg, len, IOV_ISSET(actionid))) != 0)
@@ -2789,6 +2791,9 @@ dhdsdio_download_state(dhd_bus_t *bus, bool enter)
 	uint retries;
 	int bcmerror = 0;
 
+	if (!bus->sih)
+		return BCME_ERROR;
+
 	/* To enter download state, disable ARM and reset SOCRAM.
 	 * To exit download state, simply reset ARM (default is RAM boot).
 	 */
@@ -3062,6 +3067,13 @@ dhd_bus_stop(struct dhd_bus *bus, bool enforce_mutex)
 	bus->rxskip = FALSE;
 	bus->tx_seq = bus->rx_seq = 0;
 
+	/* Set to a safe default.  It gets updated when we
+	 * receive a packet from the fw but when we reset,
+	 * we need a safe default to be able to send the
+	 * initial mac address.
+	 */
+	bus->tx_max = 4;
+
 	if (enforce_mutex)
 		dhd_os_sdunlock(bus->dhd);
 }
@@ -3116,9 +3128,9 @@ dhd_bus_init(dhd_pub_t *dhdp, bool enforce_mutex)
 	dhd_timeout_start(&tmo, DHD_WAIT_F2RDY * 1000);
 
 	ready = 0;
-	while (ready != enable && !dhd_timeout_expired(&tmo))
-	        ready = bcmsdh_cfg_read(bus->sdh, SDIO_FUNC_0, SDIOD_CCCR_IORDY, NULL);
-
+	do {
+		ready = bcmsdh_cfg_read(bus->sdh, SDIO_FUNC_0, SDIOD_CCCR_IORDY, NULL);
+	} while (ready != enable && !dhd_timeout_expired(&tmo));
 
 	DHD_INFO(("%s: enable 0x%02x, ready 0x%02x (waited %uus)\n",
 	          __FUNCTION__, enable, ready, tmo.elapsed));
@@ -3569,7 +3581,7 @@ dhdsdio_rxglom(dhd_bus_t *bus, uint8 rxseq)
 		if ((uint8)(txmax - bus->tx_seq) > 0x40) {
 			DHD_ERROR(("%s: got unlikely tx max %d with tx_seq %d\n",
 			           __FUNCTION__, txmax, bus->tx_seq));
-			txmax = bus->tx_seq;
+			txmax = bus->tx_max;
 		}
 		bus->tx_max = txmax;
 
@@ -3769,6 +3781,14 @@ dhdsdio_readframes(dhd_bus_t *bus, uint maxframes, bool *finished)
 	for (rxseq = bus->rx_seq, rxleft = maxframes;
 	     !bus->rxskip && rxleft && bus->dhd->busstate != DHD_BUS_DOWN;
 	     rxseq++, rxleft--) {
+
+#ifdef DHDTHREAD
+		/* tx more to improve rx performance */
+		if ((bus->clkstate == CLK_AVAIL) && !bus->fcstate &&
+			pktq_mlen(&bus->txq, ~bus->flowcontrol) && DATAOK(bus)) {
+			dhdsdio_sendfromq(bus, dhd_txbound);
+		}
+#endif /* DHDTHREAD */
 
 		/* Handle glomming separately */
 		if (bus->glom || bus->glomd) {
@@ -3990,7 +4010,7 @@ dhdsdio_readframes(dhd_bus_t *bus, uint maxframes, bool *finished)
 			if ((uint8)(txmax - bus->tx_seq) > 0x40) {
 					DHD_ERROR(("%s: got unlikely tx max %d with tx_seq %d\n",
 						__FUNCTION__, txmax, bus->tx_seq));
-					txmax = bus->tx_seq;
+					txmax = bus->tx_max;
 			}
 			bus->tx_max = txmax;
 
@@ -4147,7 +4167,7 @@ dhdsdio_readframes(dhd_bus_t *bus, uint maxframes, bool *finished)
 		if ((uint8)(txmax - bus->tx_seq) > 0x40) {
 			DHD_ERROR(("%s: got unlikely tx max %d with tx_seq %d\n",
 			           __FUNCTION__, txmax, bus->tx_seq));
-			txmax = bus->tx_seq;
+			txmax = bus->tx_max;
 		}
 		bus->tx_max = txmax;
 
@@ -4580,8 +4600,32 @@ clkwait:
 		bcmsdh_intr_enable(sdh);
 	}
 
+#if defined(OOB_INTR_ONLY) && !defined(HW_OOB)
+	/* In case of SW-OOB(using edge trigger),
+	 * Check interrupt status in the dongle again after enable irq on the host.
+	 * and rechedule dpc if interrupt is pended in the dongle.
+	 * There is a chance to miss OOB interrupt while irq is disabled on the host.
+	 * No need to do this with HW-OOB(level trigger)
+	 */
+	R_SDREG(newstatus, &regs->intstatus, retries);
+	if (bcmsdh_regfail(bus->sdh))
+		newstatus = 0;
+	if (newstatus & bus->hostintmask) {
+		bus->ipend = TRUE;
+		resched = TRUE;
+	}
+#endif /* defined(OOB_INTR_ONLY) && !defined(HW_OOB) */
+
 	if (TXCTLOK(bus) && bus->ctrl_frame_stat && (bus->clkstate == CLK_AVAIL))  {
 		int ret, i;
+		uint8* frame_seq = bus->ctrl_frame_buf + SDPCM_FRAMETAG_LEN;
+
+		if (*frame_seq != bus->tx_seq) {
+			DHD_INFO(("%s IOCTL frame seq lag detected!"
+				" frm_seq:%d != bus->tx_seq:%d, corrected\n",
+				__FUNCTION__, *frame_seq, bus->tx_seq));
+			*frame_seq = bus->tx_seq;
+		}
 
 		ret = dhd_bcmsdh_send_buf(bus, bcmsdh_cur_sbwad(sdh), SDIO_FUNC_2, F2SYNC,
 		                      (uint8 *)bus->ctrl_frame_buf, (uint32)bus->ctrl_frame_len,
@@ -5187,16 +5231,17 @@ dhdsdio_chipmatch(uint16 chipid)
 		return TRUE;
 	if (chipid == BCM4319_CHIP_ID)
 		return TRUE;
-	if (chipid == BCM4336_CHIP_ID)
-		return TRUE;
 	if (chipid == BCM4330_CHIP_ID)
+		return TRUE;
+	if (chipid == BCM43239_CHIP_ID)
+		return TRUE;
+	if (chipid == BCM4336_CHIP_ID)
 		return TRUE;
 	if (chipid == BCM43237_CHIP_ID)
 		return TRUE;
 	if (chipid == BCM43362_CHIP_ID)
 		return TRUE;
-	if (chipid == BCM43239_CHIP_ID)
-		return TRUE;
+
 	return FALSE;
 }
 
@@ -5373,6 +5418,7 @@ dhdsdio_probe(uint16 venid, uint16 devid, uint16 bus_no, uint16 slot,
 		if (ret == BCME_NOTUP)
 			goto fail;
 	}
+
 	/* Ok, have the per-port tell the stack we're open for business */
 	if (dhd_net_attach(bus->dhd, 0) != 0) {
 		DHD_ERROR(("%s: Net attach failed!!\n", __FUNCTION__));
@@ -5549,8 +5595,10 @@ dhdsdio_probe_attach(struct dhd_bus *bus, osl_t *osh, void *sdh, void *regsva,
 	return TRUE;
 
 fail:
-	if (bus->sih != NULL)
+	if (bus->sih != NULL) {
 		si_detach(bus->sih);
+		bus->sih = NULL;
+	}
 	return FALSE;
 }
 
@@ -5783,6 +5831,7 @@ dhdsdio_release_dongle(dhd_bus_t *bus, osl_t *osh, bool dongle_isolation, bool r
 			dhdsdio_clkctl(bus, CLK_NONE, FALSE);
 		}
 		si_detach(bus->sih);
+		bus->sih = NULL;
 		if (bus->vars && bus->varsz)
 			MFREE(osh, bus->vars, bus->varsz);
 		bus->vars = NULL;
@@ -6075,7 +6124,7 @@ _dhdsdio_download_firmware(struct dhd_bus *bus)
 	/* External image takes precedence if specified */
 	if ((bus->fw_path != NULL) && (bus->fw_path[0] != '\0')) {
 
-		/* replace bcm43xx with bcm4330 or bcm4329 */
+		/* replace bcm43xx with bcm4330 */
 		if ((p = strstr(bus->fw_path, "bcm43xx"))) {
 			if (bus->cl_devid == 0x4329) {
 				*(p + 5)='2';
@@ -6165,6 +6214,7 @@ dhd_bcmsdh_send_buf(dhd_bus_t *bus, uint32 addr, uint fn, uint flags, uint8 *buf
 uint
 dhd_bus_chip(struct dhd_bus *bus)
 {
+	ASSERT(bus);
 	ASSERT(bus->sih != NULL);
 	return bus->sih->chip;
 }
@@ -6172,6 +6222,7 @@ dhd_bus_chip(struct dhd_bus *bus)
 void *
 dhd_bus_pub(struct dhd_bus *bus)
 {
+	ASSERT(bus);
 	return bus->dhd;
 }
 
@@ -6224,7 +6275,6 @@ dhd_bus_devreset(dhd_pub_t *dhdp, uint8 flag)
 			bus->dhd->dongle_reset = TRUE;
 			bus->dhd->up = FALSE;
 			dhd_os_sdunlock(dhdp);
-
 			DHD_TRACE(("%s:  WLAN OFF DONE\n", __FUNCTION__));
 			/* App can now remove power from device */
 		} else
@@ -6293,6 +6343,14 @@ dhd_bus_devreset(dhd_pub_t *dhdp, uint8 flag)
 		}
 	}
 	return bcmerror;
+}
+
+/* Get Chip ID version */
+uint dhd_bus_chip_id(dhd_pub_t *dhdp)
+{
+	dhd_bus_t *bus = dhdp->bus;
+
+	return  bus->sih->chip;
 }
 
 int

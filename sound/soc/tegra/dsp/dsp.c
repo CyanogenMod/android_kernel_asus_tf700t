@@ -357,7 +357,6 @@ static int fm34_chip_init(struct i2c_client *client)
 	int rc = 0;
 
 	//config RST# pin, default HIGH.
-	tegra_gpio_enable(TEGRA_GPIO_PO3);
 	rc = gpio_request(TEGRA_GPIO_PO3, "fm34_reset");
 	if (rc) {
 		FM34_ERR("gpio_request failed for input %d\n", TEGRA_GPIO_PO3);
@@ -372,7 +371,6 @@ static int fm34_chip_init(struct i2c_client *client)
 	gpio_set_value(TEGRA_GPIO_PO3, 1);
 
 	//config PWDN# pin, default HIGH.
-	tegra_gpio_enable(TEGRA_GPIO_PBB6);
 	rc = gpio_request(TEGRA_GPIO_PBB6, "fm34_pwdn");
 	if (rc) {
 		FM34_ERR("gpio_request failed for input %d\n", TEGRA_GPIO_PBB6);
@@ -728,7 +726,6 @@ void fm34_power_switch_init(void)
 		return;
 
 	//Enalbe dsp power 1.8V
-	tegra_gpio_enable(dsp_1v8_power_control);
 	ret = gpio_request(dsp_1v8_power_control, "dsp_power_1v8_en");
 	if (ret < 0)
 		pr_err("%s: gpio_request failed for gpio %s\n",
@@ -751,15 +748,13 @@ static int fm34_suspend(struct device *dev)
 		printk("%s(): project TF201\n", __func__);
 		gpio_set_value(TEGRA_GPIO_PO3, 0);
 		//Set DAP2_FS to low in LP0 for voltage leaking.
-		tegra_gpio_enable(TEGRA_GPIO_PA2);
-	        ret = gpio_request(TEGRA_GPIO_PA2, "dap2_fs");
+		ret = gpio_request(TEGRA_GPIO_PA2, "dap2_fs");
 		if (ret < 0)
 			pr_err("%s: gpio_request failed for gpio %s\n",
 				__func__, "DAP2_FS");
 		gpio_direction_output(TEGRA_GPIO_PA2, 0);
 		gpio_free(TEGRA_GPIO_PA2);
 		//Set AUDIO_MCLK to low in LP0 for voltage leaking.
-		tegra_gpio_enable(TEGRA_GPIO_PW4);
 		ret = gpio_request(TEGRA_GPIO_PW4, "audio_mclk");
 		if (ret < 0)
 			pr_err("%s: gpio_request failed for gpio %s\n",
@@ -777,8 +772,6 @@ static int fm34_resume(struct device *dev)
 	u32 project_info = tegra3_get_project_id();
 
 	if(project_info == TEGRA3_PROJECT_TF201){
-		tegra_gpio_disable(TEGRA_GPIO_PW4);
-		tegra_gpio_disable(TEGRA_GPIO_PA2);
 		gpio_set_value(TEGRA_GPIO_PO3, 1);
 	}
 	fm34_power_switch(1);
@@ -792,7 +785,10 @@ static int __init fm34_init(void)
 	project_info = tegra3_get_project_id();
 
 	if(project_info == TEGRA3_PROJECT_TF500T ||
-		project_info == TEGRA3_PROJECT_P1801)
+		project_info == TEGRA3_PROJECT_P1801 ||
+		project_info == TEGRA3_PROJECT_ME301T ||
+		project_info == TEGRA3_PROJECT_ME301TL ||
+		project_info == TEGRA3_PROJECT_ME570T)
 		return 0;
 	else{
 		printk(KERN_INFO "%s+ #####\n", __func__);

@@ -72,9 +72,9 @@
 #define COMMCHIP_UNKNOWN		0
 #define COMMCHIP_NOCHIP			1
 #define COMMCHIP_BROADCOM_BCM4329	2
-#define COMMCHIP BROADCOM_BCM4330	3
+#define COMMCHIP_BROADCOM_BCM4330	3
 #define COMMCHIP_MARVELL_SD8797		4
-
+#define COMMCHIP_TI_WL18XX		5
 
 struct memory_accessor;
 
@@ -176,5 +176,6 @@ enum power_supply_type get_power_supply_type(void);
 enum audio_codec_type get_audio_codec_type(void);
 int get_maximum_cpu_current_supported(void);
 enum image_type get_tegra_image_type(void);
+int tegra_soc_device_init(const char *machine);
 
 #endif

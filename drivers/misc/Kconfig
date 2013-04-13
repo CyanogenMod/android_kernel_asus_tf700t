@@ -549,12 +549,6 @@ config BCM4329_RFKILL
 	---help---
 	Adds BCM4329 RFKILL driver for Broadcom BCM4329 chipset
 
-config BCM4330_RFKILL
-        bool "Enable BCM4330 RFKILL driver"
-        default n
-        ---help---
-        Adds BCM4330 RFKILL driver for Broadcom BCM4330 chipset
-
 config TEGRA_CRYPTO_DEV
 	bool "Device node to access tegra aes hardware"
 	---help---
@@ -574,9 +568,9 @@ config THERM_EST
 	---help---
 	Thermal driver which estimates temperature based of other sensors.
 
-config KERNEL_RAMDUMP
-        bool "kernel ramdump driver"
-        default y
+config AW8EC
+	bool "ASUS embedded controller interface for P1801 base pc"
+	default n
 
 config TEGRA_THROUGHPUT
 	bool "Device node to set throughput target"
@@ -584,6 +578,20 @@ config TEGRA_THROUGHPUT
 	default y
 	---help---
 	Dev node /dev/tegra-throughput used to set a throughput target.
+
+config BLUEDROID_PM
+        tristate "Bluedroid_pm driver support"
+        help
+          Bluetooth Bluedroid power management Driver.
+          This driver provides power control and dynamic active power saving
+          mechanism for bluetooth radio devices.
+
+          Say Y here to compile support for bluedroid_pm support into the kernel
+          or say M to compile it as module (bluedroid_pm).
+
+config KERNEL_RAMDUMP
+	bool "kernel ramdump driver"
+	default y
 
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
