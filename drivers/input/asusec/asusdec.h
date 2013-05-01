@@ -83,9 +83,7 @@
 #define ASUSDEC_PS2_ACK			0xFA
 
 //-----------------------------------------
-#define ASUSDEC_KEY_TOUCHPAD	KEY_F2
-#define ASUSDEC_KEY_AUTOBRIGHT	KEY_F3
-#define ASUSDEC_KEY_SETTING		KEY_F4
+#define ASUSDEC_KEY_TOUCHPAD_TOGGLE   0xCA   /* Request switch touchpad on or off */
 
 /*************scan 2 make mapping***************/
 #define ASUSDEC_KEYPAD_ESC		0x76
@@ -342,6 +340,9 @@ struct asusdec_chip {
 	int ec_in_s3;		// 0: normal mode, 1: ec in deep sleep mode
 	int susb_on;	// 0: susb off, 1: susb on
 	int dock_type; //0: unknown, 1: mobile_dock, 2: audio_dock, 3: audio_stand
+
+	// CYANOGENMOD
+	int kp_fn_mode; // 0: Keypad in normal mode, 0: Keypad in Fn mode
 };
 
 #endif
