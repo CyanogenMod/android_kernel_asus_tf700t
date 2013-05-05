@@ -1395,8 +1395,6 @@ static void asusdec_kp_sci(void){
 	} else {
 		ec_chip->keypad_data.input_keycode = asusdec_kp_sci_table[ec_signal];
 	}
-
-	ec_chip->keypad_data.input_keycode = asusdec_kp_sci_table[ec_signal];
 	if(ec_chip->keypad_data.input_keycode > 0){
 		ASUSDEC_INFO("input_keycode = 0x%x\n", ec_chip->keypad_data.input_keycode);
 
@@ -1460,14 +1458,13 @@ static void asusdec_kp_key(void){
 	}
 
 	// Now we are in kp_fn_mode?. Then kp_sci will be mapped to Fn keys
-	ec_chip->kp_fn_mode =
-	ec_chip->keypad_data.value == 1 &&
+	bool metastate =
 		(
-		scancode == ASUSDEC_KEYPAD_LEFTCTRL || scancode == ASUSDEC_KEYPAD_RIGHTCTRL	||
+		scancode == ASUSDEC_KEYPAD_LEFTCTRL || scancode == ASUSDEC_KEYPAD_RIGHTCTRL ||
 		scancode == ASUSDEC_KEYPAD_KEY_LEFTSHIFT || scancode == ASUSDEC_KEYPAD_KEY_RIGHTSHIFT ||
 		scancode == ASUSDEC_KEYPAD_LEFTALT || scancode == ASUSDEC_KEYPAD_RIGHTALT
-		)
-		? 1 : 0;
+		);
+	ec_chip->kp_fn_mode = (ec_chip->keypad_data.value == 1 && metastate) ? 1 : 0;
 	ASUSDEC_INFO("kp_fn_mode = %d\n", ec_chip->kp_fn_mode);
 }
 
