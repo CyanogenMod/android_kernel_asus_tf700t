@@ -62,6 +62,7 @@ static struct cpufreq_frequency_table *freq_table;
 static unsigned int freq_table_size=0;;
 static struct clk *cpu_clk;
 static struct clk *emc_clk;
+static struct clk *cpu_lp_clk;
 
 static unsigned long policy_max_speed[CONFIG_NR_CPUS];
 static unsigned long target_cpu_speed[CONFIG_NR_CPUS];
@@ -923,6 +924,31 @@ int tegra_suspended_target(unsigned int target_freq)
 	return tegra_update_cpu_speed(new_speed);
 }
 
+int tegra_cpu_late_resume_set_speed_cap(int speed)
+{
+       int ret = 0;
+       unsigned int new_speed = speed;
+
+       mutex_lock(&tegra_cpu_lock);
+
+       if (is_suspended){
+               mutex_unlock(&tegra_cpu_lock);
+               return -EBUSY;
+       }
+
+       new_speed = ASUS_governor_speed(new_speed);
+       new_speed = tegra_throttle_governor_speed(new_speed);
+       new_speed = edp_governor_speed(new_speed);
+
+       printk("tegra_cpu_late_resume_set_speed_cap new_speed =%u\n",new_speed );
+       ret = tegra_update_cpu_speed(new_speed);
+       if (ret == 0)
+               tegra_auto_hotplug_governor(new_speed, false);
+
+       mutex_unlock(&tegra_cpu_lock);
+       return ret;
+}
+
 static int tegra_target(struct cpufreq_policy *policy,
 		       unsigned int target_freq,
 		       unsigned int relation)
@@ -961,6 +987,28 @@ _out:
 	return ret;
 }
 
+extern u64 global_wake_status;
+extern void tegra_exit_lp_mode(void);
+extern void tegra_enter_lp_mode(void);
+void check_cpu_state(void)
+{
+       printk("check_cpu_state cpu_clk->parent->name=%s is_lp_cluster()=%u\n",cpu_clk->parent->name,is_lp_cluster());
+       if(is_lp_cluster() && (!strncmp(cpu_clk->parent->name,"cpu_g",5)))
+               tegra_exit_lp_mode();
+       //else if(!is_lp_cluster() && (!strncmp(cpu_clk->parent->name,"cpu_lp",6)))
+       //tegra_enter_lp_mode();
+}
+void unlock_cpu_lp_mode(void)
+{
+       is_suspended=false;
+       if (global_wake_status){
+               printk("unlock_cpu_lp_mode: restoring frequency+\n");
+               global_wake_status=0;
+               check_cpu_state();
+               printk("unlock_cpu_lp_mode: restoring frequency-\n");
+       }
+       tegra_cpu_late_resume_set_speed_cap(1700000);
+}
 
 static int tegra_pm_notify(struct notifier_block *nb, unsigned long event,
 	void *dummy)
@@ -968,18 +1016,39 @@ static int tegra_pm_notify(struct notifier_block *nb, unsigned long event,
 	mutex_lock(&tegra_cpu_lock);
 	if (event == PM_SUSPEND_PREPARE) {
 		is_suspended = true;
+                global_wake_status=0;
 		pr_info("Tegra cpufreq suspend: setting frequency to %d kHz\n",
 			freq_table[suspend_index].frequency);
 		tegra_update_cpu_speed(freq_table[suspend_index].frequency);
 		tegra_auto_hotplug_governor(
 			freq_table[suspend_index].frequency, true);
 	} else if (event == PM_POST_SUSPEND) {
-		unsigned int freq;
-		is_suspended = false;
-		tegra_cpu_edp_init(true);
-		tegra_cpu_set_speed_cap(&freq);
-		pr_info("Tegra cpufreq resume: restoring frequency to %d kHz\n",
-			freq);
+                if(global_wake_status)
+                {
+                                unsigned int freq;
+                                is_suspended = false;
+                                pr_info("Tegra cpufreq resume: tegra_cpu_edp_init is_lp_cluster()=%u cpu_clk->parent->name=%s +\n",is_lp_cluster(),cpu_clk->parent->name);
+                                tegra_cpu_edp_init(true);
+                                check_cpu_state();
+                                tegra_cpu_set_speed_cap(&freq);
+                                pr_info("Tegra cpufreq resume: restoring frequency to %d kHz\n", freq);
+                }
+                else
+                {
+                                tegra_cpu_edp_init(true);
+                                if(is_lp_cluster() && (!strncmp(cpu_clk->parent->name,"cpu_g",5)))
+                                {
+                                        pr_info("Tegra cpufreq resume: cpu in LP mode, but use cpu_g  %u %s\n",is_lp_cluster(),cpu_clk->parent->name);
+                                        tegra_exit_lp_mode();
+                                        clk_set_parent(cpu_clk, cpu_lp_clk);
+                                }
+                                else if(!is_lp_cluster() && (!strncmp(cpu_clk->parent->name,"cpu_lp",6)))
+                                {
+                                        pr_info("Tegra cpufreq resume: cpu in G mode, but use cpu_lp %u %s\n",is_lp_cluster(),cpu_clk->parent->name);
+                                        tegra_enter_lp_mode();
+                                }
+                                pr_info("Tegra cpufreq resume: cpu in LP mode! is_lp_cluster()=%u cpu_clk->parent->name=%s\n",is_lp_cluster(),cpu_clk->parent->name);
+                }
 	}
 	mutex_unlock(&tegra_cpu_lock);
 
@@ -1015,6 +1084,7 @@ static int tegra_cpu_init(struct cpufreq_policy *policy)
 	clk_enable(emc_clk);
 	clk_enable(cpu_clk);
 
+        cpu_lp_clk = clk_get_sys(NULL, "cpu_lp");
 	cpufreq_frequency_table_cpuinfo(policy, freq_table);
 	cpufreq_frequency_table_get_attr(freq_table, policy->cpu);
 	policy->cur = tegra_getspeed(policy->cpu);

@@ -444,6 +444,32 @@ void tegra_lp0_resume_mc(void)
 	tegra_mc_timing_restore();
 }
 
+void tegra_exit_lp_mode(void)
+{
+        unsigned int flags;
+        printk("tegra_exit_lp_mod+\n");
+        if (is_lp_cluster()) {
+                flags = TEGRA_POWER_CLUSTER_G;
+                flags |= TEGRA_POWER_CLUSTER_IMMEDIATE;
+                tegra_cluster_control(0, flags);
+        }
+        printk("tegra_exit_lp_mod-\n");
+}
+EXPORT_SYMBOL(tegra_exit_lp_mode);
+
+void tegra_enter_lp_mode(void)
+{
+        unsigned int flags;
+        printk("tegra_enter_lp_mod+\n");
+        if (!is_lp_cluster()) {
+                flags = TEGRA_POWER_CLUSTER_LP;
+                flags |= TEGRA_POWER_CLUSTER_IMMEDIATE;
+                tegra_cluster_control(0, flags);
+        }
+        printk("tegra_enter_lp_mod-\n");
+}
+EXPORT_SYMBOL(tegra_enter_lp_mode);
+
 void tegra_lp0_cpu_mode(bool enter)
 {
 	static bool entered_on_g = false;

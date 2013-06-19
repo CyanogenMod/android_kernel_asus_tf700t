@@ -408,10 +408,6 @@ static int tegra_fb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long 
 }
 
 int tegra_fb_get_mode(struct tegra_dc *dc) {
-	if (dc->fb->info->mode == NULL) {
-		dev_err(&dc->fb->ndev->dev, "dc->fb->info->mode is NULL\n");
-		return 0;
-	}
 	return dc->fb->info->mode->refresh;
 }
 
