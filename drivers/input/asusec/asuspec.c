@@ -956,10 +956,17 @@ static ssize_t apower_switch_state(struct switch_dev *sdev, char *buf)
 }
 
 static int asuspec_suspend(struct i2c_client *client, pm_message_t mesg){
+	printk("asuspec_suspend+\n");
+	del_timer_sync(&ec_chip->asuspec_timer);
+	ec_chip->ec_in_s3 = 1;
+	printk("asuspec_suspend-\n");
 	return 0;
 }
 
 static int asuspec_resume(struct i2c_client *client){
+	printk("asuspec_resume+\n");
+	ec_chip->i2c_err_count = 0;
+	printk("asuspec_resume-\n");
 	return 0;
 }
 
